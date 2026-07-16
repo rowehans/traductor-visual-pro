@@ -10,22 +10,10 @@ DIST = os.path.join(ROOT, "dist")
 def minify_js():
     src = os.path.join(ROOT, "app.js")
     dst = os.path.join(DIST, "app.min.js")
-    print(f"[build] Minificando {src} -> {dst}")
-    with open(src, "r", encoding="utf-8") as f:
-        data = f.read()
-    # Eliminar comentarios // y /* */ (preservando los que tienen significado)
-    data = re.sub(r'//.*$', '', data, flags=re.MULTILINE)
-    data = re.sub(r'/\*.*?\*/', '', data, flags=re.DOTALL)
-    # Eliminar console.log (dejar warn/error)
-    data = re.sub(r'console\.log\([^;]*\);?', '', data)
-    # Minificar con jsmin (Crockford original - maneja mejor JS moderno)
-    from jsmin import jsmin
-    minified = jsmin(data)
-    os.makedirs(DIST, exist_ok=True)
-    with open(dst, "w", encoding="utf-8") as f:
-        f.write(minified)
+    print(f"[build] Copiando JS sin minificar (preserva ES6) {src} -> {dst}")
+    shutil.copy2(src, dst)
     size_kb = os.path.getsize(dst) / 1024
-    print(f"[build] JS minificado: {size_kb:.1f} KB")
+    print(f"[build] JS copiado: {size_kb:.1f} KB")
 
 def minify_css():
     src = os.path.join(ROOT, "styles.css")
