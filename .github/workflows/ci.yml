@@ -32,7 +32,7 @@ jobs:
           python-version: "3.12"
       - name: Install deps
         run: |
-          pip install rjsmin rcssmin
+          pip install jsmin rcssmin
       - name: Build
         run: |
           python build.py

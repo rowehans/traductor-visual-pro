@@ -10,11 +10,32 @@ DIST = os.path.join(ROOT, "dist")
 def minify_js():
     src = os.path.join(ROOT, "app.js")
     dst = os.path.join(DIST, "app.min.js")
+    print(f"[build] Minificando {src} -> {dst}")
+
+    # 1. Leer archivo original
+    with open(src, "r", encoding="utf-8") as f:
+        data = f.read()
+
+    # 2. Procesar y minificar
+    # 2a. Eliminar comentarios de una línea (//)
+    data = re.sub(r'//.*$', '', data, flags=re.MULTILINE)
+    # 2b. Eliminar comentarios multilínea (/* */)
+    data = re.sub(r'/\*.*?\*/', '', data, flags=re.DOTALL)
+    # 2c. Eliminar console.log (dejar warn/error)
+    data = re.sub(r'console\.log\([^;]*\);?', '', data)
+    # 2d. Minificar con jsmin
+    from jsmin import jsmin
+    minified = jsmin(data)
+
+    # 3. Crear carpeta de destino si no existe
     os.makedirs(DIST, exist_ok=True)
-    print(f"[build] Copiando JS sin minificar (preserva ES6) {src} -> {dst}")
-    shutil.copy2(src, dst)
+
+    # 4. Escribir resultado minificado
+    with open(dst, "w", encoding="utf-8") as f:
+        f.write(minified)
+
     size_kb = os.path.getsize(dst) / 1024
-    print(f"[build] JS copiado: {size_kb:.1f} KB")
+    print(f"[build] JS minificado: {size_kb:.1f} KB")
 
 def minify_css():
     src = os.path.join(ROOT, "styles.css")
