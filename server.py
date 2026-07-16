@@ -4,6 +4,7 @@ import base64
 import io
 import os
 import re
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
