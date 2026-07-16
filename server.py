@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import importlib
 import io
 import os
 import re
@@ -9,26 +8,10 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import cv2
+import numpy as np
 from flask import Flask, jsonify, request, send_from_directory
-
-# ─── Lazy imports (cv2, numpy, PIL cargados solo cuando se usan) ───
-class _LazyModule:
-    def __init__(self, name):
-        self._name = name
-        self._mod = None
-    def __getattr__(self, name):
-        if self._mod is None:
-            self._mod = importlib.import_module(self._name)
-        return getattr(self._mod, name)
-
-cv2 = _LazyModule('cv2')
-np = _LazyModule('numpy')
-
-class _LazyImage:
-    def __getattr__(self, name):
-        from PIL import Image
-        return getattr(Image, name)
-Image = _LazyImage()
+from PIL import Image
 
 # ─── Manga-image-translator pipeline (MIT) ──────────────────────
 MIT_AVAILABLE = False
