@@ -25,7 +25,11 @@ if not os.getenv("SKIP_MIT_INIT"):
 else:
     print("[MIT] Omitido por SKIP_MIT_INIT (CI/testing)")
 
-ROOT = Path(__file__).resolve().parent
+# ─── Paths (compatible with PyInstaller frozen mode) ──────────────
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    ROOT = Path(sys._MEIPASS)
+else:
+    ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
 IS_PRODUCTION = DIST.exists() and (DIST / "index.html").exists()
 app = Flask(__name__, static_folder=None)
