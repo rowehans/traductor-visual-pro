@@ -18,8 +18,8 @@ def minify_js():
     data = re.sub(r'/\*.*?\*/', '', data, flags=re.DOTALL)
     # Eliminar console.log (dejar warn/error)
     data = re.sub(r'console\.log\([^;]*\);?', '', data)
-    # Minificar con rjsmin
-    from rjsmin import jsmin
+    # Minificar con jsmin (Crockford original - maneja mejor JS moderno)
+    from jsmin import jsmin
     minified = jsmin(data)
     os.makedirs(DIST, exist_ok=True)
     with open(dst, "w", encoding="utf-8") as f:
