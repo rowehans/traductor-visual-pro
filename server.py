@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import io
 import os
 import re
@@ -8,10 +9,26 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import cv2
-import numpy as np
 from flask import Flask, jsonify, request, send_from_directory
-from PIL import Image
+
+# ─── Lazy imports (cv2, numpy, PIL cargados solo cuando se usan) ───
+class _LazyModule:
+    def __init__(self, name):
+        self._name = name
+        self._mod = None
+    def __getattr__(self, name):
+        if self._mod is None:
+            self._mod = importlib.import_module(self._name)
+        return getattr(self._mod, name)
+
+cv2 = _LazyModule('cv2')
+np = _LazyModule('numpy')
+
+class _LazyImage:
+    def __getattr__(self, name):
+        from PIL import Image
+        return getattr(Image, name)
+Image = _LazyImage()
 
 # ─── Manga-image-translator pipeline (MIT) ──────────────────────
 MIT_AVAILABLE = False
@@ -40,6 +57,31 @@ try:
 except Exception as e:
     DB_AVAILABLE = False
     print(f"[db] Base de datos no disponible: {e}")
+
+# Cache de traducciones (filesystem)
+try:
+    from cache import get as cache_get, set as cache_set
+    TRANSLATION_CACHE_AVAILABLE = True
+    print("[cache] Cache de traducciones activo")
+except Exception as e:
+    TRANSLATION_CACHE_AVAILABLE = False
+    print(f"[cache] Cache no disponible: {e}")
+
+# Rate Limiting
+try:
+    from flask_limiter import Limiter
+    from flask_limiter.util import get_remote_address
+    limiter = Limiter(
+        app=app,
+        key_func=get_remote_address,
+        default_limits=["200 per day", "50 per hour"],
+        storage_uri="memory://",
+    )
+    RATE_LIMIT_AVAILABLE = True
+    print("[rate] Rate limiting activo")
+except Exception as e:
+    RATE_LIMIT_AVAILABLE = False
+    print(f"[rate] Rate limiting no disponible: {e}")
 
 # Config
 MAX_WORKERS = min(8, (os.cpu_count() or 4))
@@ -308,14 +350,22 @@ def _translate_one(text: str, source: str, target: str) -> str:
     if not text:
         return text
     src_lang = source if source != "auto" else _detect_language_robust(text)
-    print(f"[translate] src_lang={src_lang}, target={target}, text='{text[:50]}'")
     if src_lang == target:
-        print(f"[translate] SKIP: mismo idioma")
         return text
+
+    # Cache check
+    if TRANSLATION_CACHE_AVAILABLE:
+        cached = cache_get(text, src_lang, target)
+        if cached is not None:
+            print(f"[translate] Cache HIT: '{cached[:50]}'")
+            return cached
+
+    print(f"[translate] src_lang={src_lang}, target={target}, text='{text[:50]}'")
     if _ensure_argo_package(src_lang, target):
         result = _translate_argos(text, src_lang, target)
         if result and result != text:
             print(f"[translate] Argos OK: '{result[:50]}'")
+            _cache_result(text, src_lang, target, result)
             return result
         print(f"[translate] Argos devolvió mismo texto o None")
     if src_lang != "en" and target == "es":
@@ -325,13 +375,24 @@ def _translate_one(text: str, source: str, target: str) -> str:
                 es = _translate_argos(en, "en", "es")
                 if es:
                     print(f"[translate] Argos pivot OK: '{es[:50]}'")
+                    _cache_result(text, src_lang, target, es)
                     return es
     result = _translate_google(text, src_lang, target)
     if result and result != text:
         print(f"[translate] Google OK: '{result[:50]}'")
+        _cache_result(text, src_lang, target, result)
         return result
     print(f"[translate] Todos los métodos fallaron, devolviendo original")
     return text
+
+
+def _cache_result(text: str, src: str, tgt: str, result: str) -> None:
+    """Guarda resultado en cache si esta disponible."""
+    if TRANSLATION_CACHE_AVAILABLE:
+        try:
+            cache_set(text, src, tgt, result)
+        except Exception:
+            pass
 
 
 def _preload_models():
@@ -857,6 +918,7 @@ def health():
     })
 
 
+@limiter.limit("30 per minute") if RATE_LIMIT_AVAILABLE else lambda f: f
 @app.post("/api/translate")
 def translate():
     payload = request.get_json(silent=True) or {}
@@ -870,6 +932,7 @@ def translate():
     return jsonify({"translatedText": _translate_one(text, source, target), "engine": "auto"})
 
 
+@limiter.limit("20 per minute") if RATE_LIMIT_AVAILABLE else lambda f: f
 @app.post("/api/translate-batch")
 def translate_batch():
     """Traduce una lista completa de textos en paralelo con hilos compartidos."""
@@ -897,6 +960,7 @@ def translate_batch():
     return jsonify({"results": results})
 
 
+@limiter.limit("5 per minute") if RATE_LIMIT_AVAILABLE else lambda f: f
 @app.post("/api/process-page")
 def process_page():
     """
