@@ -8,40 +8,12 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 DIST = os.path.join(ROOT, "dist")
 
 def minify_js():
-    import os
-    import re
-    import shutil
-    from jsmin import jsmin
-
     src = os.path.join(ROOT, "app.js")
     dst = os.path.join(DIST, "app.min.js")
-    
-    # 1. Asegurar el directorio al inicio para evitar el FileNotFoundError
-    os.makedirs(DIST, exist_ok=True)
-    
-    try:
-        print(f"[build] Minificando {src} -> {dst}")
-        with open(src, "r", encoding="utf-8") as f:
-            data = f.read()
-        
-        # Limpieza estándar de comentarios y logs
-        data = re.sub(r'//.*$', '', data, flags=re.MULTILINE)
-        data = re.sub(r'/\*.*?\*/', '', data, flags=re.DOTALL)
-        data = re.sub(r'console\.log\(.*?\);?', '', data)
-        
-        minified = jsmin(data)
-        
-        with open(dst, "w", encoding="utf-8") as f:
-            f.write(minified)
-            
-        size_kb = os.path.getsize(dst) / 1024
-        print(f"[build] JS minificado con éxito: {size_kb:.1f} KB")
-        
-    except Exception as e:
-        print(f"[build] Error en minificación ({e}). Aplicando copia de respaldo...")
-        shutil.copy2(src, dst)
-        size_kb = os.path.getsize(dst) / 1024
-        print(f"[build] JS copiado sin minificar: {size_kb:.1f} KB")
+    print(f"[build] Copiando JS sin minificar (preserva ES6) {src} -> {dst}")
+    shutil.copy2(src, dst)
+    size_kb = os.path.getsize(dst) / 1024
+    print(f"[build] JS copiado: {size_kb:.1f} KB")
 
 def minify_css():
     src = os.path.join(ROOT, "styles.css")
