@@ -10,6 +10,7 @@ DIST = os.path.join(ROOT, "dist")
 def minify_js():
     src = os.path.join(ROOT, "app.js")
     dst = os.path.join(DIST, "app.min.js")
+    os.makedirs(DIST, exist_ok=True)
     print(f"[build] Copiando JS sin minificar (preserva ES6) {src} -> {dst}")
     shutil.copy2(src, dst)
     size_kb = os.path.getsize(dst) / 1024
