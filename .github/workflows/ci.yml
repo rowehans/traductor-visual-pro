@@ -53,47 +53,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install deps
+      - name: Install system dependencies
         run: |
-          pip install langdetect deep-translator
+          sudo apt-get update -qq && sudo apt-get install -y -qq libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 2>/dev/null || true
+      - name: Install Python deps
+        run: |
+          pip install --quiet rjsmin rcssmin langdetect deep-translator
       - name: Test language detection (standalone)
         run: |
-          python -c "
-import sys, re
-sys.path.insert(0, '.')
-
-# Test standalone sin importar server.py (evita inicializar MIT)
-def _detect_language_simple(text: str) -> str:
-    text = text.strip()
-    if not text:
-        return 'en'
-    # CJK
-    if any(0xac00 <= ord(c) <= 0xd7a3 for c in text):
-        return 'ko'
-    if any((0x3040 <= ord(c) <= 0x30ff) or (0x4e00 <= ord(c) <= 0x9faf) for c in text):
-        return 'ja'
-    # Heurística español
-    if any(c in 'áéíóúñüÁÉÍÓÚÑÜ¿¡' for c in text):
-        return 'es'
-    text_lower = text.lower()
-    spa_words = {'el','la','los','las','que','en','un','una','de','con','es','para','por','si','no',
-        'y','pero','como','cómo','mas','más','bien','todo','todos','esta','este','tus','sus','mi',
-        'me','se','lo','le','te','al','del','tú','yo','criar','villano','villanos','correcto',
-        'correctamente','ayudan','administrar','subimos','oficial','visitas','hacer','hola',
-        'gracias','capitulo','capítulo','temporada','responderme','responder'}
-    words = {w.strip('.,¡!¿?()[]{}*\"\'') for w in text_lower.split()}
-    if spa_words.intersection(words):
-        return 'es'
-    # Sufijos verbales españoles
-    for w in words:
-        if len(w) > 2 and any(w.endswith(suf) for suf in ('arme','erme','irme','arte','erte','irte',
-            'arse','erse','irse','arle','erle','irle','arnos','ernos','irnos','arlos','erlos','irlos')):
-            return 'es'
-    return 'en'
-
-assert _detect_language_simple('RESPONDERME?') == 'es', 'Fallo es: RESPONDERME?'
-assert _detect_language_simple('Hello world') == 'en', 'Fallo en: Hello world'
-assert _detect_language_simple('¿Puedes ayudarme?') == 'es', 'Fallo es: ¿Puedes ayudarme?'
-assert _detect_language_simple('Gracias por todo') == 'es', 'Fallo es: Gracias por todo'
-print('Test OK')
-"
+          python test_ci.py
