@@ -8,34 +8,44 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 DIST = os.path.join(ROOT, "dist")
 
 def minify_js():
+    import os
+    import re
+    import shutil
+    from jsmin import jsmin
+
     src = os.path.join(ROOT, "app.js")
     dst = os.path.join(DIST, "app.min.js")
+
     print(f"[build] Minificando {src} -> {dst}")
 
-    # 1. Leer archivo original
-    with open(src, "r", encoding="utf-8") as f:
-        data = f.read()
-
-    # 2. Procesar y minificar
-    # 2a. Eliminar comentarios de una línea (//)
-    data = re.sub(r'//.*$', '', data, flags=re.MULTILINE)
-    # 2b. Eliminar comentarios multilínea (/* */)
-    data = re.sub(r'/\*.*?\*/', '', data, flags=re.DOTALL)
-    # 2c. Eliminar console.log (dejar warn/error)
-    data = re.sub(r'console\.log\([^;]*\);?', '', data)
-    # 2d. Minificar con jsmin
-    from jsmin import jsmin
-    minified = jsmin(data)
-
-    # 3. Crear carpeta de destino si no existe
+    # 1. Asegurar la existencia del directorio antes de escribir
     os.makedirs(DIST, exist_ok=True)
 
-    # 4. Escribir resultado minificado
-    with open(dst, "w", encoding="utf-8") as f:
-        f.write(minified)
+    try:
+        with open(src, "r", encoding="utf-8") as f:
+            data = f.read()
 
-    size_kb = os.path.getsize(dst) / 1024
-    print(f"[build] JS minificado: {size_kb:.1f} KB")
+        # Eliminar comentarios // y /* */
+        data = re.sub(r'//.*$', '', data, flags=re.MULTILINE)
+        data = re.sub(r'/\*.*?\*/', '', data, flags=re.DOTALL)
+        # Eliminar console.log
+        data = re.sub(r'console\.log\(.*?\);?', '', data)
+
+        # Minificar código
+        minified = jsmin(data)
+
+        with open(dst, "w", encoding="utf-8") as f:
+            f.write(minified)
+
+        size_kb = os.path.getsize(dst) / 1024
+        print(f"[build] JS minificado: {size_kb:.1f} KB")
+
+    except Exception as e:
+        print(f"[build] Error en minificación, aplicando copia de respaldo: {e}")
+        # Copia de seguridad si la minificación falla por sintaxis ES6+
+        shutil.copy2(src, dst)
+        size_kb = os.path.getsize(dst) / 1024
+        print(f"[build] JS copiado (sin minificar): {size_kb:.1f} KB")
 
 def minify_css():
     src = os.path.join(ROOT, "styles.css")
