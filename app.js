@@ -2439,3 +2439,10 @@ console.log("[BOOT] Event listeners attached, fileInput:", !!fileInput);
 if (fileInput) {
   console.log("[BOOT] fileInput.accept:", fileInput.accept);
 }
+
+// Compatibilidad con Node.js para tests: exportar funciones si se requiere como módulo
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        // Funciones exportadas para tests automatizados
+    };
+}
