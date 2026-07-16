@@ -2145,11 +2145,7 @@ fileInput.addEventListener("change", (e) => {
   if (file) openFile(file).catch(err => setStatus(`Error: ${err.message}`));
 });
 
-// También en el label para asegurar clic
-const filePickerLabel = document.querySelector(".file-picker");
-if (filePickerLabel) {
-  filePickerLabel.addEventListener("click", () => fileInput.click());
-}
+// El label ya envuelve nativamente al <input>, no necesita JS
 
 // Arrastrar y soltar archivos en la pantalla
 stageWrap.addEventListener("dragover", (e) => e.preventDefault());

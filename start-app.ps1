@@ -10,6 +10,26 @@ if (-not (Test-Path $python)) {
 }
 
 Set-Location $root
-Write-Host "Iniciando Traductor visual en http://127.0.0.1:5174/"
+$env:SKIP_MIT_INIT = "1"
+
+# Lanzar servidor en background
+$proc = Start-Process -FilePath $python -ArgumentList $server -PassThru -NoNewWindow
+
+# Esperar a que el servidor esté listo (hasta 15s)
+Write-Host "Esperando al servidor en http://127.0.0.1:5174 ..."
+for ($i = 0; $i -lt 30; $i++) {
+  Start-Sleep -Milliseconds 500
+  try {
+    $req = Invoke-WebRequest -Uri "http://127.0.0.1:5174/api/health" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+    if ($req.StatusCode -eq 200) {
+      Write-Host "Servidor listo!"
+      Start-Process "http://127.0.0.1:5174/"
+      exit 0
+    }
+  } catch {
+    # Todavia no responde
+  }
+}
+
+Write-Host "El servidor no respondio a tiempo. Abriendo de todas formas..."
 Start-Process "http://127.0.0.1:5174/"
-& $python $server

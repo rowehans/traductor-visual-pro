@@ -2,6 +2,7 @@
 setlocal
 set "ROOT=%~dp0"
 set "PY=%ROOT%env\Scripts\python.exe"
+set SKIP_MIT_INIT=1
 
 if not exist "%PY%" (
   echo No se encontro el entorno virtual en "%ROOT%env".
@@ -12,9 +13,13 @@ if not exist "%PY%" (
 
 echo Iniciando Traductor Visual Pro...
 start "" "%PY%" "%ROOT%server.py"
-timeout /t 2 /nobreak >nul
 
-rem Buscar Chrome para abrir en modo app (ventana sin barras). Si no esta, usar el navegador predeterminado.
+:waitloop
+timeout /t 1 /nobreak >nul
+netstat -ano | findstr "LISTENING.*5174" >nul 2>&1
+if errorlevel 1 goto waitloop
+
+rem Servidor listo, abrir navegador
 set "CHROME=%ProgramFiles%\Google\Chrome\Application\chrome.exe"
 if not exist "%CHROME%" set "CHROME=%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"
 if not exist "%CHROME%" set "CHROME=%LocalAppData%\Google\Chrome\Application\chrome.exe"
