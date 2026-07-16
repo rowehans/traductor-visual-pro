@@ -1,0 +1,18 @@
+# Traductor Visual Pro - Python Dependencies
+# Core
+flask>=2.3.0
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+pillow>=10.0.0
+
+# OCR
+easyocr>=1.7.0
+torch>=2.0.0
+
+# Translation
+argostranslate>=1.9.0
+deep-translator>=1.11.0
+langdetect>=1.0.9
+
+# Utilities
+requests>=2.31.0

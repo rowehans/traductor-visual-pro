@@ -1,0 +1,33 @@
+# Dependencias del entorno virtual
+/env/
+/.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+
+# Modelos descargados
+manga-image-translator/models/
+ocr_models/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Build output
+/dist/
+
+# Logs
+*.log
+/result/
+
+# Env vars
+.env
+.env.local

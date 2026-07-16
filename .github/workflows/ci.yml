@@ -1,0 +1,63 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check syntax
+        run: |
+          python -m py_compile server.py
+          python -m py_compile manga_pipeline.py
+          python -m py_compile build.py
+
+  build-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install rjsmin rcssmin
+      - name: Build
+        run: |
+          python build.py
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  test-translate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install langdetect deep-translator
+      - name: Test language detection
+        run: |
+          python -c "
+          import sys; sys.path.insert(0, '.')
+          from server import _detect_language_robust
+          assert _detect_language_robust('RESPONDERME?') == 'es', 'Fallo es'
+          assert _detect_language_robust('Hello world') == 'en', 'Fallo en'
+          print('Test OK')
+          "

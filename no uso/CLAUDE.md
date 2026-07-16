@@ -1,0 +1,1 @@
+D:/crear traductor/AGENTS.md

@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.5, maximum-scale=3, user-scalable=yes" />
+  <!-- Opt out of Brave Leo AI and other browser AI processing -->
+  <meta name="robots" content="noai, noimageai" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://fonts.googleapis.com https://fonts.gstatic.com https://docs.opencv.org data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://docs.opencv.org; worker-src 'self' blob: https://cdnjs.cloudflare.com; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:5174 https://cdnjs.cloudflare.com https://cdn.jsdelivr.net data:;">
+  <title>Traductor Visual Pro - PDF, Manga y Manhwa</title>
+  <!-- Fuentes modernas de Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app">
+    <!-- PANEL LATERAL DE CONTROLES -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">T</div>
+        <div>
+          <h1>Traductor Visual Pro</h1>
+          <p>Manga, Manhwa, cómics e imágenes</p>
+        </div>
+      </div>
+
+      <!-- CARGA DE ARCHIVOS -->
+      <section class="panel">
+        <label class="file-picker">
+          <input id="fileInput" type="file" accept="application/pdf,image/*" />
+          <span>Cargar PDF o Imagen</span>
+        </label>
+        <div class="page-row">
+          <button id="prevPage" class="icon-btn" title="Página Anterior"><</button>
+          <label>Pág.<input id="pageNumber" type="number" min="1" value="1" /></label>
+          <span id="pageTotal">/ 0</span>
+          <button id="nextPage" class="icon-btn" title="Siguiente Página">></button>
+        </div>
+      </section>
+
+      <!-- CONFIGURACIÓN DE IDIOMA -->
+      <section class="panel">
+        <h2>Idioma</h2>
+        <div class="control-grid">
+          <label>
+            Origen (OCR)
+            <select id="sourceLang">
+              <option value="auto">Detectar Automático (Latino)</option>
+              <option value="ja">Japonés (Manga)</option>
+              <option value="ko">Coreano (Manhwa)</option>
+              <option value="zh">Chino (Manhua)</option>
+              <option value="eng+spa+fra+deu">Occidentales (EN/ES/FR/DE)</option>
+            </select>
+          </label>
+          <label>
+            Destino (Traducción)
+            <select id="targetLang">
+              <option value="es">Español</option>
+              <option value="en">Inglés</option>
+              <option value="pt">Portugués</option>
+              <option value="fr">Francés</option>
+              <option value="de">Alemán</option>
+              <option value="it">Italiano</option>
+              <option value="ja">Japonés</option>
+              <option value="ko">Coreano</option>
+              <option value="zh">Chino</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <!-- MODO DE CURSOR / EDICIÓN -->
+      <section class="panel">
+        <h2>Modo de Trabajo</h2>
+        <div class="segmented">
+          <button id="drawMode" class="active" title="Dibujar burbuja (D)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg><span>Dibujar</span></button>
+          <button id="moveMode" title="Mover/Editar (V)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/></svg><span>Mover</span></button>
+        </div>
+      </section>
+
+      <!-- TRADUCCIÓN AUTOMÁTICA -->
+      <section class="panel">
+        <h2>Traducción Automática</h2>
+        <div class="auto-controls">
+          <label class="check-row">
+            <input id="autoTranslateOnLoad" type="checkbox" />
+            <span>Traducir al cargar archivo</span>
+          </label>
+          <button id="autoDetectPage" class="accent-btn" title="Traducir página actual (T)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10"/><path d="M12 6v6l4 2"/></svg><span>Traducir Página</span></button>
+          <button id="autoTranslateAll" class="secondary-btn" title="Traducir todo el documento (Shift+T)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2"/><path d="M8 8h12"/><path d="M8 12h12"/><path d="M8 16h8"/></svg><span>Traducir Todo</span></button>
+        </div>
+      </section>
+
+      <!-- ESTILOS DE BURBUJA / EDICIÓN DE TEXTO -->
+      <section class="panel">
+        <h2>Estilos de Burbuja</h2>
+        <div class="control-grid">
+          <label>
+            Modo Borrado
+            <select id="eraseMode">
+              <option value="area">Borrado de Área</option>
+              <option value="glyph">Borrado de Glifos</option>
+              <option value="none">Sin Borrar Fondo</option>
+            </select>
+          </label>
+          <label class="check-row">
+            <input id="coverOriginal" type="checkbox" checked />
+            <span>Ocultar Original</span>
+          </label>
+        </div>
+        <div class="control-grid">
+          <label>
+            Fondo Burbuja
+            <input id="bubbleColor" type="color" value="#ffffff" />
+          </label>
+          <label>
+            Color Texto
+            <input id="textColor" type="color" value="#000000" />
+          </label>
+        </div>
+        <div class="control-grid">
+          <label>
+            Borde Texto
+            <input id="strokeColor" type="color" value="#ffffff" />
+          </label>
+          <label>
+            Grosor Borde
+            <input id="strokeWidth" type="number" min="0" max="10" value="2" />
+          </label>
+        </div>
+        <div class="control-grid">
+          <label>
+            Tipografía
+            <select id="fontFamily">
+              <option value="'Comic Sans MS', 'Trebuchet MS', sans-serif">Comic Sans</option>
+              <option value="'Trebuchet MS', Arial, sans-serif">Trebuchet MS</option>
+              <option value="'Inter', sans-serif">Inter (Moderno)</option>
+              <option value="'Outfit', sans-serif">Outfit</option>
+              <option value="Impact, Charcoal, sans-serif">Impact (Gritos)</option>
+            </select>
+          </label>
+          <label>
+            Tam. Fuente
+            <input id="fontSize" type="number" min="8" max="72" value="18" />
+          </label>
+        </div>
+        <div class="segmented mini">
+          <button id="btnItalic" class="active-style" title="Cursiva (I)"><em>K</em></button>
+          <button id="btnBold" class="active-style" title="Negrita (B)"><strong>N</strong></button>
+        </div>
+      </section>
+
+      <!-- EDITOR MANUAL -->
+      <section class="panel editor">
+        <h2>Editor de Burbuja</h2>
+        <label>
+          Texto detectado (OCR)
+          <textarea id="sourceText" rows="3" placeholder="Selecciona una burbuja para ver su texto original..."></textarea>
+        </label>
+        <div class="control-row">
+          <button id="translateBtn" class="accent-btn" title="Traducir texto seleccionado (Enter)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10"/><path d="M12 6v6l4 2"/></svg><span>Traducir</span></button>
+        </div>
+        <label>
+          Texto traducido
+          <textarea id="translatedText" rows="3" placeholder="Escribe o traduce para editar el texto..."></textarea>
+        </label>
+        <div class="control-row">
+          <button id="placeManualBtn" class="accent-btn" title="Crear burbuja manual (N)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>Crear Burbuja</span></button>
+          <button id="deleteBox" class="danger-btn" title="Eliminar burbuja (Supr)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span>Eliminar</span></button>
+        </div>
+        <div class="control-row" style="margin-top: 8px;">
+          <button id="clearPageBoxes" class="secondary-btn" style="flex: 1;" title="Limpiar página (Shift+Supr)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span>Limpiar Página</span></button>
+        </div>
+      </section>
+
+      <!-- EXPORTACIÓN -->
+      <section class="panel">
+        <h2>Exportación</h2>
+        <label>
+          Nombre del archivo
+          <input type="text" id="exportName" placeholder="Nombre de descarga..." />
+        </label>
+        <div class="control-row">
+          <button id="exportPng" class="secondary-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg><span>PNG</span></button>
+          <button id="exportPdf" class="secondary-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>PDF Página</span></button>
+          <button id="exportAllPdf" class="accent-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/></svg><span>PDF Completo</span></button>
+        </div>
+      </section>
+    </aside>
+
+    <!-- ÁREA DE TRABAJO -->
+    <section class="workspace">
+      <div class="topbar">
+        <div class="doc-info">
+          <strong id="docName">Sin archivo cargado</strong>
+          <span id="status">Carga un PDF o imagen para comenzar.</span>
+        </div>
+        <div class="topbar-actions">
+          <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Abrir menú lateral" style="display:none;">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="3" y1="6" x2="21" y2="6"/>
+              <line x1="3" y1="12" x2="21" y2="12"/>
+              <line x1="3" y1="18" x2="21" y2="18"/>
+            </svg>
+          </button>
+          <span id="opencvBadge" class="badge loading">Cargando OpenCV...</span>
+          <button id="fitPage">Ajustar Vista</button>
+          <button id="printPage" class="secondary-btn" title="Imprimir"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5"/><path d="M18 18h2a2 2 0 0 0 2-2v-5"/><path d="M6 14h12v4H6"/></svg><span>Imprimir</span></button>
+        </div>
+      </div>
+      
+      <!-- CONTENEDOR DEL CANVAS Y OVERLAY -->
+      <div id="stageWrap" class="stage-wrap">
+        <div id="stage" class="stage">
+          <canvas id="pdfCanvas"></canvas>
+          <div id="overlay" class="overlay"></div>
+          <div id="emptyState" class="empty-state">
+            <h2>Arrastra o carga un PDF o Imagen</h2>
+            <p>Soporta archivos de múltiples páginas e imágenes sueltas.</          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Scripts externos -->
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <!-- Carga asíncrona de OpenCV.js -->
+  <script async src="https://docs.opencv.org/4.5.4/opencv.js?v=4.5.4" id="opencvScript"></script>
+  <!-- Lógica de la aplicación -->
+  <script src="app.js?v=20260715-7" defer></script>
+  
+  <!-- Protección contra IA externa (Brave Leo, etc.) -->
+  <script>
+    (function() {
+      // Detectar Brave Leo / Shields
+      var isBrave = navigator.brave && typeof navigator.brave.isBrave === 'function';
+      var leoWarningShown = false;
+      
+      function checkBraveLeo() {
+        if (isBrave && !leoWarningShown) {
+          navigator.brave.isBrave().then(function(b) {
+            if (b) {
+              // Verificar si Shields está activo
+              fetch('/favicon.ico', { method: 'HEAD', cache: 'no-cache' })
+                .then(function(r) {
+                  if (r.status === 403 || r.headers.get('x-brave-shields')) {
+                    showLeoWarning();
+                  }
+                })
+                .catch(function() {
+                  showLeoWarning();
+                });
+            }
+          });
+        }
+      }
+      
+      function showLeoWarning() {
+        if (leoWarningShown) return;
+        leoWarningShown = true;
+        
+        var banner = document.createElement('div');
+        banner.id = 'brave-leo-warning';
+        banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#ff6b35;color:#fff;padding:12px 16px;z-index:99999;font-family:system-ui,sans-serif;font-size:14px;line-height:1.4;box-shadow:0 2px 8px rgba(0,0,0,0.2);';
+        banner.innerHTML = 
+          '<strong>⚠ Brave Leo/Shields detectado</strong> - El navegador está interceptando imágenes y causando errores.<br>' +
+          '<button id="dismiss-leo-warning" style="margin-top:8px;padding:6px 12px;background:#fff;color:#ff6b35;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Entendido, continuar</button> ' +
+          '<a href="brave://settings/ai" target="_blank" style="color:#fff;text-decoration:underline;margin-left:8px;">Desactivar Leo en brave://settings/ai</a> ' +
+          '<a href="brave://settings/shields" target="_blank" style="color:#fff;text-decoration:underline;margin-left:8px;">Desactivar Shields para localhost</a>';
+        document.body.insertBefore(banner, document.body.firstChild);
+        
+        document.getElementById('dismiss-leo-warning').onclick = function() {
+          banner.remove();
+        };
+      }
+      
+      // Verificar al cargar y cada 2s
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', checkBraveLeo);
+      } else {
+        checkBraveLeo();
+      }
+      setInterval(checkBraveLeo, 2000);
+      
+      // Interceptar errores de "Cannot read image.png"
+      window.addEventListener('error', function(e) {
+        if (e.message && e.message.includes('Cannot read') && e.message.includes('image.png')) {
+          console.error('[APP] Error de Brave Leo/Shields interceptado:', e.message);
+          // Mostrar aviso si no se ha mostrado
+          if (!leoWarningShown) showLeoWarning();
+        }
+      }, true);
+    })();
+  </script>
+</body>
+</html>
