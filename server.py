@@ -15,12 +15,15 @@ from PIL import Image
 
 # ─── Manga-image-translator pipeline (MIT) ──────────────────────
 MIT_AVAILABLE = False
-try:
-    from manga_pipeline import run_pipeline, ensure_ready as mit_ensure_ready
-    MIT_AVAILABLE = True
-    print("[MIT] Pipeline de manga-image-translator disponible")
-except Exception as e:
-    print(f"[MIT] No disponible (modo legacy EasyOCR): {e}")
+if not os.getenv("SKIP_MIT_INIT"):
+    try:
+        from manga_pipeline import run_pipeline, ensure_ready as mit_ensure_ready
+        MIT_AVAILABLE = True
+        print("[MIT] Pipeline de manga-image-translator disponible")
+    except Exception as e:
+        print(f"[MIT] No disponible (modo legacy EasyOCR): {e}")
+else:
+    print("[MIT] Omitido por SKIP_MIT_INIT (CI/testing)")
 
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
