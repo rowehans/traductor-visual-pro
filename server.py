@@ -1009,5 +1009,13 @@ def process_page():
 
 
 if __name__ == "__main__":
-    from waitress import serve
-    serve(app, host="0.0.0.0", port=5174, threads=8)
+    import sys
+    host = "127.0.0.1" if sys.platform == "win32" else "0.0.0.0"
+    print(f"[server] Arrancando en http://{host}:5174")
+    sys.stdout.flush()
+    try:
+        from waitress import serve
+        serve(app, host=host, port=5174, threads=8)
+    except Exception as e:
+        print(f"[server] waitress falló: {e}, usando Flask dev server")
+        app.run(host=host, port=5174, debug=False, use_reloader=False)
