@@ -100,86 +100,26 @@
 
 **Fecha**: 2026-07-14
 
-### Cambios de esta sesión (2026-07-15)
+### Cambios de esta sesión (2026-07-16)
 
-- **MIT integration**: Nuevo pipeline Manga-Image-Translator en `manga_pipeline.py`.
-  - **Detección de texto**: EasyOCR reemplazado por **CTD** (Comic Text Detector) — red neuronal entrenada en manga, detecta texto estilizado (gótico, terror, rasgado) que EasyOCR perdía.
-  - **OCR**: Modelo **ocr_48px** entrenado en manga (vs EasyOCR genérico). Mejor precisión con tipografías artísticas.
-  - **Inpainting**: OpenCV `INPAINT_NS` reemplazado por **LaMa** fine-tuned en manga/anime — preserva la forma de globos de diálogo y texturas de trama. Sin rectángulos grises.
-  - **Máscara inteligente**: `_is_inside_speech_bubble()` detecta fondos oscuros/uniformes → usa máscara solo-glifos que preserva el globo completo.
-  - **Fallback automático**: si MIT no está disponible, cae al sistema legacy (EasyOCR + OpenCV sin cambios).
+- **server.py — `_group_and_merge_blocks()`**:
+  - Fusión horizontal: ahora calcula `gap_x` contra el **borde derecho acumulado** del grupo (`max(g["x"] + g["w"])`), no contra el primer elemento. Evita que cadenas largas de caracteres sueltos ("R"+"E"+"S"+"P"...) se rompan al acumularse a la derecha.
+  - Gap horizontal tolerado: `max(35, group[-1]["w"] * 2.5)` (antes `max(25, b["w"] * 1.5)`). Más tolerante para letras sueltas de fuentes artísticas.
 
-- **Nuevo archivo**: `manga_pipeline.py` (~200 líneas) — wrapper síncrono sobre módulos de MIT.
-  - Importa solo los submódulos necesarios (detection, ocr, textline_merge, inpainting).
-  - `ensure_ready()` descarga modelos (~550 MB: CTD, OCR 48px, LaMa) al primer uso.
-  - `run_pipeline(img_bgr)` → `{inpainted_image: b64, blocks: [...]}`.
+- **server.py — OCR / Filtros para texto erosionado/artístico**:
+  - `text_threshold`: 0.25 → **0.15** (detecta glifos más débiles).
+  - `low_text`: 0.18 → **0.10** (detecta regiones de texto más débiles).
+  - Confianza mínima: 0.12 → **0.08** (permite detecciones muy débiles de tipografías extremas).
+  - Tamaño mínimo bloque: 5×5 → **3×3** px (captura glifos finos/puntos de "...").
+  - Gap fusión horizontal: `max(25, b["w"]*1.5)` → **`max(35, group[-1]["w"]*2.5)`** (más tolerancia a separaciones grandes).
+  - Filtro post-merge: char suelto (`text_len == 1`) solo se filtra si `conf < 0.25` (antes mataba todo char suelto).
+  - Filtro puntuación baja confianza: `conf < 0.20` → **`conf < 0.15` y `len <= 3`** (no mata "...RESPONDERME?" por puntos suspensivos iniciales con baja conf).
 
-- **`server.py`**:
-  - Línea 17: Import condicional de `manga_pipeline`. `MIT_AVAILABLE` flag.
-  - `process_page()` (~858): si MIT disponible → `run_pipeline()`; si falla o no disponible → legacy EasyOCR + OpenCV.
-  - `_is_inside_speech_bubble()`, `_build_glyph_mask_for_bubble()`: nuevas funciones para preservar globos oscuros incluso en legacy.
-  - `_sample_bg_color()`: para bloques dentro de globos, muestrea borde interior del perímetro (negro real) en vez de franjas externas (arte rojo/sombreado).
+- **server.py — main.py**: Añadido bloque de ocultación de consola inmediata (`ctypes.windll.user32.ShowWindow(GetConsoleWindow(), SW_HIDE)`) al inicio de `__main__` para que el `.exe` no muestre ventana CMD.
 
-- **`app.js`**:
-  - `makeAutoTextBox()` (~1141): si `bgColor` del servidor es muy oscuro (brillo < 60), usa `bg: "transparent"` para que el canvas inpainted se vea a través.
+- **Despliegue**: `.exe` actualizado en `C:\Users\roweh\Desktop\TraductorVisual\main.exe` (consola se oculta tras ~0.5s).
 
-- **Dependencias nuevas**: transformers, huggingface_hub, einops, kornia, manga-ocr, py3langid, shapely, pyclipper, omegaconf, rusty-manga-image-translator (~200MB).
-- **Modelos descargados** (~550MB): CTD detector, OCR 48px, LaMa inpainter. Se almacenan en `manga-image-translator/models/`.
-
-- **Nota**: `pydensecrf` no se pudo compilar en Windows (falta C++ Build Tools). Se creó stub en `env/lib/site-packages/pydensecrf/`. Mask refinement se salta (LaMa funciona sin CRF).
-
-### Cambios de esta sesión (2026-07-14)
-
-- **app.js**:
-  - `loadPdfJs()` (~470): **Estrategia dual** — intenta `import()` ES module v4.10.38, con fallback a script UMD clásico v3.11.174 si falla. Ambos configuran worker inmediatamente. Logging detallado.
-  - `openFile()` (~535): Detección de PDF ahora **case-insensitive** (`/\.pdf$/i.test()`). Logging detallado al detectar tipo de archivo. Error en catch muestra mensaje o "Desconocido".
-  - `renderPage()` (~580): Logging de obtención de página PDF.
-  - `openFile()` catch (~574): Muestra `error?.message` con fallback "Desconocido".
-  - **CSP fix**: `data:` añadido a `connect-src` (coordinado con server.py e index.html) → OpenCV WASM carga sin bloqueo.
-  - **SyntaxError `container` duplicado** (línea 275): eliminado `const container` extra en `showToast()`.
-  - **SyntaxError `mobileMenuBtn` duplicado**: eliminada 2ª declaración.
-  - **SyntaxError `detectSelected` es `null`**: eliminada `const detectSelected` + event listener movido a `autoDetectPage` (botón "Traducir Página" real).
-  - **Mobile menu toggle** (≤1024px): botón ☰ en topbar + toggle `.sidebar.open` + cierre al click fuera.
-  - **Layout responsive fluido**: sidebar `grid-template-columns: minmax(240px, 25%) 1fr`, `min-width: 240px`, `max-width: 30%`, padding 1.5rem. Breakpoints actualizados (1200px: 28%, 1024px: drawer).
-  - **Zoom nativo (sin CSS transform)**: `fitPage` recalcula `state.scale` basado en dimensiones reales de página (scale 1.0) vs viewport disponible, llama `renderPage()` para re-render nativo PDF.js. Doble-click en canvas = reset a `state.scale = 1.8` (default).
-  - **viewport meta**: `minimum-scale=0.5, maximum-scale=3, user-scalable=yes`.
-
-- **server.py**:
-  - **CSP fix**: `data:` añadido a `connect-src` en `CSP_POLICY` (línea 62) → OpenCV WASM carga sin bloqueo.
-
-- **index.html**:
-  - **CSP fix**: `data:` en `connect-src` (línea 8) → OpenCV WASM.
-  - **viewport meta**: `minimum-scale=0.5, maximum-scale=3, user-scalable=yes`.
-  - Botón mobile menu ☰ en topbar (hidden, shown via CSS ≤1024px).
-
-- **styles.css**:
-  - Sidebar fluida: `minmax(240px, 25%)`, `min-width: 240px`, `max-width: 30%`, padding 1.5rem.
-  - Breakpoints: 1200px (28%), 1024px (drawer), 640px (stack).
-  - `.stage` mantiene `transform-origin: center center` para zoom futuro si se necesitara.
-
-- **start-app.bat**: Corregido `PYTHON=%ROOT%env\Scripts\python.exe` (antes `.venv`).
-- **start-app.ps1**: Corregido `$python = Join-Path $root "env\Scripts\python.exe"` (antes `.venv`).
-
-### Bugs corregidos anteriormente
-
-| # | Bug | Corrección |
-|---|---|---|
-| 1 | `wrapTextLines` separaba palabras occidentales carácter por carácter | Solo CJK se separa por carácter; occidental por palabras completas |
-| 2 | Cabeceras/pies de navegador se traducían | `filterPageBlocks` filtra 5% márgenes con regex robustas |
-| 3 | Sello `ZONAOLYMPUS-COM` y `1 C 2 E` se traducían | Watermark patterns descartan en cualquier posición |
-| 4 | Texto `"8"` fantasma de arte | Filtro aspect ratio (`w/h < 0.4` y `text_len <= 3`) |
-| 5 | Bloques del servidor sin filtrar en cliente | `filterPageBlocks` aplicado a `serverResult.blocks` |
-| 6 | Doble inpainting (servidor + cliente) | `hasServerInpainted` → skip client inpainting |
-| 7 | Race condition auto-translate al cargar | `await renderPage(1)` antes de `autoTranslateAllPages()` |
-| 8 | `.venv` sin dependencias vs `env/` con todo | `start-app.bat/.ps1` y AGENTS.md documentan `env/` |
-
-### Pendiente de vigilar
-
-- **PDF.js fallback**: Monitorear si el fallback UMD se activa frecuentemente (indicaría que `import()` de `.mjs` falla sistemáticamente). Si es así, considerar migrar definitivamente a UMD o usar `pdfjs-dist` como dependencia local.
-- **Burbujas en margen extremo**: diálogo real en 5% superior/inferior podría filtrarse. Si ocurre, bajar umbral a `0.03`.
-- **Sello `1 C 2 E`**: OCR variable puede leerlo distinto. Ajustar regex `\b1\s*[\s-]?c\s*[\s-]?2\s*[\s-]?e\b`.
-- **Página 3 del manga de prueba**: verificar que "INCREÍBLE... REALMENTE INCREÍBLE..." se detecte completo.
-- **`.venv/` vs `env/`**: `.venv/` existe pero está incompleto. No usar. `env/` es el entorno real. Si se reinstalan dependencias, siempre en `env/`.
+- **Git**: Commit `b7a7e01` y `3c0e1d7` pusheados a `main`.
 
 ---
 
