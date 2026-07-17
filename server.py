@@ -522,61 +522,38 @@ def _group_and_merge_blocks(blocks: list[dict], img_h: int | None = None) -> lis
     margin_top = img_h * 0.05 if img_h else None
     margin_bottom = img_h * 0.95 if img_h else None
 
-    # 1. Filtrar ruido, URLs, metadatos de margen y marcas de agua
-    cleaned = []
+    # 1. Pre-filtrado (marcas de agua, URLs, metadatos de margen)
+    # No filtramos por longitud ni aspecto todavía para no descartar caracteres
+    # individuales de palabras fragmentadas por fuentes artísticas.
+    pre_filtered = []
     for b in blocks:
-        w, h = b["w"], b["h"]
         text = b["text"].strip()
-        text_len = len(text)
+        h = b["h"]
         cy = b["y"] + h / 2
 
         # Marcas de agua de grupos de escaneo: se descartan en cualquier parte de la página
         if any(p.search(text) for p in _WATERMARK_PATTERNS):
-            print(f"[OCR] Filtrando marca de agua: '{text}'")
+            print(f"[OCR] Filtrando marca de agua pre-merge: '{text}'")
             continue
 
         # Metadatos impresos (fecha/hora/numeración de página): solo si están en el margen
         in_margin = margin_top is not None and (cy < margin_top or cy > margin_bottom)
         if in_margin and any(p.search(text) for p in _MARGIN_NOISE_PATTERNS):
-            print(f"[OCR] Filtrando metadato de margen: '{text}' en y={b['y']}")
+            print(f"[OCR] Filtrando metadato de margen pre-merge: '{text}' en y={b['y']}")
             continue
 
         # Filtrar URLs y dominios web (en cualquier parte de la página)
         if re.search(r'https?://|www\.|\.(com|net|org|xyz|io)\b', text, re.IGNORECASE):
-            print(f"[OCR] Filtrando URL: '{text}'")
+            print(f"[OCR] Filtrando URL pre-merge: '{text}'")
             continue
 
-        # Filtrar bloques que son solo números (arte/decoración como "8", "12", etc.)
-        if re.match(r'^[\d\s.,]+$', text) and text_len <= 4:
-            print(f"[OCR] Filtrando número suelto: '{text}' en [{b['x']},{b['y']}]")
-            continue
+        pre_filtered.append(b)
 
-        # Filtrar bloques extremadamente altos y estrechos (columnas de arte)
-        aspect = w / max(h, 1)
-        if aspect < 0.4 and text_len <= 3:
-            print(f"[OCR] Filtrando ruido estrecho: '{text}' aspect={aspect:.2f}")
-            continue
-
-        # Filtrar texto de un solo carácter (ruido de OCR en ilustraciones)
-        if text_len <= 1:
-            print(f"[OCR] Filtrando carácter suelto: '{text}'")
-            continue
-
-        # Filtrar detecciones de muy baja confianza que son puntuación/números
-        # sueltos (ruido de fuentes estilizadas que el OCR apenas detecta).
-        # Estos se cuelan con min_conf bajo y luego se fusionan con texto real.
-        conf = b.get("confidence", 0)
-        if conf < 0.20 and re.match(r'^[\d\s.,;:!?\'\"\-–—]+$', text):
-            print(f"[OCR] Filtrando ruido baja confianza: '{text}' conf={conf:.2f}")
-            continue
-
-        cleaned.append(b)
-
-    if not cleaned:
+    if not pre_filtered:
         return []
 
-    # 2. Fusión Horizontal SOLAMENTE: Mismas líneas de texto
-    sorted_b = sorted(cleaned, key=lambda b: (b["y"] + b["h"]/2, b["x"]))
+    # 2. Fusión Horizontal: Mismas líneas de texto
+    sorted_b = sorted(pre_filtered, key=lambda b: (b["y"] + b["h"]/2, b["x"]))
     merged = []
     used = [False] * len(sorted_b)
 
@@ -588,12 +565,16 @@ def _group_and_merge_blocks(blocks: list[dict], img_h: int | None = None) -> lis
         for j, b2 in enumerate(sorted_b):
             if used[j] or i == j:
                 continue
-            cy1 = b["y"] + b["h"] / 2
+            # Calcular contra el borde derecho acumulado del grupo, no solo de 'b'.
+            # Así "R"+"E"+"S"+"P" no pierde caracteres lejanos por comparar siempre
+            # contra el primer elemento.
+            group_x2 = max(g["x"] + g["w"] for g in group)
+            cy1 = group[-1]["y"] + group[-1]["h"] / 2
             cy2 = b2["y"] + b2["h"] / 2
-            max_h = max(b["h"], b2["h"])
-            gap_x = b2["x"] - (b["x"] + b["w"])
+            max_h = max(group[-1]["h"], b2["h"])
+            gap_x = b2["x"] - group_x2
 
-            if abs(cy1 - cy2) < max_h * 0.45 and -b["w"] < gap_x < b["w"] * 1.2:
+            if abs(cy1 - cy2) < max_h * 0.45 and -b2["w"] < gap_x < max(25, b["w"] * 1.5):
                 group.append(b2)
                 used[j] = True
 
@@ -617,7 +598,38 @@ def _group_and_merge_blocks(blocks: list[dict], img_h: int | None = None) -> lis
                 "textColor": group[0]["textColor"],
             })
 
-    return merged
+    # 3. Post-filtrado: Descartar ruido residual tras la fusión
+    final_blocks = []
+    for b in merged:
+        w, h = b["w"], b["h"]
+        text = b["text"].strip()
+        text_len = len(text)
+
+        # Filtrar bloques que son solo números (arte/decoración como "8", "12", etc.)
+        if re.match(r'^[\d\s.,]+$', text) and text_len <= 4:
+            print(f"[OCR] Filtrando número suelto post-merge: '{text}' en [{b['x']},{b['y']}]")
+            continue
+
+        # Filtrar bloques extremadamente altos y estrechos (columnas de arte)
+        aspect = w / max(h, 1)
+        if aspect < 0.4 and text_len <= 3:
+            print(f"[OCR] Filtrando ruido estrecho post-merge: '{text}' aspect={aspect:.2f}")
+            continue
+
+        # Filtrar texto de un solo carácter (ruido de OCR en ilustraciones)
+        if text_len <= 1:
+            print(f"[OCR] Filtrando carácter suelto post-merge: '{text}'")
+            continue
+
+        # Filtrar detecciones de muy baja confianza que son puntuación/números sueltos
+        conf = b.get("confidence", 0)
+        if conf < 0.20 and re.match(r'^[\d\s.,;:!?\'\"\-–—]+$', text):
+            print(f"[OCR] Filtrando ruido baja confianza post-merge: '{text}' conf={conf:.2f}")
+            continue
+
+        final_blocks.append(b)
+
+    return final_blocks
 
 
 def _is_inside_speech_bubble(img_bgr: np.ndarray, block: dict) -> bool:
