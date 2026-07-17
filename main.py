@@ -37,6 +37,16 @@ def launch_chrome():
 
 
 if __name__ == '__main__':
+    # Ocultar consola inmediatamente en el ejecutable compilado
+    if getattr(sys, 'frozen', False):
+        try:
+            import ctypes
+            whnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if whnd:
+                ctypes.windll.user32.ShowWindow(whnd, 0)  # SW_HIDE
+        except Exception:
+            pass
+
     # Ajustar path para PyInstaller frozen mode
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
         sys.path.insert(0, sys._MEIPASS)
