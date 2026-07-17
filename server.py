@@ -422,14 +422,14 @@ def _detect_and_ocr(img_bgr: np.ndarray, lang_hint: str = "auto") -> list[dict]:
 
     try:
         # Sensibilidad máxima para texto estilizado y fuentes artísticas extremas
-        # (terror/suspenso, rasgado, irregular, glifos parciales)
+        # (terror/suspenso, rasgado, irregular, glifos parciales, erosionados)
         results = reader.readtext(
             img_rgb,
             detail=1,
             paragraph=False,
-            min_size=8,
-            text_threshold=0.25,  # Umbral muy bajo para glifos irregulares/rasgados
-            low_text=0.18,
+            min_size=6,
+            text_threshold=0.15,  # Umbral muy bajo para glifos erosionados/fragmentados
+            low_text=0.10,
             link_threshold=0.3,
             canvas_size=max(img_bgr.shape[:2]),
             mag_ratio=2.0,  # Ampliación 2x para mejorar detección de bordes finos
@@ -441,16 +441,16 @@ def _detect_and_ocr(img_bgr: np.ndarray, lang_hint: str = "auto") -> list[dict]:
     blocks = []
     for (bbox, text, conf) in results:
         text = text.strip()
-        # Permitir confianza muy baja (0.12) para capturar tipografías extremadamente
-        # estilizadas (terror, rasgado, bordes irregulares) que EasyOCR apenas detecta
-        if not text or conf < 0.12:
+        # Permitir confianza muy baja (0.08) para capturar tipografías extremadamente
+        # estilizadas (terror, rasgado, bordes irregulares, erosionadas) que EasyOCR apenas detecta
+        if not text or conf < 0.08:
             continue
         # bbox es [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]
         xs = [p[0] for p in bbox]
         ys = [p[1] for p in bbox]
         x, y = int(min(xs)), int(min(ys))
         w, h = int(max(xs) - x), int(max(ys) - y)
-        if w < 5 or h < 5:
+        if w < 3 or h < 3:
             continue
         # Estimar tamaño de fuente
         font_size = max(8, int(h * 0.75))
@@ -574,7 +574,7 @@ def _group_and_merge_blocks(blocks: list[dict], img_h: int | None = None) -> lis
             max_h = max(group[-1]["h"], b2["h"])
             gap_x = b2["x"] - group_x2
 
-            if abs(cy1 - cy2) < max_h * 0.45 and -b2["w"] < gap_x < max(25, b["w"] * 1.5):
+            if abs(cy1 - cy2) < max_h * 0.45 and -b2["w"] < gap_x < max(35, group[-1]["w"] * 2.5):
                 group.append(b2)
                 used[j] = True
 
@@ -616,14 +616,14 @@ def _group_and_merge_blocks(blocks: list[dict], img_h: int | None = None) -> lis
             print(f"[OCR] Filtrando ruido estrecho post-merge: '{text}' aspect={aspect:.2f}")
             continue
 
-        # Filtrar texto de un solo carácter (ruido de OCR en ilustraciones)
-        if text_len <= 1:
+        # Filtrar texto de un solo carácter solo si confianza baja (ruido OCR)
+        if text_len == 0 or (text_len == 1 and conf < 0.25):
             print(f"[OCR] Filtrando carácter suelto post-merge: '{text}'")
             continue
 
         # Filtrar detecciones de muy baja confianza que son puntuación/números sueltos
         conf = b.get("confidence", 0)
-        if conf < 0.20 and re.match(r'^[\d\s.,;:!?\'\"\-–—]+$', text):
+        if conf < 0.15 and re.match(r'^[\d\s.,;:!?\'\"\-–—]+$', text) and text_len <= 3:
             print(f"[OCR] Filtrando ruido baja confianza post-merge: '{text}' conf={conf:.2f}")
             continue
 
