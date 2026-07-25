@@ -18,23 +18,64 @@ if (window.Tesseract) {
     console.error('Tesseract.js found in window at startup! Source:', (document.currentScript?.src || 'inline'));
 } else {
     // Watch for Tesseract being loaded
+    let _tesseractVal;
     Object.defineProperty(window, 'Tesseract', {
         set: function(val) {
             console.error('Tesseract.js being SET on window! Stack:', new Error().stack);
-            return val;
+            _tesseractVal = val;
         },
         get: function() {
-            return val;
+            return _tesseractVal;
         },
         configurable: true
     });
-    var val;
 }
+
+// ─── CLIENT CONFIG (defaults, overridden by /api/config at runtime) ───
+window.__CLIENT_CONFIG = {
+  TIMEOUT_OPENCV_INIT_MS: 15000,
+  TIMEOUT_PDFJS_CDN_MS: 10000,
+  TIMEOUT_PDFJS_ES_MODULE_MS: 10000,
+  TIMEOUT_PDF_RENDER_MS: 60000,
+  TIMEOUT_TRANSLATE_MS: 30000,
+  TIMEOUT_TRANSLATE_BATCH_MS: 60000,
+  TIMEOUT_PROCESS_PAGE_MS: 120000,
+  TIMEOUT_INPAINTED_IMAGE_MS: 15000,
+  TIMEOUT_EXPORT_REVOKE_MS: 10000,
+  TIMEOUT_CDN_LOAD_MS: 8000,
+};
+
+// Fetch server config to override defaults
+(async function fetchClientConfig() {
+  try {
+    const resp = await fetch("/api/config");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (data.timeouts_ms) {
+      Object.assign(window.__CLIENT_CONFIG, {
+        TIMEOUT_OPENCV_INIT_MS: data.timeouts_ms.opencv_init,
+        TIMEOUT_PDFJS_CDN_MS: data.timeouts_ms.pdfjs_cdn,
+        TIMEOUT_PDFJS_ES_MODULE_MS: data.timeouts_ms.pdfjs_es_module,
+        TIMEOUT_PDF_RENDER_MS: data.timeouts_ms.pdf_render,
+        TIMEOUT_TRANSLATE_MS: data.timeouts_ms.translate,
+        TIMEOUT_TRANSLATE_BATCH_MS: data.timeouts_ms.translate_batch,
+        TIMEOUT_PROCESS_PAGE_MS: data.timeouts_ms.process_page,
+        TIMEOUT_INPAINTED_IMAGE_MS: data.timeouts_ms.inpainted_image,
+        TIMEOUT_EXPORT_REVOKE_MS: data.timeouts_ms.export_revoke,
+        TIMEOUT_CDN_LOAD_MS: data.timeouts_ms.cdn_load,
+      });
+      console.log("[config] Timeouts actualizados desde el servidor");
+    }
+  } catch (e) {
+    console.warn("[config] Usando timeouts por defecto:", e.message);
+  }
+}());
 
 const $ = (selector) => document.querySelector(selector);
 
 console.log("[BOOT] app.js cargado, document.readyState:", document.readyState);
 
+// GLOBAL ERROR INTERCEPTOR - captures ALL errors with full stack
 // GLOBAL ERROR INTERCEPTOR - captures ALL errors with full stack
 window.addEventListener('error', function(e) {
     console.error('=== GLOBAL ERROR CAUGHT ===');
@@ -101,6 +142,7 @@ const btnItalic = $("#btnItalic");
 const btnBold = $("#btnBold");
 const opencvBadge = $("#opencvBadge");
 const eraseMode = $("#eraseMode");
+const placeManualBtn = $("#placeManualBtn");
 
 // ESTADO GLOBAL DE LA APLICACIÓN
 const state = {
@@ -122,26 +164,66 @@ const state = {
   theme: "dark",         // Tema actual: 'dark' o 'light'
 };
 
-// 1. CONTROL DE OPENCV.JS (MONITOREO DE CARGA ASÍNCRONA)
-function checkOpenCv() {
-  let attempts = 0;
-  const interval = setInterval(() => {
-    attempts++;
-    if (window.cv && window.cv.Mat && window.cv.inpaint) {
-      clearInterval(interval);
-      state.cvLoaded = true;
-      opencvBadge.textContent = "OpenCV Activo";
-      opencvBadge.className = "badge active";
-      setStatus("OpenCV cargado. Borrado inteligente disponible.");
-    } else if (attempts > 40) { // Espera máxima de 12 segundos
-      clearInterval(interval);
+// 1. CONTROL DE OPENCV.JS (CARGA ASÍNCRONA CON CALLBACK)
+function initOpenCv() {
+  function onOpenCvReady() {
+    if (state.cvLoaded) return; // evitar duplicados
+    state.cvLoaded = true;
+    opencvBadge.textContent = "OpenCV Activo";
+    opencvBadge.className = "badge active";
+    setStatus("OpenCV cargado. Borrado inteligente disponible.");
+    console.log("[OpenCV] Cargado exitosamente");
+  }
+
+  function onOpenCvTimeout() {
+    if (!state.cvLoaded) {
       opencvBadge.textContent = "OpenCV Inactivo";
       opencvBadge.className = "badge failed";
-      setStatus("OpenCV no cargó. Se usará borrado básico por color promedio.");
+      setStatus("OpenCV no cargó en 15s. Se usará borrado básico por color promedio.");
+      console.warn("[OpenCV] Timeout de carga (15s)");
     }
-  }, 300);
+  }
+
+  // Caso 1: OpenCV ya está completamente cargado
+  if (window.cv && window.cv.Mat) {
+    onOpenCvReady();
+    return; // ← No crear timeouts innecesarios
+  }
+
+  // Caso 2: cv existe pero aún no inicializó runtime
+  if (window.cv) {
+    window.cv['onRuntimeInitialized'] = onOpenCvReady;
+    setTimeout(onOpenCvTimeout, window.__CLIENT_CONFIG.TIMEOUT_OPENCV_INIT_MS);
+    return;
+  }
+
+  // Caso 3: cv no existe aún (script async cargando)
+  // Polling breve hasta que aparezca window.cv
+  const checkInterval = setInterval(() => {
+    if (window.cv) {
+      clearInterval(checkInterval);
+      if (window.cv.Mat) {
+        onOpenCvReady();
+      } else {
+        window.cv['onRuntimeInitialized'] = onOpenCvReady;
+      }
+    }
+  }, 200);
+
+  // Timeout de seguridad solo para este caso
+  const safetyTimer = setTimeout(() => {
+    clearInterval(checkInterval);
+    onOpenCvTimeout();
+  }, window.__CLIENT_CONFIG.TIMEOUT_OPENCV_INIT_MS);
+
+  // Limpiar timer si cv carga antes del timeout
+  const origReady = onOpenCvReady;
+  onOpenCvReady = function() {
+    clearTimeout(safetyTimer);
+    origReady();
+  };
 }
-checkOpenCv();
+initOpenCv();
 
 // =============================================================================
 // TEMA OSCURO/CLARO - Toggle
@@ -304,6 +386,8 @@ function showToast(message, type = "info", duration = 4000) {
 // KEYBOARD SHORTCUTS
 // =============================================================================
 function initKeyboardShortcuts() {
+  if (window.__kbInit) return;
+  window.__kbInit = true;
   document.addEventListener("keydown", (e) => {
     // Ignorar si estamos en un input/textarea
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) {
@@ -351,12 +435,14 @@ function initKeyboardShortcuts() {
           e.preventDefault();
           if (isShift) {
             autoTranslateAllPages().catch(err => setStatus(`Error: ${err.message}`));
+          } else if (state.selectedId) {
+            translateBtn.click();
           } else {
             autoTranslateCurrentPage().catch(err => setStatus(`Error: ${err.message}`));
           }
         }
         break;
-        
+
       case "e":
         if (isCtrl) {
           e.preventDefault();
@@ -381,7 +467,7 @@ function initKeyboardShortcuts() {
       case "f":
         if (isCtrl) {
           e.preventDefault();
-          fitPage.click();
+          fitPageToStage();
         }
         break;
         
@@ -426,16 +512,7 @@ function initKeyboardShortcuts() {
           placeManualBtn.click();
         }
         break;
-        
-      case "t":
-        if (isCtrl && !isShift && document.activeElement !== sourceText && document.activeElement !== translatedText) {
-          e.preventDefault();
-          if (state.selectedId) {
-            translateBtn.click();
-          }
-        }
-        break;
-        
+
       case "i":
         if (isCtrl) {
           e.preventDefault();
@@ -467,116 +544,98 @@ function initKeyboardShortcuts() {
 initKeyboardShortcuts();
 // Configuración de pdf.js worker
 let pdfjsPromise = null;
+
+// Carga un script UMD y resuelve con window.pdfjsLib, o rechaza en ~10s
+function _loadPdfJsUmd(name, scriptUrl, workerUrl) {
+  return new Promise((resolve, reject) => {
+    console.log(`[PDF.js] Intentando UMD ${name}: ${scriptUrl}`);
+    const timer = setTimeout(
+      () => reject(new Error(`Timeout UMD ${name} (10s)`)),
+      window.__CLIENT_CONFIG.TIMEOUT_PDFJS_CDN_MS
+    );
+    const script = document.createElement("script");
+    script.src = scriptUrl;
+    script.onload = () => {
+      clearTimeout(timer);
+      if (window.pdfjsLib && typeof window.pdfjsLib.getDocument === "function") {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+        console.log(`[PDF.js] UMD ${name} OK`);
+        resolve(window.pdfjsLib);
+      } else {
+        reject(new Error(`UMD ${name}: pdfjsLib no está en window`));
+      }
+    };
+    script.onerror = () => {
+      clearTimeout(timer);
+      reject(new Error(`No se pudo descargar UMD ${name}`));
+    };
+    script.crossOrigin = "anonymous";
+    document.head.appendChild(script);
+  });
+}
+
+// Carga PDF.js desde 4 CDNs en PARALELO — gana el más rápido via Promise.any()
 async function loadPdfJs() {
   if (pdfjsPromise) return pdfjsPromise;
+
   pdfjsPromise = (async () => {
-    // Estrategia 1: import() de módulo ES .mjs (más rápido, nativo)
+    setStatus("Cargando PDF.js (4 CDNs en paralelo)...");
+
+    const attempts = [
+      // Estrategia 1: ES Module .mjs (más rápido, nativo — v4)
+      (async () => {
+        console.log("[PDF.js] Intentando ES module v4.10.38...");
+        const importPromise = import("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs");
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Timeout ES module (10s)")), window.__CLIENT_CONFIG.TIMEOUT_PDFJS_ES_MODULE_MS)
+        );
+        const pdfjsLib = await Promise.race([importPromise, timeoutPromise]);
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs";
+        if (typeof pdfjsLib.getDocument !== "function") {
+          throw new Error("ES module: getDocument no es función");
+        }
+        console.log("[PDF.js] ES module v4.10.38 OK");
+        return pdfjsLib;
+      })(),
+
+      // Estrategia 2: UMD clásico desde cdnjs (v3)
+      _loadPdfJsUmd(
+        "cdnjs",
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js",
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"
+      ),
+
+      // Estrategia 3: UMD desde jsDelivr (v3)
+      _loadPdfJsUmd(
+        "jsDelivr",
+        "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js",
+        "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js"
+      ),
+
+      // Estrategia 4: UMD desde unpkg (v3)
+      _loadPdfJsUmd(
+        "unpkg",
+        "https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js",
+        "https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js"
+      ),
+    ];
+
     try {
-      console.log("[PDF.js] Cargando vía import() ES module...");
-      setStatus("Cargando PDF.js (ES module)...");
-      const importPromise = import("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs");
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Timeout ES module (10s)")), 10000)
-      );
-      const pdfjsLib = await Promise.race([importPromise, timeoutPromise]);
-      pdfjsLib.GlobalWorkerOptions.workerSrc =
-        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs";
-      
-      // Verificar que getDocument existe (validación rápida)
-      if (typeof pdfjsLib.getDocument !== "function") {
-        throw new Error("pdf.js module cargado pero getDocument no es función");
-      }
-      
-      console.log("[PDF.js] ES module OK, getDocument:", typeof pdfjsLib.getDocument);
-      setStatus("PDF.js cargado (ES module)");
+      const pdfjsLib = await Promise.any(attempts);
+      setStatus("PDF.js cargado");
       return pdfjsLib;
-    } catch (esmError) {
-      console.warn("[PDF.js] ES module falló:", esmError.message, "- intentando script UMD clásico...");
+    } catch (aggErr) {
+      // Promise.any() rechaza con AggregateError si TODOS fallan
+      pdfjsPromise = null;  // permitir reintento
+      const reasons = (aggErr.errors || []).map(e => e.message).join("; ");
+      const msg = `No se pudo cargar PDF.js desde ningún CDN. Errores: ${reasons}`;
+      console.error("[PDF.js] Todos los CDNs fallaron:", aggErr);
+      setStatus(`Error: ${msg}`);
+      throw new Error(msg);
     }
-    
-    // Estrategia 2: cargar script UMD clásico desde cdnjs
-    try {
-      setStatus("Cargando PDF.js (UMD cdnjs)...");
-      const pdfjsLib2 = await new Promise((resolve, reject) => {
-        const script = document.createElement("script");
-        script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-        script.onload = () => {
-          if (window.pdfjsLib && typeof window.pdfjsLib.getDocument === "function") {
-            window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-              "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-            console.log("[PDF.js] UMD script OK, getDocument:", typeof window.pdfjsLib.getDocument);
-            setStatus("PDF.js cargado (UMD cdnjs)");
-            resolve(window.pdfjsLib);
-          } else {
-            reject(new Error("pdf.js UMD cargó pero pdfjsLib no está en window"));
-          }
-        };
-        script.onerror = () => reject(new Error("No se pudo descargar pdf.js UMD cdnjs"));
-        script.crossOrigin = "anonymous";
-        document.head.appendChild(script);
-        setTimeout(() => reject(new Error("Timeout cargando pdf.js UMD cdnjs (20s)")), 20000);
-      });
-      return pdfjsLib2;
-    } catch (umdError1) {
-      console.warn("[PDF.js] UMD cdnjs falló:", umdError1.message, "- intentando jsDelivr...");
-    }
-
-    // Estrategia 3: script UMD desde jsDelivr (CDN alternativo)
-    try {
-      setStatus("Cargando PDF.js (jsDelivr)...");
-      const pdfjsLib3 = await new Promise((resolve, reject) => {
-        const script = document.createElement("script");
-        script.src = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js";
-        script.onload = () => {
-          if (window.pdfjsLib && typeof window.pdfjsLib.getDocument === "function") {
-            window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-              "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
-            console.log("[PDF.js] jsDelivr UMD OK, getDocument:", typeof window.pdfjsLib.getDocument);
-            setStatus("PDF.js cargado (jsDelivr)");
-            resolve(window.pdfjsLib);
-          } else {
-            reject(new Error("pdf.js jsDelivr cargó pero pdfjsLib no está en window"));
-          }
-        };
-        script.onerror = () => reject(new Error("No se pudo descargar pdf.js jsDelivr"));
-        script.crossOrigin = "anonymous";
-        document.head.appendChild(script);
-        setTimeout(() => reject(new Error("Timeout cargando pdf.js jsDelivr (20s)")), 20000);
-      });
-      return pdfjsLib3;
-    } catch (umdError2) {
-      console.error("[PDF.js] jsDelivr también falló:", umdError2);
-    }
-
-    // Estrategia 4: intentar unpkg
-    try {
-      setStatus("Cargando PDF.js (unpkg)...");
-      const pdfjsLib4 = await new Promise((resolve, reject) => {
-        const script = document.createElement("script");
-        script.src = "https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js";
-        script.onload = () => {
-          if (window.pdfjsLib && typeof window.pdfjsLib.getDocument === "function") {
-            window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-              "https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
-            console.log("[PDF.js] unpkg UMD OK, getDocument:", typeof window.pdfjsLib.getDocument);
-            setStatus("PDF.js cargado (unpkg)");
-            resolve(window.pdfjsLib);
-          } else {
-            reject(new Error("pdf.js unpkg cargó pero pdfjsLib no está en window"));
-          }
-        };
-        script.onerror = () => reject(new Error("No se pudo descargar pdf.js unpkg"));
-        script.crossOrigin = "anonymous";
-        document.head.appendChild(script);
-        setTimeout(() => reject(new Error("Timeout cargando pdf.js unpkg (20s)")), 20000);
-      });
-      return pdfjsLib4;
-    } catch (umdError3) {
-      console.error("[PDF.js] unpkg también falló:", umdError3);
-    }
-
-    throw new Error("No se pudo cargar PDF.js desde ningún CDN (cdnjs, jsDelivr, unpkg). ¿Internet/bloqueador?");
   })();
+
   return pdfjsPromise;
 }
 
@@ -600,6 +659,8 @@ async function openFile(file) {
   if (!file) return;
   state.pdf = null;
   state.image = null;
+  state.kind = null;
+  state.pageCount = 0;
   state.boxesByPage.clear();
   state.inpaintedBgByPage.clear();
   state.selectedId = null;
@@ -639,6 +700,7 @@ async function openFile(file) {
       const img = new Image();
       img.src = URL.createObjectURL(file);
       await img.decode();
+      URL.revokeObjectURL(img.src);
       state.image = img;
       state.kind = "image";
       state.pageCount = 1;
@@ -666,32 +728,44 @@ async function openFile(file) {
 }
 
 // Renderizar una página de PDF
-let _pendingRenderTask = null;
+let _renderToken = null;
+let _renderTempCanvas = null;
 async function renderPage(page = state.page) {
   if (state.kind === "image") return renderImage();
-  if (!state.pdf) return;
+  if (!state.pdf) return {aborted: true};
+  const myToken = {};
+  _renderToken = myToken;
   state.page = page;
   setStatus(`Renderizando página ${page}...`);
   
   try {
     console.log("[renderPage] Obteniendo página", page, "pdf:", !!state.pdf);
     const pdfPage = await state.pdf.getPage(page);
+    if (_renderToken !== myToken) return {aborted: true};
     console.log("[renderPage] Página obtenida, viewport...");
     const viewport = pdfPage.getViewport({ scale: state.scale });
     
     resizeStage(viewport.width, viewport.height);
     
     // Usar un canvas temporal para evitar el error "multiple render() operations"
-    const tempCanvas = document.createElement("canvas");
+    if (!_renderTempCanvas) _renderTempCanvas = document.createElement("canvas");
+    const tempCanvas = _renderTempCanvas;
     tempCanvas.width = viewport.width;
     tempCanvas.height = viewport.height;
     const tempCtx = tempCanvas.getContext("2d");
     
-    const renderPromise = pdfPage.render({ canvasContext: tempCtx, viewport }).promise;
+    const renderTask = pdfPage.render({ canvasContext: tempCtx, viewport });
+    const renderPromise = renderTask.promise;
     const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error("Timeout renderizando página (30s)")), 30000)
+      setTimeout(() => reject(new Error(`Timeout renderizando página (${window.__CLIENT_CONFIG.TIMEOUT_PDF_RENDER_MS/1000}s)`)), window.__CLIENT_CONFIG.TIMEOUT_PDF_RENDER_MS)
     );
-    await Promise.race([renderPromise, timeoutPromise]);
+    try {
+      await Promise.race([renderPromise, timeoutPromise]);
+    } catch (e) {
+      renderTask.cancel();
+      throw e;
+    }
+    if (_renderToken !== myToken) return {aborted: true};
     
     // Copiar del temporal al cleanBgCanvas
     const cleanCtx = cleanBgCanvas.getContext("2d");
@@ -700,8 +774,11 @@ async function renderPage(page = state.page) {
     
     pageNumber.value = String(page);
     await updateErasedBg();
+    if (_renderToken !== myToken) return {aborted: true};
     await refreshScreenCanvas();
+    renderBlockList();
     setStatus(`Página ${page} de ${state.pageCount} lista.`);
+    return {aborted: false};
   } catch (error) {
     console.error("Error rendering page:", error);
     setStatus(`Error al renderizar página ${page}: ${error.message}`);
@@ -735,8 +812,11 @@ async function updateErasedBg() {
     const ctx = erasedBgCanvas.getContext("2d");
 
     // Si tenemos una imagen de fondo limpia cacheada del servidor para esta página, usarla de base
-    const hasServerInpainted = state.inpaintedBgByPage && state.inpaintedBgByPage.has(state.page);
-    if (hasServerInpainted) {
+    const inpaintedImg = state.inpaintedBgByPage?.get(state.page);
+    const hasServerInpainted = inpaintedImg?.complete && inpaintedImg.naturalWidth > 0;
+    const useServerInpainted = hasServerInpainted && coverOriginal.checked;
+
+    if (useServerInpainted) {
       ctx.drawImage(state.inpaintedBgByPage.get(state.page), 0, 0);
     } else {
       ctx.drawImage(cleanBgCanvas, 0, 0);
@@ -796,9 +876,8 @@ async function translateOnline(text, langDest) {
   if (!trimmed) return "";
   
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
-    
+    const controller = new AbortController();    const timeoutId = setTimeout(() => controller.abort(), window.__CLIENT_CONFIG.TIMEOUT_TRANSLATE_MS);
+
     const response = await fetch("/api/translate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -809,8 +888,10 @@ async function translateOnline(text, langDest) {
     clearTimeout(timeoutId);
     
     if (response.ok) {
-      const data = await response.json();
-      if (data.translatedText) return data.translatedText;
+      try {
+        const data = await response.json();
+        if (data && data.translatedText) return data.translatedText;
+      } catch (e) { /* invalid JSON response */ }
     }
   } catch (error) {
     console.warn("Error en traducción online", error);
@@ -828,9 +909,8 @@ async function translateBatch(texts, langDest) {
     srcLang = "auto";
   }
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
-    
+    const controller = new AbortController();    const timeoutId = setTimeout(() => controller.abort(), window.__CLIENT_CONFIG.TIMEOUT_TRANSLATE_BATCH_MS);
+
     const response = await fetch("/api/translate-batch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -841,8 +921,10 @@ async function translateBatch(texts, langDest) {
     clearTimeout(timeoutId);
     
     if (response.ok) {
-      const data = await response.json();
-      if (Array.isArray(data.results)) return data.results;
+      try {
+        const data = await response.json();
+        if (Array.isArray(data.results)) return data.results;
+      } catch (e) { /* invalid JSON response */ }
     }
   } catch (error) {
     console.warn("Error en traducción batch, usando traducciones individuales", error);
@@ -934,16 +1016,14 @@ const MARGIN_NOISE_PATTERNS = [
   /^\d{1,4}\s*\/\s*\d{1,4}$/,
   /\b\d{1,4}\s+de\s+\d{1,4}\b/i,
   /\bp[aá]g(?:ina)?\.?\s?\d{1,4}\b/i,
-  // Frases recurrentes de título/capítulo que aparecen en cabeceras/pies
-  /cap[ií]tulo/i,
-  /c[oó]mo\s?criar/i,
-  /how\s?to\s?raise/i,
+  // NOTA: Ya no se incluyen patrones de títulos de capítulo ("capítulo",
+  // "cómo criar", "how to raise") porque filtran contenido legítimo.
+  // Los números de página y fechas se siguen filtrando con los patrones superiores.
 ];
 
 // Ruido que se descarta en CUALQUIER parte de la página: sellos de grupos de escaneo.
 const GLOBAL_NOISE_PATTERNS = [
   /https?:\/\/|www\.|\.(com|net|org|xyz|io)\b/i,
-  /\b(olympus|scanlation|zonaolympus|scan[\s-]?group)\b/i,
   /\bzonaolympus[\s-]?com\b/i,
   /\b1\s*[\s-]?c\s*[\s-]?2\s*[\s-]?e\b/i,           // sello "1 C 2 E"
 ];
@@ -957,8 +1037,8 @@ function getBlockText(b) {
 // local y bloques devueltos por el servidor (todos comparten x,y,w,h,text/source).
 function filterPageBlocks(blocks, pageHeight = pdfCanvas.height) {
   if (!blocks || !blocks.length) return blocks || [];
-  const marginTop = pageHeight * 0.05;
-  const marginBottom = pageHeight * 0.95;
+  const marginTop = pageHeight * 0.08;
+  const marginBottom = pageHeight * 0.92;
 
   return blocks.filter(b => {
     const text = getBlockText(b);
@@ -1013,7 +1093,7 @@ function isLikelyBubble(rect) {
       }
     }
     return count ? (sum / count) > 180 : false;
-  } catch {
+  } catch (e) {
     return false;
   }
 }
@@ -1028,7 +1108,7 @@ function sampleBgColorAround(block) {
     const sx2 = Math.min(cleanBgCanvas.width,  Math.ceil(block.x + block.w) + margin);
     const sy2 = Math.min(cleanBgCanvas.height, Math.ceil(block.y + block.h) + margin);
     const sw = sx2 - sx, sh = sy2 - sy;
-    if (sw <= 0 || sh <= 0) return "#000000";
+    if (sw <= 0 || sh <= 0) return "#ffffff";
     const data = ctx.getImageData(sx, sy, sw, sh).data;
 
     // Solo pixels FUERA del rectángulo interior (el propio bloque)
@@ -1057,8 +1137,8 @@ function sampleBgColorAround(block) {
       const [r, g, b] = bestKey.split(",").map(Number);
       return `rgb(${r},${g},${b})`;
     }
-    return "#000000";
-  } catch { return "#000000"; }
+    return "#ffffff";
+  } catch (e) { return "#ffffff"; }
 }
 function sampleTextColor(block) {
   try {
@@ -1109,7 +1189,7 @@ function sampleTextColor(block) {
     }
     // Fallback según brillo de fondo
     return bgBrightness > 128 ? "#000000" : "#ffffff";
-  } catch {
+  } catch (e) {
     return "#000000";
   }
 }
@@ -1120,7 +1200,7 @@ function isLightColor(col) {
     if (!m) return true;
     const [r, g, b] = m.map(Number);
     return (r * 0.299 + g * 0.587 + b * 0.114) > 128;
-  } catch {
+  } catch (e) {
     return true;
   }
 }
@@ -1140,7 +1220,7 @@ function makeAutoTextBox(block, translated = "", serverData = null) {
   // usar fuente bold/impact para preservar la expresividad.
   // Para texto normal, usar fuente manga limpia.
   const useServerFont = !!serverData;
-  const finalFontSize = estFontSize;
+  const serverFontSize = estFontSize;
   let finalFontFamily, finalFontStyle, finalFontWeight;
 
   // Detectar estilo expresivo: mayúsculas, tono agresivo (signos !¡?¿)
@@ -1184,26 +1264,34 @@ function makeAutoTextBox(block, translated = "", serverData = null) {
   }
 
   // Para texto flotante sobre arte, agregar contorno de contraste para legibilidad
-  const strokeC  = isBubble ? "transparent" : (isLightColor(textCol) ? "#000000" : "#ffffff");
+  // Si serverData existe y tiene bgColor oscuro (globo de diálogo), no usar contorno
+  const isServerBubble = serverData?.bgColor && (() => {
+    const m = serverData.bgColor.match(/\d+/g);
+    if (m) { const [r,g,b] = m.map(Number); return (r*0.299 + g*0.587 + b*0.114) < 80; }
+    return false;
+  })();
+  const strokeC  = (isBubble || isServerBubble) ? "transparent" : (isLightColor(textCol) ? "#000000" : "#ffffff");
   const strokeW  = isBubble ? 0 : 2;
 
   return {
     id: crypto.randomUUID(),
     x: Math.max(0, block.x - padX),
     y: Math.max(0, block.y - padY),
-    w: Math.min(pdfCanvas.width  - block.x, block.w + padX * 2),
-    h: Math.min(pdfCanvas.height - block.y, block.h + padY * 2),
+    w: Math.min(pdfCanvas.width - (block.x - padX), block.w + padX * 2),
+    h: Math.min(pdfCanvas.height - (block.y - padY), block.h + padY * 2),
     source: block.text,
     text: translated || block.text,
     bg: bgCol,
     color: textCol,
     strokeColor: strokeC,
     strokeWidth: strokeW,
-    fontSize: finalFontSize,
+    fontSize: serverFontSize,
     fontFamily: finalFontFamily,
     fontStyle: finalFontStyle,
     fontWeight: finalFontWeight,
-    eraseMode: serverData ? "none" : "area",  // Si el servidor ya borró, no hacerlo de nuevo
+    eraseMode: serverData ? "none" : "area",
+    _serverInpainted: !!serverData,
+    confidence: block.confidence || 0,
     shadow: true
   };
 }
@@ -1226,6 +1314,10 @@ function showProgress(label, done, total, startedAt) {
     $(".auto-controls").appendChild(progressContainer);
     progressContainer.querySelector(".progress-cancel").addEventListener("click", () => {
       state.abortTranslation = true;
+      if (progressContainer) {
+        progressContainer.remove();
+        progressContainer = null;
+      }
       setStatus("Cancelando traducción...");
     });
   }
@@ -1299,9 +1391,8 @@ async function serverProcessPage(pageNo = state.page) {
   });
 
   // Fetch con timeout de 120 segundos
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 120000);
-  
+  const controller = new AbortController();  const timeoutId = setTimeout(() => controller.abort(), window.__CLIENT_CONFIG.TIMEOUT_PROCESS_PAGE_MS);
+
   const resp = await fetch("/api/process-page", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1319,7 +1410,8 @@ async function serverProcessPage(pageNo = state.page) {
     throw new Error(err.error || `Error del servidor: ${resp.status}`);
   }
 
-  const result = await resp.json();
+  let result;
+  try { result = await resp.json(); } catch (e) { throw new Error("Respuesta inválida del servidor"); }
   console.log("[serverProcessPage] Bloques recibidos:", result.blocks?.length || 0);
   return result; // { inpainted_image, blocks }
 }
@@ -1356,13 +1448,16 @@ async function autoTranslateCurrentPage(pageNo = state.page, startedAt = Date.no
     // Guardar imagen inpainted en caché
     const inpaintedImg = new Image();
     inpaintedImg.src = serverResult.inpainted_image;
-    await new Promise((resolve) => {
-      inpaintedImg.onload = resolve;
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timeout cargando imagen inpainted")), window.__CLIENT_CONFIG.TIMEOUT_INPAINTED_IMAGE_MS);
+      inpaintedImg.onload = () => { clearTimeout(timeout); resolve(); };
+      inpaintedImg.onerror = () => { clearTimeout(timeout); reject(new Error("Error decodificando imagen inpainted")); };
     });
     state.inpaintedBgByPage.set(pageNo, inpaintedImg);
 
     // Cargar imagen inpainted en erasedBgCanvas
     await loadBase64IntoCanvas(serverResult.inpainted_image, erasedBgCanvas);
+    serverResult.inpainted_image = null; // liberar memoria base64
 
     // Filtrar bloques del servidor (márgenes, marcas de agua)
     const filteredServerBlocks = filterPageBlocks(serverResult.blocks, pdfCanvas.height);
@@ -1370,7 +1465,7 @@ async function autoTranslateCurrentPage(pageNo = state.page, startedAt = Date.no
     // Construir cajas de burbuja CON DATOS DEL SERVIDOR (posición, tamaño, colores, fuente)
     const boxes = filteredServerBlocks.map(b => {
       const block = { x: b.x, y: b.y, w: b.w, h: b.h, text: b.source, size: b.fontSize };
-      return makeAutoTextBox(block, b.translated, {
+      return makeAutoTextBox({ ...block, confidence: b.confidence }, b.translated, {
         textColor: b.textColor,
         bgColor: b.bgColor,
         fontSize: b.fontSize,
@@ -1382,6 +1477,7 @@ async function autoTranslateCurrentPage(pageNo = state.page, startedAt = Date.no
       const ctx = pdfCanvas.getContext("2d");
       ctx.drawImage(erasedBgCanvas, 0, 0);
       renderBoxes();
+      if (boxes.length > 0) renderBlockList();
     }
 
     showProgress(`Traduciendo Pág. ${pageNo}`, progressIndex, totalProgress, startedAt);
@@ -1391,36 +1487,225 @@ async function autoTranslateCurrentPage(pageNo = state.page, startedAt = Date.no
   } catch (error) {
     console.error("[autoTranslate] Error:", error);
     setStatus(`Error traduciendo página ${pageNo}: ${error.message}`);
-    return 0;
+    return -1;  // -1 = error, 0 = no text, >0 = success
   }
 }
 
 // Traducir todo el PDF / archivo completo
+
+// Verificar que el servidor Flask responde antes de iniciar un batch
+async function checkServerHealth() {
+  try {
+    const resp = await fetch('/api/health', { method: 'GET', signal: AbortSignal.timeout(5000) });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && data.ok) {
+        console.log('[health] Servidor OK:', data);
+        return true;
+      }
+    }
+    console.warn('[health] Servidor respondio con status:', resp.status);
+    return false;
+  } catch (e) {
+    console.error('[health] Error de conexion con el servidor:', e.message);
+    return false;
+  }
+}
+
 async function autoTranslateAllPages() {
   if (!state.kind) return setStatus("Carga un archivo primero.");
-  state.abortTranslation = false;  // Resetear bandera de cancelación
+  
+  // Verificar que el servidor está corriendo antes de empezar
+  setStatus("Verificando conexión con el servidor...");
+  const serverOk = await checkServerHealth();
+  if (!serverOk) {
+    const msg = "El servidor Flask no responde. Asegúrate de iniciar server.py primero (http://127.0.0.1:5174).";
+    setStatus("Error: " + msg);
+    showToast(msg, "error", 10000);
+    return;
+  }
+  
+  state.abortTranslation = false;
   const startedAt = Date.now();
   const originalPage = state.page;
   const total = state.kind === "pdf" ? state.pageCount : 1;
   
   let totalBlocks = 0;
+  let errorPages = 0;
+  let emptyPages = 0;
+  let successPages = 0;
+  
   for (let p = 1; p <= total; p++) {
     if (state.abortTranslation) {
       setStatus("Traducción cancelada por el usuario.");
       break;
     }
     if (state.kind === "pdf") {
-      await renderPage(p);
+      const result = await renderPage(p);
+      if (result?.aborted) continue;
     }
-    totalBlocks += await autoTranslateCurrentPage(p, startedAt, p, total);
+    
+    const blocksThisPage = await autoTranslateCurrentPage(p, startedAt, p, total);
+    
+    if (blocksThisPage > 0) {
+      totalBlocks += blocksThisPage;
+      successPages++;
+    } else if (blocksThisPage === -1) {
+      errorPages++;  // -1 = error de servidor
+    } else {
+      emptyPages++;  // 0 = sin texto detectado en la página
+    }
+    
+    showProgress(`Pág. ${p}`, p, total, startedAt);
   }
   
   if (state.kind === "pdf") {
     await renderPage(originalPage);
   }
+  
   if (!state.abortTranslation) {
-    setStatus(`Traducción automática completa: ${total} página(s), ${totalBlocks} bloques.`);
+    let report = `Traducción: ${total} páginas, ${totalBlocks} bloques.`;
+    if (successPages > 0) report += ` ${successPages} éxito.`;
+    if (emptyPages > 0) report += ` ${emptyPages} sin texto.`;
+    if (errorPages > 0) report += ` ${errorPages} con error.`;
+    setStatus(report);
+    showToast(`Traducción completada: ${totalBlocks} bloques en ${successPages} páginas`, 
+              errorPages > 0 ? "warning" : "success", 6000);
   }
+}
+
+// ─── BLOQUES DETECTADOS: lista en sidebar + re-traducción individual ───
+function renderBlockList() {
+  const panel = $("#blockListPanel");
+  const container = $("#blockListContainer");
+  const badge = $("#blockCountBadge");
+  if (!panel || !container) return;
+
+  const boxes = getPageBoxes();
+  if (!boxes.length) {
+    panel.style.display = "none";
+    return;
+  }
+
+  panel.style.display = "flex";
+  panel.setAttribute("data-visible", "true");
+  if (badge) badge.textContent = String(boxes.length);
+
+  container.innerHTML = "";
+  boxes.forEach((box, idx) => {
+    const entry = document.createElement("div");
+    entry.className = `block-entry${box.id === state.selectedId ? " selected" : ""}`;
+    entry.dataset.boxId = box.id;
+
+    const conf = box.confidence || 0;
+    const confClass = conf >= 0.5 ? "high" : conf >= 0.25 ? "medium" : "low";
+
+    entry.innerHTML = `
+      <div class="block-header">
+        <span class="block-index">#${idx + 1}</span>
+        <span class="block-confidence ${confClass}">${(conf * 100).toFixed(0)}%</span>
+      </div>
+      <div class="block-ocr" title="${escHtml(box.source || '')}">${escHtml(truncate(box.source || '(sin OCR)', 60))}</div>
+      <div class="block-translated" title="${escHtml(box.text || '')}">${escHtml(truncate(box.text || '(sin traducción)', 60))}</div>
+      <div class="block-actions">
+        <button class="block-edit-btn" data-action="edit">✎ Editar OCR</button>
+        <button class="block-retranslate-btn" data-action="retranslate">⟳ Retraducir</button>
+      </div>
+      <div class="block-editor">
+        <div class="editor-label">Corregir OCR:</div>
+        <textarea data-action="ocr-input" rows="2">${escHtml(box.source || '')}</textarea>
+        <div class="editor-label">Traducción:</div>
+        <textarea data-action="trans-input" rows="2">${escHtml(box.text || '')}</textarea>
+      </div>
+    `;
+
+    // Click en la entrada → seleccionar burbuja
+    entry.addEventListener("click", (e) => {
+      if (e.target.closest("button") || e.target.closest("textarea")) return;
+      selectBox(box.id);
+      // Sincronizar: resaltar esta entrada en la lista
+      container.querySelectorAll(".block-entry").forEach(el => el.classList.remove("selected"));
+      entry.classList.add("selected");
+    });
+
+    // Botón Editar OCR: toggle editor inline
+    entry.querySelector("[data-action='edit']").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const editor = entry.querySelector(".block-editor");
+      editor.classList.toggle("open");
+    });
+
+    // Botón Retraducir: envía OCR corregido al servidor
+    entry.querySelector("[data-action='retranslate']").addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const ocrInput = entry.querySelector("[data-action='ocr-input']");
+      const correctedOcr = ocrInput.value.trim();
+      if (!correctedOcr) return;
+
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.textContent = "...";
+
+      try {
+        setStatus(`Retraduciendo bloque #${idx + 1}...`);
+        const translated = await translateOnline(correctedOcr, targetLang.value);
+
+        // Actualizar la burbuja en el state
+        const targetBox = getPageBoxes().find(b => b.id === box.id);
+        if (targetBox) {
+          targetBox.source = correctedOcr;
+          targetBox.text = translated || correctedOcr;
+        }
+
+        // Actualizar editor inline
+        const transInput = entry.querySelector("[data-action='trans-input']");
+        if (transInput) transInput.value = translated || correctedOcr;
+
+        // Actualizar texto en canvas
+        entry.querySelector(".block-ocr").textContent = truncate(correctedOcr, 60);
+        entry.querySelector(".block-translated").textContent = truncate(translated || correctedOcr, 60);
+        refreshScreenCanvas();
+
+        // Si esta burbuja está seleccionada, actualizar también el panel de Editor
+        if (box.id === state.selectedId) {
+          sourceText.value = correctedOcr;
+          translatedText.value = translated || correctedOcr;
+        }
+
+        showToast(`Bloque #${idx + 1} retraducido`, "success", 2000);
+      } catch (err) {
+        showToast(`Error: ${err.message}`, "error", 3000);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "⟳ Retraducir";
+      }
+    });
+
+    // Edición inline de OCR: actualizar source preview y canvas
+    entry.querySelector("[data-action='ocr-input']").addEventListener("input", (e) => {
+      entry.querySelector(".block-ocr").textContent = truncate(e.target.value, 60);
+    });
+
+    // Edición inline de traducción: actualizar canvas
+    entry.querySelector("[data-action='trans-input']").addEventListener("input", (e) => {
+      const targetBox = getPageBoxes().find(b => b.id === box.id);
+      if (targetBox) {
+        targetBox.text = e.target.value;
+      }
+      entry.querySelector(".block-translated").textContent = truncate(e.target.value, 60);
+      refreshScreenCanvas();
+    });
+
+    container.appendChild(entry);
+  });
+}
+
+// Helpers para renderBlockList
+function escHtml(str) {
+  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function truncate(str, max) {
+  return String(str).length > max ? String(str).slice(0, max) + "…" : String(str);
 }
 
 // 5. EDITOR DE BURBUJAS DOM E INTERACCIONES EN EL OVERLAY
@@ -1630,17 +1915,6 @@ function wrapTextLines(ctx, text, maxWidth) {
   return finalLines.length ? finalLines : [""];
 }
 
-// FIX B6: Heurística para detectar palabras fusionadas (sin espacios) en texto latino
-// y separarlas antes del wrap. Ej: "INCREÍBLEREALMENTEINCREÍBLE" -> "INCREÍBLE REALMENTE INCREÍBLE"
-function splitFusedWords(text) {
-  // Si ya tiene espacios, no hacer nada
-  if (/\s/.test(text)) return text;
-  // Detectar transiciones minúscula->mayúscula (camelCase) o mayúscula->mayúscula seguida de minúscula
-  // Pero NO romper siglas como "HTMLCSS" -> mantener como una palabra
-  return text.replace(/([a-záéíóúñü])([A-ZÁÉÍÓÚÑÜ])/g, '$1 $2')
-             .replace(/([A-ZÁÉÍÓÚÑÜ])([A-ZÁÉÍÓÚÑÜ][a-záéíóúñü])/g, '$1 $2');
-}
-
 // Obtener punto relativo al overlay (considera transform CSS del contenedor)
 function getRelativePoint(event) {
   const rect = overlay.getBoundingClientRect();
@@ -1665,6 +1939,17 @@ function toHexColor(col, fallback = "#ffffff") {
     const hex = n => Number(n).toString(16).padStart(2, "0");
     return `#${hex(m[1])}${hex(m[2])}${hex(m[3])}`;
   }
+  // Intentar resolver colores con nombre (red, blue, etc) via canvas
+  try {
+    const ctx = document.createElement("canvas").getContext("2d");
+    ctx.fillStyle = col;
+    const resolved = ctx.fillStyle; // Devuelve rgb(r,g,b)
+    const rm = resolved.match(/(\d+),\s*(\d+),\s*(\d+)/);
+    if (rm) {
+      const hex = n => Number(n).toString(16).padStart(2, "0");
+      return `#${hex(rm[1])}${hex(rm[2])}${hex(rm[3])}`;
+    }
+  } catch (e) { /* ignore */ }
   return fallback;
 }
 
@@ -1692,6 +1977,14 @@ function selectBox(id) {
 
     state.italic = box.fontStyle === "italic";
     state.bold = box.fontWeight === "800" || box.fontWeight === "700" || box.fontWeight === "bold";
+
+    // Sincronizar selección en la block list
+    const container = $("#blockListContainer");
+    if (container) {
+      container.querySelectorAll(".block-entry").forEach(el => {
+        el.classList.toggle("selected", el.dataset.boxId === id);
+      });
+    }
   } else {
     sourceText.value = "";
     translatedText.value = "";
@@ -1738,7 +2031,7 @@ function startOverlayAction(event) {
       eraseMode: "area"      // Siempre borra el original con el color de fondo muestreado
     };
     getPageBoxes().push(newBox);
-    state.draft = { id: newBox.id, startX: point.x, startY: point.y, kind: "draw" };
+    state.draft = { id: newBox.id, startX: point.x, startY: point.y, kind: "draw", w: pdfCanvas.width, h: pdfCanvas.height };
     selectBox(newBox.id);
   } else if (targetBox) {
     const id = targetBox.dataset.id;
@@ -1747,7 +2040,7 @@ function startOverlayAction(event) {
     
     if (event.target.classList.contains("resize")) {
       // Redimensionamiento
-      state.draft = { id, kind: "resize" };
+      state.draft = { id, kind: "resize", w: pdfCanvas.width, h: pdfCanvas.height };
     } else if (state.mode === "move") {
       // Movimiento
       state.draft = { id, kind: "move", offsetX: point.x - box.x, offsetY: point.y - box.y };
@@ -1762,10 +2055,10 @@ function pointerMove(event) {
   if (!box) return;
 
   if (state.draft.kind === "move") {
-    box.x = Math.max(0, Math.min(pdfCanvas.width - box.w, point.x - state.draft.offsetX));
-    box.y = Math.max(0, Math.min(pdfCanvas.height - box.h, point.y - state.draft.offsetY));
+    box.x = Math.max(0, Math.min(state.draft.w - box.w, point.x - state.draft.offsetX));
+    box.y = Math.max(0, Math.min(state.draft.h - box.h, point.y - state.draft.offsetY));
   } else if (state.draft.kind === "resize") {
-    box.w = Math.max(20, Math.min(pdfCanvas.width - box.x, point.x - box.x));
+    box.w = Math.max(20, Math.min(state.draft.w - box.x, point.x - box.x));
     box.h = Math.max(14, Math.min(pdfCanvas.height - box.y, point.y - box.y));
   } else if (state.draft.kind === "draw") {
     box.x = Math.min(state.draft.startX, point.x);
@@ -1803,6 +2096,8 @@ function pointerUp() {
     //     setTimeout(() => autoOcrAndTranslateBox(box), 50);
     //   }
     // }
+    window.removeEventListener("pointermove", pointerMove);
+    window.removeEventListener("pointerup", pointerUp);
   }
 }
 
@@ -1834,11 +2129,18 @@ async function eraseWithInpainting(canvas, boxes) {
         const w = Math.max(1, Math.min(src.cols - x, Math.round(box.w - inset * 2)));
         const h = Math.max(1, Math.min(src.rows - y, Math.round(box.h - inset * 2)));
         
-        cv.rectangle(mask, new cv.Point(x, y), new cv.Point(x + w, y + h), new cv.Scalar(255), -1);
+        const p1 = new cv.Point(x, y), p2 = new cv.Point(x + w, y + h), sc = new cv.Scalar(255);
+        cv.rectangle(mask, p1, p2, sc, -1);
+        [p1, p2, sc].forEach(o => o.delete());
       }
     }
 
     if (!hasInpaintArea) {
+      return true;
+    }
+
+    // Verificar que la máscara no esté vacía
+    if (cv.countNonZero(mask) === 0) {
       return true;
     }
 
@@ -1884,34 +2186,37 @@ function markGlyphMask(cv, sourceCanvas, mask, box) {
   }
   if (bgCount > 0) { bgR /= bgCount; bgG /= bgCount; bgB /= bgCount; }
 
-  const local = cv.Mat.zeros(h, w, cv.CV_8UC1);
-  const ptr = local.data;
+  let local = null, kernel = null, roi = null;
+  try {
+    local = cv.Mat.zeros(h, w, cv.CV_8UC1);
+    const ptr = local.data;
 
-  // Marcar como glifo cualquier pixel que difiera del fondo por más de 40 unidades (contraste de color)
-  const threshold = 40;
-  for (let py = 0; py < h; py++) {
-    for (let px = 0; px < w; px++) {
-      const i = (py * w + px) * 4;
-      const dr = pixels[i] - bgR;
-      const dg = pixels[i+1] - bgG;
-      const db = pixels[i+2] - bgB;
-      const colorDist = Math.sqrt(dr*dr + dg*dg + db*db);
-      if (colorDist > threshold) {
-        ptr[py * w + px] = 255;
+    // Marcar como glifo cualquier pixel que difiera del fondo por más de 40 unidades (contraste de color)
+    const threshold = 40;
+    for (let py = 0; py < h; py++) {
+      for (let px = 0; px < w; px++) {
+        const i = (py * w + px) * 4;
+        const dr = pixels[i] - bgR;
+        const dg = pixels[i+1] - bgG;
+        const db = pixels[i+2] - bgB;
+        const colorDist = Math.sqrt(dr*dr + dg*dg + db*db);
+        if (colorDist > threshold) {
+          ptr[py * w + px] = 255;
+        }
       }
     }
-  }
 
-  // Dilatar la máscara para abarcar contornos difusos
-  const kernel = cv.Mat.ones(3, 3, cv.CV_8U);
-  cv.dilate(local, local, kernel);
-  
-  const roi = mask.roi(new cv.Rect(x, y, w, h));
-  local.copyTo(roi);
-  
-  roi.delete();
-  kernel.delete();
-  local.delete();
+    // Dilatar la máscara para abarcar contornos difusos
+    kernel = cv.Mat.ones(3, 3, cv.CV_8U);
+    cv.dilate(local, local, kernel);
+    
+    roi = mask.roi(new cv.Rect(x, y, w, h));
+    local.copyTo(roi);
+  } finally {
+    if (roi) roi.delete();
+    if (kernel) kernel.delete();
+    if (local) local.delete();
+  }
 }
 
 // Borrado básico por color muestreado (Fallback cuando OpenCV no está disponible)
@@ -1962,7 +2267,7 @@ function sampleEraseColor(box, canvas = cleanBgCanvas) {
     colors.sort((a, b) => (a[0] + a[1] + a[2]) - (b[0] + b[1] + b[2]));
     const c = colors[Math.floor(colors.length * 0.5)];
     return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
-  } catch {
+  } catch (e) {
     return box.bg || "#ffffff";
   }
 }
@@ -2012,10 +2317,15 @@ function drawProfessionalText(ctx, text, box) {
 }
 
 // 8. RENDERIZADO DEL LIENZO FINAL EDITADO (COMBINA BORRADO Y TEXTOS NUEVOS)
+let _exportCanvas = null;
+function _getExportCanvas(w, h) {
+  if (!_exportCanvas) _exportCanvas = document.createElement("canvas");
+  _exportCanvas.width = w;
+  _exportCanvas.height = h;
+  return _exportCanvas;
+}
 async function renderEditedCanvas(pageNo = state.page, rawCanvas = pdfCanvas) {
-  const output = document.createElement("canvas");
-  output.width = rawCanvas.width;
-  output.height = rawCanvas.height;
+  const output = _getExportCanvas(rawCanvas.width, rawCanvas.height);
   
   const ctx = output.getContext("2d");
   ctx.drawImage(rawCanvas, 0, 0);
@@ -2057,12 +2367,15 @@ async function exportCurrentPng() {
   const startedAt = Date.now();
   showProgress("Exportando PNG", 0, 1, startedAt);
   
-  const editedCanvas = await renderEditedCanvas();
-  const link = document.createElement("a");
-  const customName = exportName.value.trim();
-  link.download = customName ? `${customName}.png` : `pagina-${state.page}-traducida.png`;
-  link.href = editedCanvas.toDataURL("image/png");
-  link.click();
+  const editedCanvas = await renderEditedCanvas(state.page, cleanBgCanvas);
+  editedCanvas.toBlob(blob => {
+    const link = document.createElement("a");
+    const customName = exportName.value.trim();
+    link.download = customName ? `${customName}.png` : `pagina-${state.page}-traducida.png`;
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), window.__CLIENT_CONFIG.TIMEOUT_EXPORT_REVOKE_MS);
+  });
   
   showProgress("Exportando PNG", 1, 1, startedAt);
   setStatus("PNG exportado correctamente.");
@@ -2074,7 +2387,7 @@ async function exportCurrentPdf() {
   const startedAt = Date.now();
   showProgress("Exportando PDF", 0, 1, startedAt);
   
-  const editedCanvas = await renderEditedCanvas();
+  const editedCanvas = await renderEditedCanvas(state.page, cleanBgCanvas);
   const { jsPDF } = window.jspdf;
   const orientation = editedCanvas.width > editedCanvas.height ? "landscape" : "portrait";
   
@@ -2141,7 +2454,9 @@ async function exportFullPdf() {
 console.log("[init] fileInput element:", fileInput);
 fileInput.addEventListener("change", (e) => {
   console.log("[fileInput.change] event fired, files:", e.target.files);
-  const [file] = e.target.files;
+  const files = e.target.files;
+  if (!files || !files.length) return;
+  const file = files[0];
   if (file) openFile(file).catch(err => setStatus(`Error: ${err.message}`));
 });
 
@@ -2151,7 +2466,9 @@ fileInput.addEventListener("change", (e) => {
 stageWrap.addEventListener("dragover", (e) => e.preventDefault());
 stageWrap.addEventListener("drop", (e) => {
   e.preventDefault();
-  const [file] = e.dataTransfer.files;
+  const files = e.dataTransfer.files;
+  if (!files || !files.length) return;
+  const file = files[0];
   if (file) openFile(file).catch(err => setStatus(`Error: ${err.message}`));
 });
 
@@ -2192,10 +2509,10 @@ moveModeBtn.addEventListener("click", () => {
 
 // Bindeo de clic e interacciones en overlay
 overlay.addEventListener("pointerdown", (e) => {
+  window.addEventListener("pointermove", pointerMove);
+  window.addEventListener("pointerup", pointerUp);
   startOverlayAction(e);
 });
-window.addEventListener("pointermove", pointerMove);
-window.addEventListener("pointerup", pointerUp);
 
 // Edición en tiempo real desde los inputs del panel
 sourceText.addEventListener("input", () => {
@@ -2257,15 +2574,20 @@ btnBold.addEventListener("click", () => {
 
 // Botón de traducción manual de la burbuja seleccionada
 translateBtn.addEventListener("click", async () => {
-  if (!state.selectedId) return setStatus("Selecciona una burbuja primero.");
-  const text = sourceText.value.trim();
-  if (!text) return setStatus("El texto original está vacío.");
-  
-  setStatus("Traduciendo texto...");
-  const translated = await translateOnline(text, targetLang.value);
-  translatedText.value = translated;
-  updateSelectedBox({ text: translated });
-  setStatus("Traducido.");
+  try {
+    if (!state.selectedId) return setStatus("Selecciona una burbuja primero.");
+    const text = sourceText.value.trim();
+    if (!text) return setStatus("El texto original está vacío.");
+
+    setStatus("Traduciendo texto...");
+    const translated = await translateOnline(text, targetLang.value);
+    translatedText.value = translated;
+    updateSelectedBox({ text: translated });
+    setStatus("Traducido.");
+  } catch (err) {
+    setStatus(`Error traduciendo: ${err.message}`);
+    console.error("[translateBtn] Error:", err);
+  }
 });
 
 // Botón para hacer OCR solo en la burbuja seleccionada
@@ -2285,8 +2607,12 @@ deleteBox.addEventListener("click", async () => {
   state.selectedId = null;
   sourceText.value = "";
   translatedText.value = "";
+  if (boxes.length === 0 && state.inpaintedBgByPage) {
+    state.inpaintedBgByPage.delete(state.page);
+  }
   await updateErasedBg();
   refreshScreenCanvas();
+  renderBlockList();
   setStatus("Burbuja eliminada.");
 });
 
@@ -2306,6 +2632,7 @@ clearPageBoxes.addEventListener("click", async () => {
     translatedText.value = "";
     await updateErasedBg();
     refreshScreenCanvas();
+    renderBlockList();
     setStatus("Se eliminaron todas las burbujas de la página.");
   }
 });
@@ -2343,11 +2670,6 @@ placeManualBtn.addEventListener("click", async () => {
 });
 
 // Traducción automática rápida
-autoDetectPage.addEventListener("click", () => {
-  if (!state.kind) return setStatus("Carga un archivo primero.");
-  autoTranslateCurrentPage().catch(err => setStatus(`Error: ${err.message}`));
-});
-
 autoTranslateAll.addEventListener("click", () => {
   autoTranslateAllPages().catch(err => setStatus(`Error: ${err.message}`));
 });
@@ -2369,30 +2691,28 @@ printPage.addEventListener("click", () => window.print());
 
 // Mobile menu toggle
 const mobileMenuBtn = $("#mobileMenuBtn");
-const sidebar = $(".sidebar");
-if (mobileMenuBtn && sidebar) {
-  mobileMenuBtn.addEventListener("click", () => {
-    sidebar.classList.toggle("open");
-    mobileMenuBtn.setAttribute("aria-expanded", sidebar.classList.contains("open"));
-  });
-  // Close sidebar when clicking outside on mobile
-  document.addEventListener("click", (e) => {
-    if (window.innerWidth <= 1024 && sidebar.classList.contains("open") && 
-        !sidebar.contains(e.target) && !mobileMenuBtn.contains(e.target)) {
-      sidebar.classList.remove("open");
-      mobileMenuBtn.setAttribute("aria-expanded", "false");
-    }
-  });
+const sidebar = $(".sidebar");if (mobileMenuBtn && sidebar) {
+    mobileMenuBtn.addEventListener("click", () => {
+        sidebar.classList.toggle("open");
+        mobileMenuBtn.setAttribute("aria-expanded", sidebar.classList.contains("open"));
+    });
+    // Close sidebar when clicking outside on mobile
+    document.addEventListener("click", (e) => {
+        if (window.innerWidth <= 1024 && sidebar.classList.contains("open") &&
+            !sidebar.contains(e.target) && !mobileMenuBtn.contains(e.target)) {
+            sidebar.classList.remove("open");
+            mobileMenuBtn.setAttribute("aria-expanded", "false");
+        }
+    });
 }
 
 // Fit page to viewport - calculates correct PDF.js render scale and re-renders
-fitPage.addEventListener("click", () => {
+function fitPageToStage() {
   if (!state.kind || state.kind !== "pdf") return;
   const stageWrapEl = $("#stageWrap");
   const canvas = $("#pdfCanvas");
   if (!stageWrapEl || !canvas) return;
   
-  // Get current page dimensions at base scale (1.0)
   state.pdf.getPage(state.page).then(pdfPage => {
     const viewport1 = pdfPage.getViewport({ scale: 1.0 });
     const pageWidth = viewport1.width;
@@ -2403,10 +2723,9 @@ fitPage.addEventListener("click", () => {
     const availableW = wrapRect.width - padding;
     const availableH = wrapRect.height - padding;
     
-    // Calculate scale to fit
     const scaleX = availableW / pageWidth;
     const scaleY = availableH / pageHeight;
-    const newScale = Math.min(scaleX, scaleY, 3); // Max 3x
+    const newScale = Math.min(scaleX, scaleY, 3);
     
     if (newScale > 0 && Math.abs(newScale - state.scale) > 0.05) {
       state.scale = newScale;
@@ -2415,25 +2734,30 @@ fitPage.addEventListener("click", () => {
     }
     stage.scrollIntoView({ block: "start", inline: "center", behavior: "smooth" });
   }).catch(err => setStatus(`Error ajustando zoom: ${err.message}`));
-});
-
-// Reset zoom on double-click canvas (back to default 1.8)
-$("#pdfCanvas")?.addEventListener("dblclick", (e) => {
+}
+fitPage.addEventListener("click", fitPageToStage);// Reset zoom on double-click canvas (back to default 1.8)
+  $("#pdfCanvas")?.addEventListener("dblclick", (e) => {
   if (!state.kind || state.kind !== "pdf") return;
   if (Math.abs(state.scale - 1.8) > 0.05) {
     state.scale = 1.8;
     showToast("Zoom restablecido al 180% (default)", "info", 1500);
-    renderPage(state.page);
+    renderPage(state.page).catch(err => console.error("[dblclick] Error:", err));
   }
 });
 
 // Configuración inicial del cursor de overlay
-overlay.className = "overlay drawing";
-setStatus("Listo para comenzar. Carga un archivo PDF o Imagen.");
-
-console.log("[BOOT] Event listeners attached, fileInput:", !!fileInput);
-if (fileInput) {
-  console.log("[BOOT] fileInput.accept:", fileInput.accept);
+function bootApp() {
+  overlay.className = "overlay drawing";
+  setStatus("Listo para comenzar. Carga un archivo PDF o Imagen.");
+  console.log("[BOOT] Event listeners attached, fileInput:", !!fileInput);
+  if (fileInput) {
+    console.log("[BOOT] fileInput.accept:", fileInput.accept);
+  }
+}
+if (document.readyState !== "loading") {
+  bootApp();
+} else {
+  document.addEventListener("DOMContentLoaded", bootApp);
 }
 
 // Compatibilidad con Node.js para tests: exportar funciones si se requiere como módulo

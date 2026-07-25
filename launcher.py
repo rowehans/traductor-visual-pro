@@ -27,7 +27,7 @@ def port_open(host: str, port: int) -> bool:
         return False
 
 
-def main():
+def main() -> int:
     os.environ["SKIP_MIT_INIT"] = "1"
     os.chdir(str(ROOT))
 
@@ -43,7 +43,7 @@ def main():
     proc = subprocess.Popen(
         [str(PYTHON), "-u", str(SERVER)],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
 
     # Esperar hasta 30s a que el servidor responda

@@ -1,42 +1,70 @@
-# Dependencias del entorno virtual
-/env/
-/.venv/
-__pycache__/
+# ─── Python ──────────────────────────────────────
 *.pyc
+__pycache__/
 *.pyo
 *.egg-info/
 dist/
+build/
+# Ignorar spec legacy, mantener main.spec activo
+/TraductorVisual.spec
 
-# Directorios de trabajo locales
-/no uso/
-/manga-image-translator/
+# ─── Virtual Environment ─────────────────────────
+env/
+venv/
+.venv/
 
-# Modelos descargados
-manga-image-translator/models/
+# ─── ML Models ───────────────────────────────────
+models/
 ocr_models/
 
-# IDE
+# ─── Node.js ─────────────────────────────────────
+node_modules/
+
+# ─── IDE / Editor ────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# OS
-Thumbs.db
+# ─── OS ──────────────────────────────────────────
 .DS_Store
+Thumbs.db
+Desktop.ini
 
-# Build output
-/dist/
-/build/
-*.spec
-!TraductorVisual.spec
-*.exe
-!/launcher.py
+# ─── Debug / Test Output ─────────────────────────
+# Temporary debug files
+ct2_output.txt
+ct2_result.json
+debug_*.json
+final_result.txt
+glossary_out.txt
+out.txt
+out2.txt
+out3.txt
+result.txt
+result_hf.txt
 
-# Logs
-*.log
-/result/
+# Server logs
+server_*.txt
+srv_*.txt
+nul
 
-# Env vars
-.env
-.env.local
+# ─── Application Data ────────────────────────────
+# Translation cache (SQLite)
+data/traductor.db
+cache/
+
+# Progress checkpoints (auto-generated)
+resultados_progreso.json
+resultados_progreso_backup_*.json
+progreso.json
+
+# Reports (auto-generated)
+reporte_final.html
+
+# ─── Freebuff Desktop ────────────────────────────
+.freebuff/
+
+# ─── Test Archives ─────────────────────────────
+tests/archive/

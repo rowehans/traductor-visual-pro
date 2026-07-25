@@ -1,0 +1,46 @@
+[tool.mypy]
+strict = true
+python_version = "3.12"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+# Libraries without stubs - allow untyped imports
+[[tool.mypy.overrides]]
+module = [
+    "easyocr",
+    "argostranslate.*",
+    "langdetect",
+    "deep_translator",
+    "waitress",
+    "cv2",
+]
+ignore_missing_imports = true
+
+# Flask and extensions
+[[tool.mypy.overrides]]
+module = [
+    "flask.*",
+    "flask_limiter.*",
+    "flask_sqlalchemy.*",
+]
+ignore_missing_imports = true
+
+# Numpy - be lenient with ndarray types
+[[tool.mypy.overrides]]
+module = "numpy.*"
+ignore_missing_imports = true
+
+# PyTorch
+[[tool.mypy.overrides]]
+module = "torch.*"
+ignore_missing_imports = true
+
+# Allow monkey-patching on session.request
+[[tool.mypy.overrides]]
+module = "translator"
+disable_error_code = ["method-assign"]
+
+[[tool.mypy.overrides]]
+module = "server"
+disable_error_code = ["method-assign"]

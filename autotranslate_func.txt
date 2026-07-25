@@ -1,0 +1,74 @@
+1421: async function autoTranslateCurrentPage(pageNo = state.page, startedAt = Date.now(), progressIndex = 1, totalProgress = 1) {
+1422:   // Solo resetear la bandera si se llama individualmente (no en bucle desde autoTranslateAllPages)
+1423:   if (totalProgress === 1 && progressIndex === 1) {
+1424:     state.abortTranslation = false;
+1425:   }
+1426:   setStatus(`Procesando página ${pageNo} en el servidor...`);
+1427:   showProgress(`Traduciendo Pág. ${pageNo}`, progressIndex - 1, totalProgress, startedAt);
+1428: 
+1429:   try {
+1430:     // ── Camino ÚNICO: Usar el servidor para OCR + inpainting + traducción ──────
+1431:     let serverResult = null;
+1432:     try {
+1433:       serverResult = await serverProcessPage(pageNo);
+1434:     } catch (serverErr) {
+1435:       console.error("[server-process] Error:", serverErr.message);
+1436:       throw new Error("Servidor no disponible: " + serverErr.message);
+1437:     }
+1438: 
+1439:     if (state.abortTranslation) return 0;
+1440:     
+1441:     if (!serverResult || !serverResult.blocks || serverResult.blocks.length === 0) {
+1442:       showProgress(`Traduciendo Pág. ${pageNo}`, progressIndex, totalProgress, startedAt);
+1443:       setStatus(`Página ${pageNo}: sin texto detectado.`);
+1444:       return 0;
+1445:     }
+1446: 
+1447:     // El servidor devuelve imagen inpainted + bloques ya traducidos
+1448:     showProgress(`Traduciendo Pág. ${pageNo}`, progressIndex - 0.3, totalProgress, startedAt);
+1449: 
+1450:     // Guardar imagen inpainted en caché
+1451:     const inpaintedImg = new Image();
+1452:     inpaintedImg.src = serverResult.inpainted_image;
+1453:     await new Promise((resolve, reject) => {
+1454:       const timeout = setTimeout(() => reject(new Error("Timeout cargando imagen inpainted")), window.__CLIENT_CONFIG.TIMEOUT_INPAINTED_IMAGE_MS);
+1455:       inpaintedImg.onload = () => { clearTimeout(timeout); resolve(); };
+1456:       inpaintedImg.onerror = () => { clearTimeout(timeout); reject(new Error("Error decodificando imagen inpainted")); };
+1457:     });
+1458:     state.inpaintedBgByPage.set(pageNo, inpaintedImg);
+1459: 
+1460:     // Cargar imagen inpainted en erasedBgCanvas
+1461:     await loadBase64IntoCanvas(serverResult.inpainted_image, erasedBgCanvas);
+1462:     serverResult.inpainted_image = null; // liberar memoria base64
+1463: 
+1464:     // Filtrar bloques del servidor (márgenes, marcas de agua)
+1465:     const filteredServerBlocks = filterPageBlocks(serverResult.blocks, pdfCanvas.height);
+1466: 
+1467:     // Construir cajas de burbuja CON DATOS DEL SERVIDOR (posición, tamaño, colores, fuente)
+1468:     const boxes = filteredServerBlocks.map(b => {
+1469:       const block = { x: b.x, y: b.y, w: b.w, h: b.h, text: b.source, size: b.fontSize };
+1470:       return makeAutoTextBox({ ...block, confidence: b.confidence }, b.translated, {
+1471:         textColor: b.textColor,
+1472:         bgColor: b.bgColor,
+1473:         fontSize: b.fontSize,
+1474:       });
+1475:     });
+1476: 
+1477:     state.boxesByPage.set(pageNo, boxes);
+1478:     if (pageNo === state.page) {
+1479:       const ctx = pdfCanvas.getContext("2d");
+1480:       ctx.drawImage(erasedBgCanvas, 0, 0);
+1481:       renderBoxes();
+1482:       if (boxes.length > 0) renderBlockList();
+1483:     }
+1484: 
+1485:     showProgress(`Traduciendo Pág. ${pageNo}`, progressIndex, totalProgress, startedAt);
+1486:     setStatus(`Página ${pageNo} traducida: ${boxes.length} bloques.`);
+1487:     return boxes.length;
+1488: 
+1489:   } catch (error) {
+1490:     console.error("[autoTranslate] Error:", error);
+1491:     setStatus(`Error traduciendo página ${pageNo}: ${error.message}`);
+1492:     return 0;
+1493:   }
+1494: }

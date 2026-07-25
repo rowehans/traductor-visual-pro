@@ -3,63 +3,149 @@ name: CI/CD
 on:
   push:
     branches: [main, master]
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - 'AGENTS.md'
+      - 'CODEGRAPH.md'
   pull_request:
     branches: [main, master]
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+
+env:
+  PYTHONIOENCODING: utf-8
 
 jobs:
-  lint:
+  # ─── Job 1: Syntax check + test_ci.py (rápido, ~30s) ──────────
+  lint-test:
+    name: Lint + Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Check syntax
-        run: |
-          python -m py_compile server.py
-          python -m py_compile manga_pipeline.py
-          python -m py_compile build.py
-          python -m py_compile models.py
-          python -m py_compile cache.py
 
-  build-frontend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install deps
+          cache: pip
+
+      - name: Install minimal dependencies
         run: |
-          pip install rcssmin
-      - name: Build
+          pip install --quiet langdetect deep-translator
+
+      - name: Run CI (syntax + test_ci)
         run: |
-          python build.py
+          python run_ci.py --skip-server
+        env:
+          # Env vars for run_ci.py in CI context
+          CI: "true"
+
+      - name: Show CI summary
+        if: always()
+        run: |
+          echo "=== CI Summary ==="
+          echo "Lint + Test complete. Check output above for [OK]/[FAIL] markers."
+
+  # ─── Job 2: Server + endpoints (full deps, ~2 min) ──────────
+  server-test:
+    name: Server + API
+    runs-on: ubuntu-latest
+    needs: lint-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 \
+            2>/dev/null || true
+
+      - name: Install Python dependencies
+        # Nota: server-test solo verifica health/startup del servidor Flask.
+        # Las dependencias pesadas (torch, easyocr, argostranslate) se
+        # importan lazy y no son necesarias para que el servidor arranque.
+        # Para probar endpoints reales de traduccion/OCR se necesitarian:
+        #   torch easyocr argostranslate
+        run: |
+          pip install --quiet \
+            flask opencv-python-headless numpy pillow \
+            langdetect deep-translator \
+            flask-sqlalchemy \
+            ctranslate2 transformers sentencepiece huggingface_hub \
+            requests
+
+      - name: Run CI with server test
+        run: |
+          python run_ci.py
+        env:
+          CI: "true"
+
+      - name: Upload server log (if failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-server-log
+          path: ci_server.log
+          retention-days: 7
+
+  # ─── Job 3: Build distribution ───────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: lint-test
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build frontend
+        run: |
+          pip install --quiet rcssmin rjsmin
+          if [ -f build.py ]; then
+            python build.py && \
+            if [ -d dist/ ] && [ "$(ls -A dist/ 2>/dev/null)" ]; then
+              echo "Build complete - dist/ created"
+              echo "build_done=true" >> $GITHUB_ENV
+            else
+              echo "[WARN] build.py ran but dist/ is empty or missing"
+            fi
+          else
+            echo "No build.py found, skipping build"
+          fi
+
       - name: Upload build artifact
+        if: env.build_done == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
+          retention-days: 14
 
-  test-translate:
+  # ─── Job 4: Notify ────────────────────────────────────────────
+  summary:
+    name: Summary
     runs-on: ubuntu-latest
-    env:
-      # Desactivar MIT en CI para evitar descarga de modelos
-      SKIP_MIT_INIT: "1"
+    if: always()
+    needs: [lint-test, server-test, build]
     steps:
-      - uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 2>/dev/null || true
-      - name: Install Python deps
-        run: |
-          pip install --quiet rjsmin rcssmin langdetect deep-translator
-      - name: Test language detection (standalone)
-        run: |
-          python test_ci.py
+      - run: |
+          echo "## CI/CD Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint + Test | ${{ needs.lint-test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Server + API | ${{ needs.server-test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY

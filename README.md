@@ -1,59 +1,74 @@
-> 📖 **Antes de tocar `app.js` o `server.py`, lee [`AGENTS.md`](./AGENTS.md) / [`CLAUDE.md`](./CLAUDE.md).**
+# Traductor Visual Pro
 
-# Traductor visual de PDF e imagenes
-
-App local con backend Python para cargar paginas de PDF o imagenes, detectar texto con OCR, traducirlo y reemplazarlo visualmente dentro de burbujas o zonas marcadas.
+App local para traducir manga, cómics y documentos en PDF e imagen. Backend Python con EasyOCR + OpenCV + ArgosTranslate, frontend JavaScript con canvas interactivo y editor de burbujas.
 
 ## Iniciar la app
 
-Haz doble clic en `start-app.bat` o ejecuta:
-
+**Opción 1 — Script PowerShell:**
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\start-app.ps1
+.\start-app.ps1
 ```
 
-La app abre en:
+**Opción 2 — Directo:**
+```powershell
+.\env\Scripts\python.exe server.py
+```
 
-http://127.0.0.1:5174/
+La app abre en: http://127.0.0.1:5174/
 
-## Funciones
+## Arquitectura
 
-- Carga PDF, PNG, JPG y WebP.
-- Detecta texto automaticamente en toda la pagina con OCR.
-- Detecta texto solo dentro de una burbuja seleccionada.
-- Traduce con backend Python usando `deep-translator`.
-- Soporta espanol, ingles, portugues, frances, aleman, italiano, japones, coreano y chino.
-- Permite corregir manualmente el texto traducido.
-- Permite mover, redimensionar y estilizar burbujas.
-- Exporta la pagina editada como PNG o PDF.
+```
+server.py         → Entry point Flask (puerto 5174)
+config.py         → Constantes, patrones de ruido, CSP
+translator.py     → Detección de idioma + traducción (Argos → Google → CT2)
+ocr_utils.py      → OCR EasyOCR + inpainting OpenCV + filtros
+routes/api.py     → Endpoints REST
+routes/main.py    → Rutas estáticas
+app.js            → Frontend canvas + UI (~2514 líneas)
+index.html        → Estructura HTML
+styles.css        → Estilos premium dark/light
+cache.py          → Caché de traducciones filesystem
+models.py         → Modelos SQLAlchemy
+ratelimit.py      → Rate limiting
+```
 
-## Notas
+## Funciones principales
 
-- El OCR sigue usando Tesseract.js desde el navegador, por lo que requiere internet la primera vez que carga sus archivos.
-- La traduccion usa servicios online desde Python; si el servicio limita o falla, la app cae al traductor web anterior y luego al diccionario basico local.
-- Python y las dependencias quedaron instalados en `env/`.
+- **Carga PDF, PNG, JPG, WebP** — renderizado vía pdf.js (ESM v4.10 con fallback UMD v3.11)
+- **OCR automático** — EasyOCR en servidor, GPU→CPU fallback
+- **Traducción** — ArgosTranslate (offline) → Google Translate (online) → CT2 OPUS-MT es→en
+- **Detección de idioma** — langdetect + heurística española (acentos, verbos, diccionario)
+- **Filtros de ruido** — 9 filtros post-OCR + 2 pre-OCR (morfología OpenCV)
+- **Inpainting** — OpenCV INPAINT_NS con máscara adaptativa (glifos vs rectángulo)
+- **Editor de burbujas** — dibujar, mover, redimensionar, estilizar texto
+- **Exportación** — PNG individual, PDF página actual, PDF completo
+- **Temas** — oscuro/claro con toggle, persistencia en localStorage
+- **Atajos de teclado** — D/V modos, Ctrl+T traducir, Ctrl+E/P exportar, flechas navegar
 
-## Edicion profesional de burbujas
+## Requisitos
 
-- Al exportar, la app borra el texto original rellenando solo el interior de la zona marcada con un color claro muestreado desde la propia burbuja. Esto ayuda a conservar el contorno y reducir dano al dibujo.
-- El texto traducido se recompone automaticamente: ajusta tamano de fuente, interlineado, espaciado entre letras y saltos de linea para caber en la burbuja.
-- Para mejores resultados, marca la burbuja dejando un pequeno margen interior y evitando cubrir el borde negro del dibujo.
+- Python 3.10+
+- Entorno virtual en `env/` con todas las dependencias
+- OpenCV.js carga desde CDN jsDelivr (con callback nativo `onRuntimeInitialized`)
+- Conexión a internet para primera descarga de modelos EasyOCR y ArgosTranslate
 
-## Borrado avanzado con OpenCV
+## Notas técnicas
 
-- La exportacion ahora intenta usar OpenCV.js con `cv.inpaint` para reconstruir el interior de las zonas marcadas antes de escribir la traduccion.
-- Si OpenCV.js no carga o falla, la app usa automaticamente el borrado inteligente anterior por color muestreado.
-- Este modo mejora fondos con textura ligera, tramas simples y burbujas no totalmente blancas. Para fondos muy complejos, un modelo IA tipo LaMa seguiria dando mejores resultados.
+- **OpenCV.js**: No más polling. Usa `cv['onRuntimeInitialized']` con 3 casos de carga y timeout 15s.
+- **Caché**: Traducciones repetidas se cachean en `cache/translations/` por 7 días (5000 entradas máx).
+- **Rate limiting**: 200 req/día, 50 req/hora global. Endpoints sensibles: 30/min (translate), 20/min (batch), 5/min (process-page).
+- **CSP**: Política estricta inyectada en todas las respuestas. Permite CDNs específicos.
+- **Seguridad**: Protección contra path traversal en rutas estáticas.
 
-## PDF completo
+## Tests
 
-- La app ahora agrega el boton `Descargar PDF completo` desde JavaScript.
-- En PDFs grandes, ese boton recorre todas las paginas, renderiza cada una, aplica las ediciones guardadas por pagina y genera un unico PDF final.
-- `Descargar pagina PDF` sigue exportando solo la pagina visible.
+```powershell
+.\env\Scripts\python.exe test_ci.py
+```
 
-## Traduccion automatica total
+## CI
 
-- La app agrega el boton `Traducir todo automatico`.
-- Tambien agrega la casilla `Traducir automaticamente al cargar`.
-- El modo automatico recorre todas las paginas, detecta texto con OCR aunque no este en burbujas, traduce cada bloque y crea cajas editables respetando posicion, tamano aproximado y saltos.
-- La tipografia exacta no siempre puede recuperarse desde imagenes escaneadas, pero la app intenta conservar el aspecto usando tamano y ubicacion inferidos desde el OCR.
+- **Pre-commit hook**: Syntax check + test_ci.py en archivos modificados
+- **GitHub Actions**: Syntax check + tests en push/PR con cambios en server.py o routes/
+- **CI local completa**: `.\run_ci.ps1` (rápido) o `.\run_ci.ps1 -Full` (con stress test)

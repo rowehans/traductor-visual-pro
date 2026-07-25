@@ -1,40 +1,275 @@
-# CODEGRAPH — Traductor Visual Pro (token-minimal)
+# CODEGRAPH — Traductor Visual Pro
 
-## server.py (Flask, port 5174)
-**Core**: `_get_executor` `shutdown_executor` `add_security_headers`  
-**OCR**: `_get_ocr_reader(lang)` → lazy EasyOCR (latin/ja/ko/zh) GPU→CPU fallback — **OR** `manga_pipeline.run_pipeline` → MIT (CTD + OCR 48px)  
-**Translate**: `_translate_one(txt,src,tgt)` → Argos→Google fallback; `_translate_batch` ThreadPool  
-**LangDetect**: `_detect_language_robust` (thread-local langdetect + heuristics ES/JA/KO/ZH)  
-**Pipeline** (`process_page`): b64→cv2 → MIT (CTD detection + OCR 48px + LaMa inpainting) **OR** legacy (EasyOCR + OpenCV INPAINT_NS) → translate batch → b64 response  
-**Routes**: `GET /` `GET /<path>` `POST /api/translate` `POST /api/translate-batch` `POST /api/process-page` `GET /api/health`
+## Arquitectura modular (post-refactor Julio 2026)
 
-## manga_pipeline.py (new)
-**Import**: solo submódulos de `manga-image-translator` (detection, ocr, textline_merge, inpainting) — NO carga translators/renderers  
-**Init**: `ensure_ready()` → descarga CTD (76MB), OCR 48px (195MB), LaMa (195MB)  
-**Pipeline**: `run_pipeline(img_bgr)` → CTD detect → OCR 48px → textline_merge → LaMa inpaint → `{inpainted_image, blocks}`  
-**Fallback**: si error → server.py usa EasyOCR + OpenCV legacy automáticamente
+```
+┌─────────────────────────────────────────────────────────┐
+│                      server.py                          │
+│  Entry point Flask (port 5174, ~139 líneas)             │
+│  ┌─ Flask app, static routes, DB init, cache init       │
+│  └─ _translate_one wrapper (inyecta cache en módulo)    │
+├─────────────────────────────────────────────────────────┤
+│                     config.py                            │
+│  ┌─ ROOT, DIST, IS_PRODUCTION, APP_VERSION              │
+│  ├─ LANGUAGES, MAX_WORKERS, REQUEST_TIMEOUT             │
+│  ├─ CSP_POLICY, GLOSARIO_PRE                            │
+│  └─ MARGIN_NOISE_PATTERNS, WATERMARK_PATTERNS           │
+├─────────────────────────────────────────────────────────┤
+│                    translator.py                         │
+│  ┌─ _detect_language_simple / _robust (ES/JA/KO/ZH)    │
+│  ├─ _translate_one → 3 motores en PARALELO              │
+│  │    ┌─ CT2 (CTranslate2 int8, ~53ms, 10 pares)        │
+│  │    ├─ Argos (~2.8s, lock global, 100% cobertura)      │
+│  │    └─ Google (~1.1s, HTTP pool singleton)             │
+│  │    ThreadPoolExecutor + as_completed: acepta el       │
+│  │    PRIMER resultado válido que llegue.                │
+│  │    Tiempo efectivo por bloque: ~53ms (el más rápido) │
+│  │    ├─ Fallback: si TODOS fallan → Google retry con    │
+│  │    │   backoff progresivo (5s, 15s, 30s). Resetea     │
+│  │    │   rate limit entre reintentos (fix SIN_TRAD).    │
+│  ├─ _es_ocr_noise (detecta OCR ruidoso, salta Argos)    │
+│  ├─ _es_traduccion_valida (6 validaciones anti-basura)  │
+│  ├─ _corregir_ct2 (glosario POST, 6 reglas)             │
+│  └─ _aplicar_glosario (correccion PRE-OCR)              │
+├─────────────────────────────────────────────────────────┤
+│                     ocr_utils.py                         │
+│  ┌─ _get_ocr_reader (EasyOCR lazy, GPU→CPU fallback)    │
+│  ├─ _pre_filter_image (morfologia: 4% strips + lineas)  │
+│  ├─ _detect_and_ocr (text_threshold=0.18, mag_ratio=1.2,│
+│  │                   canvas_size=2500)                   │
+│  │    ├─ 3 niveles de fallback:                          │
+│  │    │    Tier 1: EasyOCR directo (rápido, ~1s)        │
+│  │    │    Tier 2: CLAHE+sharpen → EasyOCR (~1s)        │
+│  │    │    Tier 3: CTD detecta → EasyOCR reconoce (~3-5s)│
+│  │    ├─ use_ctd_only=True: salta tier 1 y 2, va directo│
+│  │    │   a CTD (modo ctd en API)                       │
+│  │    ├─ allow_fallback=False: desactiva tiers 2 y 3    │
+│  │    │   (modo easyocr en API)                         │
+│  ├─ _group_and_merge_blocks (9 filtros post-merge)      │
+│  ├─ _is_inside_speech_bubble (deteccion de globos)      │
+│  ├─ _build_glyph_mask_for_bubble (mascara solo-glifos)  │
+│  ├─ _build_inpaint_mask (rectangular o por glifos)     │
+│  ├─ _inpaint_image (OpenCV INPAINT_NS, radio adaptativo)│
+│  ├─ _sample_bg_color (perimetro del bloque)             │
+│  ├─ _base64_to_cv2 / _cv2_to_base64 (conversion)       │
+│  └─ _filter_watermarks_from_blocks (pre-filtro rapido)  │
+├─────────────────────────────────────────────────────────┤
+│                  ocr_ctd_fallback.py                      │
+│  Fallback OCR con CTD (ComicTextDetector).               │
+│  ┌─ Modelo: comictextdetector.pt (~76MB, ConvNeXt)      │
+│  ├─ _download_ctd_model (descarga lazy con .ctd_ready)  │
+│  ├─ preload_ctd (carga thread-safe con lock)            │
+│  └─ ctd_fallback_ocr (detecta regiones, EasyOCR lee)   │
+├─────────────────────────────────────────────────────────┤
+│                     routes/api.py                        │
+│  ┌─ GET /api/health (estado: memoria, modelos, cache)   │
+│  ├─ POST /api/translate (texto individual)              │
+│  ├─ POST /api/translate-batch (multiples textos)        │
+│  └─ POST /api/process-page (OCR + inpainting + trad.)   │
+│       ├─ ocr_mode: "auto" | "easyocr" | "ctd"          │
+│       │   auto:    3 niveles (directo→CLAHE→CTD)       │
+│       │   easyocr: solo EasyOCR, sin fallbacks          │
+│       │   ctd:     solo CTD, salta EasyOCR completo    │
+├─────────────────────────────────────────────────────────┤
+│                     routes/main.py                       │
+│  └─ GET /, GET /<path> (estaticos con path traversal    │
+│                           protection)                   │
+├─────────────────────────────────────────────────────────┤
+│                      app.js (~2533 lineas)               │
+│  State: kind/pdf|image, pdf, page/pageCount, scale=1.8  │
+│         boxesByPage:Map, selectedId, cvLoaded,          │
+│         inpaintedBgByPage:Map, abortTranslation         │
+│  Boot:  loadPdfJs (Promise.any 4 CDNs en paralelo)      │
+│         initOpenCv (callback onRuntimeInitialized)       │
+│         initTheme, initKeyboardShortcuts, initToast      │
+│  PDF:   renderPage -> pdf.js @scale -> cleanBgCanvas     │
+│         -> updateErasedBg -> renderBoxes                  │
+│  OCR:   serverProcessPage (envia cleanBgCanvas->base64) │
+│  Editor: renderBoxes, fitTextLayout (CJK char/latin     │
+│          word), selectBox, draw/move/resize              │
+|  Filters: MARGIN_NOISE_PATTERNS (sincronizado con       │
+│           config.py — sin capítulo/cómo criar/how to    │
+│           raise para no filtrar títulos legítimos)      │
+│           GLOBAL_NOISE_PATTERNS (sincronizado con       │
+│           config.py — solo zonaolympus.com + 1 C 2 E)  │
+│           filterPageBlocks (8% margin)                  │
+│  Export: renderEditedCanvas -> PNG / jsPDF / PDF full   │
+│  Shortcuts: D/V modes, Ctrl+T/E/P/S, arrows, Del, N/I/B│
+├─────────────────────────────────────────────────────────┤
+│                      index.html                          │
+│  43 IDs: fileInput, prevPage, pageNumber, pageTotal,    │
+│          sourceLang, targetLang, drawMode, moveMode,    │
+│          eraseMode, coverOriginal, bubbleColor,         │
+│          textColor, strokeColor, fontFamily, fontSize,  │
+│          btnItalic, btnBold, sourceText, translateBtn,  │
+│          translatedText, placeManualBtn, deleteBox,     │
+│          clearPageBoxes, exportName, exportPng,         │
+│          exportPdf, exportAllPdf, docName, status,      │
+│          mobileMenuBtn, opencvBadge, fitPage, printPage,│
+│          stageWrap, stage, pdfCanvas, overlay,          │
+│          emptyState, dismiss-leo-warning                │
+│  Scripts: __loadCdn() generico con Promise.any()        │
+│           jsPDF (jsDelivr + cdnjs fallback),            │
+│           OpenCV.js (jsDelivr @techstark + docs.opencv),│
+│           app.js (defer, local)                         │
+│  CSP: connect-src 'self' http://127.0.0.1:5174          │
+│       https://cdnjs.cloudflare.com https://cdn.jsdelivr │
+│       default-src/script-src incluyen docs.opencv.org   │
+├─────────────────────────────────────────────────────────┤
+│              styles.css (~1318 lineas)                   │
+│  Tokens: --bg-app #040406, --accent #10b981,            │
+│          --radius-md 12px, --transition 200ms            │
+│  Layout: .app grid minmax(240px,25%) 1fr                │
+│  Effects: glassmorphism, gradient-text, bg-patterns      │
+│  Responsive: <=1024px sidebar drawer                     │
+├─────────────────────────────────────────────────────────┤
+│              cache.py / models.py / ratelimit.py         │
+│  cache.py: Filesystem con TTL 7d, MAX 5000, LRU        │
+│  models.py: SQLAlchemy (User, Project, Page, TextBlock) │
+│  ratelimit.py: Flask-Limiter (200/dia, 50/hora)         │
+└─────────────────────────────────────────────────────────┘
+```
 
-## app.js (~2500 LOC)
-**State**: `kind/pdf|image` `pdf` `page/pageCount` `scale=1.8` `boxesByPage:Map` `selectedId` `cvLoaded` `inpaintedBgByPage:Map`  
-**Boot**: `loadPdfJs` (ESM v4.10→UMD v3.11 fallback) `checkOpenCv` (12s timeout) `initTheme` `initKeyboardShortcuts`  
-**PDF**: `renderPage` → pdf.js @scale → `cleanBgCanvas` → `updateErasedBg` (server inpainted || local OpenCV) → `renderBoxes`  
-**Editor**: `renderBoxes` (canvas text + overlay divs) `fitTextLayout` (wrap CJK char / latin word) `selectBox` → sync UI  
-**Events**: `pointerdown/move/up` (draw/move/resize) `autoTranslateCurrentPage` (server OCR+inpaint+translate) `autoTranslateAllPages`  
-**Export**: `renderEditedCanvas` (inpaint + drawProfessionalText) → PNG / jsPDF page / multi-page PDF  
-**Shortcuts**: D/V modes, Ctrl+T/E/P/S, arrows, Del, Ctrl+N/I/B
+## Flujo de datos: /api/process-page
 
-## index.html
-**IDs (44)**: `fileInput` `prevPage` `pageNumber` `pageTotal` `nextPage` `sourceLang` `targetLang` `drawMode` `moveMode` `autoTranslateOnLoad` `autoDetectPage` `autoTranslateAll` `eraseMode` `coverOriginal` `bubbleColor` `textColor` `strokeColor` `strokeWidth` `fontFamily` `fontSize` `btnItalic` `btnBold` `sourceText` `translateBtn` `translatedText` `placeManualBtn` `deleteBox` `clearPageBoxes` `exportName` `exportPng` `exportPdf` `exportAllPdf` `docName` `status` `mobileMenuBtn` `opencvBadge` `fitPage` `printPage` `stageWrap` `stage` `pdfCanvas` `overlay` `emptyState` `opencvScript` `dismiss-leo-warning`  
-**Scripts**: jspdf (cdn.jsdelivr), OpenCV.js (docs.opencv.org), app.js (defer)  
-**CSP**: `connect-src 'self' http://127.0.0.1:5174 https://cdnjs.cloudflare.com https://cdn.jsdelivr.net data:`
+```
+Cliente (app.js)                    Servidor
+      │                                 │
+      ├─ canvas.toDataURL("image/png") ─┤
+      │    (base64 de cleanBgCanvas)    │
+      │                                 ├─ _base64_to_cv2()
+      │                                 ├─ _detect_and_ocr()
+      │                                 │    ├─ Tier 1: EasyOCR directo (~1s)
+      │                                 │    ├─ Tier 2: CLAHE+sharpen (~1s)
+      │                                 │    └─ Tier 3: CTD detecta + EasyOCR lee (~3-5s)
+      │                                 ├─ _detect_language_robust()
+      │                                 ├─ _build_inpaint_mask()
+      │                                 │    ├─ _is_inside_speech_bubble()
+      │                                 │    └─ _build_glyph_mask_for_bubble()
+      │                                 ├─ _inpaint_image()
+      │                                 ├─ ThreadPool: _translate_one() x N
+      │                                 ├─ _sample_bg_color() x N
+      │                                 └─ _cv2_to_base64(inpainted)
+      ├─ {inpainted_image, blocks} ─────┤
+      │                                 │
+      ├─ loadBase64IntoCanvas()         │
+      ├─ filterPageBlocks()             │
+      └─ makeAutoTextBox() -> render    │
+```
 
-## styles.css
-**Tokens**: `--bg-app #040406` `--accent #10b981` `--radius-md 12px` `--transition 200ms`  
-**Layout**: `.app` grid `minmax(240px,25%) 1fr` → `.sidebar` fixed 250px → `.workspace` flex-col `flex:1` → `.stage-wrap` overflow-auto center  
-**Responsive**: ≤1024px sidebar drawer (hamburger) ≤640px stacked controls
+## Lanzamiento
 
-## Launch
-`start-app.bat` / `start-app.ps1` → `env\Scripts\python.exe server.py` → open `http://127.0.0.1:5174` (Chrome app mode)
+### Modo script (desarrollo)
+```
+start-app.ps1 -> env\Scripts\python.exe server.py -> http://127.0.0.1:5174
+start-app.ps1 también limpia procesos zombie en el puerto 5174 antes de arrancar.
+```
 
-## Env
-`env/` (venv completo) `ocr_models/` (EasyOCR cache) `requirements.txt` pinned
+### Modo ejecutable (.exe)
+```
+main.spec -> PyInstaller -> dist/main/main.exe
+                               │
+                               ├─ main.py (entry point)
+                               │    ├─ _hide_console() → oculta CMD
+                               │    ├─ _fix_cwd() → enlaza env/Lib/site-packages
+                               │    └─ run_server() → importa server.py, app.run()
+                               │
+                               ├─ server.py + módulos Python (empaquetados)
+                               ├─ index.html, app.js, styles.css (empaquetados)
+                               └─ env/ → Dependencias en tiempo de ejecución
+                                    ├─ easyocr, torch, cv2, numpy
+                                    ├─ Flask, SQLAlchemy
+                                    ├─ argostranslate, deep-translator, langdetect
+                                    └─ ... (NO van dentro del .exe, se cargan desde env/)
+
+### Cómo recompilar el .exe
+
+```powershell
+cd D:\crear traductor
+.\env\Scripts\python.exe -m PyInstaller main.spec --clean --noconfirm
+# Output: dist/main/main.exe
+```
+
+**Importante**:
+- Usar `onedir` (no `--onefile`) — las dependencias pesadas se cargan desde `env/`
+- Si se añaden nuevos archivos, actualizar `main.spec: DATAS` y `HIDDEN_IMPORTS`
+- `main.py` acepta `--server` para modo servidor sin launcher: `main.exe --server`
+
+## Pipeline CI (Integración Continua)
+
+Flujo de verificación que se ejecuta después de cada cambio importante:
+
+```
+Cambio en código
+      │
+      ▼
+┌──────────────────────────────────────┐
+│  1. Syntax check (py_compile)        │  ← 13 archivos Python
+│     ├─ server.py / routes/*.py       │
+│     ├─ config.py / translator.py     │
+│     ├─ ocr_utils.py / models.py      │
+│     ├─ ocr_ctd_fallback.py            │
+│     └─ cache.py / ratelimit.py / main.py
+└──────────────────────────────────────┘
+      │
+      ▼
+┌──────────────────────────────────────┐
+│  2. test_ci.py (detección de idioma) │  ← ~400ms, standalone
+│     └─ Detecta ES/JA/KO/ZH/EN       │
+└──────────────────────────────────────┘
+      │
+      ▼
+┌──────────────────────────────────────┐
+│  3. Iniciar servidor Flask           │  ← 5174, 12s timeout
+│     ├─ GET /api/health → db, cache   │
+│     ├─ POST /api/translate → CT2     │
+│     ├─ POST /api/translate-batch     │
+│     └─ GET /api/config / app.js /css │
+└──────────────────────────────────────┘
+      │
+      ▼
+┌──────────────────────────────────────┐
+│  4. analisis_calidad.py              │  ← calidad vs corpus
+│     └─ BUENA / LITERAL / OCR_GARBAGE │
+└──────────────────────────────────────┘
+      │
+      ▼  (con -Full flag)
+┌──────────────────────────────────────┐
+│  5. stress_test_memory.py (50 págs)  │  ← ~10 minutos
+│     └─ Memoria, fugas, rendimiento   │
+└──────────────────────────────────────┘
+      │
+      ▼  (si todo OK)
+┌──────────────────────────────────────┐
+│  Compilar .exe (PyInstaller)         │  ← main.spec
+│     └─ dist/main/main.exe (321MB)    │
+└──────────────────────────────────────┘
+```
+
+### Cobertura real del pipeline de traducción (benchmark 100 textos manga)
+
+| Motor | Cobertura | Tiempo promedio | Modo | Notas |
+|---|---|---|---|---|
+| CT2 (CTranslate2 int8) | 55% | **53ms** | Paralelo 🚀 | 10 pares de idiomas, offline, más rápido |
+| ArgosTranslate | 100% ⚠️ | 2826ms | Paralelo 🚀 | Produce basura en OCR-ruidoso, filtrado por validación |
+| Google Translate | 56% | 1111ms | Paralelo 🚀 | Requiere internet, más natural |
+| **Pipeline combinado** | **~92%** (real) | **~53ms** | **Paralelo** | **3 motores simultáneos** + Google retry con backoff (fix SIN_TRAD) |
+
+### Herramientas CI y scripts de procesamiento
+| Archivo | Propósito |
+|---|---|
+| `run_ci.py` | **CI unificado** — syntax check + test_ci + servidor + calidad + stress (opcional). `python run_ci.py --full` |
+| `run_ci.ps1` | Script CI legacy (syntax + tests + servidor + calidad) |
+| `test_ci.py` | Test standalone de detección de idioma (sin modelos) |
+| `analisis_calidad.py` | Auditoría de calidad de traducción contra corpus de 221 textos |
+| `stress_test_memory.py` | Test de estrés **paralelo** (50 páginas, 4 workers, ~5 min con -Full) |
+| `process_all_pages.py` | **Procesamiento completo de PDF en paralelo** — 128 páginas, `--workers N` (default 2), `--ocr-mode auto|easyocr|ctd`, checkpoint cada 10 páginas, productor-consumidor (1 render + N API) |
+| `.github/workflows/ci.yml` | CI en GitHub Actions |
+| `main.spec` | Configuración de PyInstaller para build del .exe |
+
+## Dependencias clave
+
+- `env/` (venv completo con EasyOCR, OpenCV, Flask, ArgosTranslate, deep-translator, langdetect, torch, ctranslate2, transformers, sentencepiece)
+- `requirements.txt` (dependencias pineadas)
+- CDNs: jsPDF (jsDelivr + cdnjs fallback), OpenCV.js (jsDelivr @techstark + docs.opencv.org fallback), PDF.js (Promise.any: cdnjs ESM v4 / cdnjs UMD v3 / jsDelivr / unpkg)
+- Carga paralela con `Promise.any()` via `__loadCdn()` generico en index.html
