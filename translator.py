@@ -4,6 +4,7 @@ translator.py — Detección de idioma y traducción (Argos, Google, CT2).
 Extraído de server.py. Depende de config.py para constantes.
 """
 
+import concurrent.futures
 import os
 import re
 import shutil
@@ -507,6 +508,27 @@ def _translate_ctranslate2(text: str, source: str, target: str) -> str | None:
         return None
 
 
+# ─── Shared executor para motores de traducción en paralelo ─────
+# Cada llamada a _translate_one prueba CT2, Argos y Google en paralelo.
+# Antes se creaba un ThreadPoolExecutor NUEVO por cada llamada (619 bloques
+# × 3 threads = 1857 creaciones). Ahora usamos un executor compartido que
+# mantiene 4 threads vivos, eliminando el overhead de crear/destruir threads.
+_translate_engine_executor: concurrent.futures.ThreadPoolExecutor | None = None
+_translate_engine_executor_lock: threading.Lock = threading.Lock()
+
+
+def _get_translate_engine_executor() -> concurrent.futures.ThreadPoolExecutor:
+    global _translate_engine_executor
+    if _translate_engine_executor is None:
+        with _translate_engine_executor_lock:
+            if _translate_engine_executor is None:
+                _translate_engine_executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=4,  # suficiente para CT2 + Argos + Google
+                    thread_name_prefix="translate_engines",
+                )
+    return _translate_engine_executor
+
+
 # ─── ArgosTranslate direct (con lock global — NO es thread-safe) ──
 _argos_translate_lock: threading.Lock = threading.Lock()
 
@@ -589,7 +611,7 @@ def _translate_one(
         ]
 
     # ── Probar motores en PARALELO, aceptar el primer resultado valido ──
-    import concurrent.futures
+    # Usa executor compartido (no crea/destruye 3 threads por llamada)
 
     def _probar_motor(method_name: str, fn: Callable) -> tuple[str, str | None]:
         try:
@@ -627,33 +649,30 @@ def _translate_one(
             return False
         return True
 
-    # Lanzar todos los motores en paralelo
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=len(translation_fns),
-        thread_name_prefix="translate_parallel",
-    ) as exec:
-        fut_map = {
-            exec.submit(_probar_motor, method_name, fn): method_name
-            for method_name, fn in translation_fns
-        }
-        mejor_resultado: str | None = None
-        mejor_nombre: str | None = None
+    # Lanzar todos los motores en paralelo usando executor compartido
+    executor = _get_translate_engine_executor()
+    fut_map = {
+        executor.submit(_probar_motor, method_name, fn): method_name
+        for method_name, fn in translation_fns
+    }
+    mejor_resultado: str | None = None
+    mejor_nombre: str | None = None
 
-        for future in concurrent.futures.as_completed(fut_map, timeout=30):
-            method_name, resultado = future.result()
-            if _resultado_valido(method_name, resultado, src_lang):
-                # Primer resultado valido: aceptarlo inmediatamente
-                print(f"[translate] {method_name} OK: '{resultado[:50]}'")
-                if translation_cache_available and cache_set is not None:
-                    try:
-                        cache_set(text_processed, src_lang, target, resultado)
-                    except Exception:
-                        pass
-                return resultado  # type: ignore[no-any-return]
-            # Guardar el mejor para fallback si ninguno es valido
-            if resultado and mejor_resultado is None:
-                mejor_resultado = resultado
-                mejor_nombre = method_name
+    for future in concurrent.futures.as_completed(fut_map, timeout=30):
+        method_name, resultado = future.result()
+        if _resultado_valido(method_name, resultado, src_lang):
+            # Primer resultado valido: aceptarlo inmediatamente
+            print(f"[translate] {method_name} OK: '{resultado[:50]}'")
+            if translation_cache_available and cache_set is not None:
+                try:
+                    cache_set(text_processed, src_lang, target, resultado)
+                except Exception:
+                    pass
+            return resultado  # type: ignore[no-any-return]
+        # Guardar el mejor para fallback si ninguno es valido
+        if resultado and mejor_resultado is None:
+            mejor_resultado = resultado
+            mejor_nombre = method_name
 
     # ── Fallback: si ningun motor dio resultado valido ────────────
     # Intentamos Google con backoff progresivo (5s, 15s, 30s) porque

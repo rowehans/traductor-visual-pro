@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -60,6 +61,31 @@ try:
     print("[cache] Cache de traducciones activo")
 except Exception as e:
     print(f"[cache] Cache no disponible: {e}")
+
+
+# ─── CT2 preload (background) ──────────────────────────────────
+# Pre-carga el modelo CT2 es→en al arrancar el servidor para evitar
+# la penalidad de ~21.5s en la primera traducción (carga de modelo
+# de 300MB a GPU, tokenizer, CUDA libraries, etc.).
+# Se ejecuta en un hilo daemon para no bloquear el arranque.
+def _preload_ct2_models() -> None:
+    try:
+        from translator import _get_ct2_translator
+        print("[preload] Precargando modelo CT2 es→en (background)...")
+        t0 = time.time()
+        translator, tokenizer = _get_ct2_translator("es", "en")
+        if translator:
+            print(f"[preload] ✅ CT2 es→en cargado en {time.time()-t0:.1f}s")
+        # También precargar en→es (común en traducción inversa)
+        translator2, tokenizer2 = _get_ct2_translator("en", "es")
+        if translator2:
+            print(f"[preload] ✅ CT2 en→es cargado")
+    except Exception as e:
+        print(f"[preload] Error precargando CT2: {e}")
+
+
+_preload_thread = threading.Thread(target=_preload_ct2_models, daemon=True)
+_preload_thread.start()
 
 
 # ─── Rate limiting ──────────────────────────────────────────────

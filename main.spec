@@ -56,12 +56,9 @@ HIDDEN_IMPORTS = [
     "argostranslate.translate",
     "deep_translator",
     "langdetect",
-    # Translation — CTranslate2 (carga lazy, import dinámico en translator.py)
-    "ctranslate2",
-    "ctranslate2.converters",
-    "transformers",
-    "sentencepiece",       # MarianTokenizer lo necesita
-    "huggingface_hub",     # Descarga de modelos HF (gratuito, sin token)
+    # CTranslate2, transformers, sentencepiece, huggingface_hub NO se empaquetan.
+    # Se cargan desde env/Lib/site-packages en runtime vía _fix_cwd() en main.py.
+    # Esto reduce el .exe de ~2.6GB a ~200MB y acelera el arranque de 25s a ~3s.
     # Image processing
     "cv2",
     "PIL",
@@ -76,6 +73,20 @@ HIDDEN_IMPORTS = [
 
 # ─── Excludes (reducir tamaño) ──────────────────────────
 EXCLUDES = [
+    # ── Módulos pesados que se cargan desde env/ en runtime ──
+    # torch (1.2GB CUDA), transformers (500MB), easyocr (200MB),
+    # ctranslate2 (300MB CUDA), sentencepiece, huggingface_hub.
+    # Todos se importan dinámicamente dentro de funciones:
+    #   - translator.py: _get_ct2_translator() -> import ctranslate2, torch, transformers
+    #   - ocr_utils.py: _get_ocr_reader() -> import easyocr, torch
+    # En runtime, _fix_cwd() en main.py agrega env/Lib/site-packages a sys.path.
+    "torch",
+    "easyocr",
+    "ctranslate2",
+    "transformers",
+    "sentencepiece",
+    "huggingface_hub",
+    # ── Dependencies no críticas ──
     "tkinter", "matplotlib", "pandas", "scipy",
     "notebook", "jupyter", "IPython",
     "pytest", "sphinx", "docutils",
@@ -130,6 +141,6 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,          # UPX deshabilitado: muy lento, poco beneficio en bundles modernos
     name="main",
 )

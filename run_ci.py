@@ -53,6 +53,18 @@ _STRESS_RESULT: dict | None = None
 
 # --- Helpers -----------------------------------------------------------
 
+def _check_node_available() -> bool:
+    """Verifica si node.js esta disponible en PATH."""
+    try:
+        r = subprocess.run(
+            ["node", "--version"],
+            capture_output=True, text=True, timeout=5
+        )
+        return r.returncode == 0 and r.stdout.startswith("v")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
 def step(title: str) -> None:
     print()
     print("=" * 70)
@@ -143,8 +155,40 @@ def step_syntax() -> bool:
             print(f"     {r.stderr[:200]}")
             all_ok = False
 
+    # ─── Verificar JavaScript ────────────────────────────
+    js_files = ["app.js"]
+    js_ok = True
+    if not _check_node_available():
+        print("  [SKIP] node no encontrado en PATH — saltando verificación JS")
+    else:
+        for f in js_files:
+            path = os.path.join(PROJECT_ROOT, f)
+            if not os.path.exists(path):
+                print(f"  [?] {f} no encontrado, saltando")
+                continue
+            r = subprocess.run(
+                ["node", "--check", path],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+            )
+            if r.returncode == 0:
+                print(f"  [OK] {f}")
+            else:
+                print(f"  [FAIL] {f} - ERROR DE SINTAXIS")
+                print(f"     {r.stderr[:200]}")
+                js_ok = False
+
+    all_ok = all_ok and js_ok
     status = "PASS" if all_ok else "FAIL"
-    result("Syntax check", status, "Todos los archivos compilan" if all_ok else "Hay errores")
+    detail_parts = []
+    if all_ok:
+        detail_parts.append("Python OK")
+        if _check_node_available():
+            detail_parts.append("JS OK")
+        else:
+            detail_parts.append("JS saltado (node no disponible)")
+    else:
+        detail_parts.append("Hay errores")
+    result("Syntax check", status, " — ".join(detail_parts))
     return all_ok
 
 
