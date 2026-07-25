@@ -246,14 +246,28 @@ Cambio en código
 └──────────────────────────────────────┘
 ```
 
-### Cobertura real del pipeline de traducción (benchmark 100 textos manga)
+### Cobertura real del pipeline de traducción (benchmark 723 bloques, PDF 128 páginas)
 
 | Motor | Cobertura | Tiempo promedio | Modo | Notas |
 |---|---|---|---|---|
 | CT2 (CTranslate2 int8) | 55% | **53ms** | Paralelo 🚀 | 10 pares de idiomas, offline, más rápido |
 | ArgosTranslate | 100% ⚠️ | 2826ms | Paralelo 🚀 | Produce basura en OCR-ruidoso, filtrado por validación |
 | Google Translate | 56% | 1111ms | Paralelo 🚀 | Requiere internet, más natural |
-| **Pipeline combinado** | **~92%** (real) | **~53ms** | **Paralelo** | **3 motores simultáneos** + Google retry con backoff (fix SIN_TRAD) |
+| **Pipeline combinado** | **~86%** traduce ≠ original | **~53ms** | **Paralelo** | **3 motores simultáneos** + Google retry con backoff (fix SIN_TRAD) |
+
+#### Calidad real de traducción (analisis_calidad.py sobre 723 bloques)
+
+| Categoría | % | Bloques | Significado |
+|:----------|:-:|:-------:|:------------|
+| ✅ **BUENA** | 47.6% | 344 | Traducción correcta y natural |
+| 📖 **LITERAL** | 25.4% | 184 | Correcta pero palabra-por-palabra |
+| ⚠️ **OCR_NOISY** | 2.6% | 19 | OCR ruidoso pero traducción aceptable |
+| 🟢 **Aceptable** | **75.8%** | **547** | **Traducciones útiles** |
+| ❌ **OCR_GARBAGE** | 15.9% | 115 | OCR tan ruidoso que la traducción es basura |
+| ❓ **UNTRANSLATED** | 8.3% | 60 | Texto sin traducir (OCR ilegible) |
+| 🔊 **ONOMATOPOEIA** | 0.1% | 1 | Efecto de sonido, correctamente sin traducir |
+
+> **Nota**: La cobertura del pipeline (~86%) mide si el texto de salida es DIFERENTE al original (logró traducir algo). La calidad (~76% aceptable) es más estricta: requiere que la traducción sea útil (natural, literal aceptable, o comprensible a pesar de ruido OCR). La diferencia principal son 115 bloques de OCR_GARBAGE que el pipeline tradujo pero produjeron basura (principalmente running headers con fecha/hora/metadatos de página).
 
 ### Herramientas CI y scripts de procesamiento
 | Archivo | Propósito |

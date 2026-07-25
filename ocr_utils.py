@@ -328,24 +328,30 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
 
     pre_filtered: list[dict[str, Any]] = []
     for b in blocks:
-        text = str(b["text"]).strip()
-        # Limpiar símbolos ruidosos comunes del OCR (@#$%^&* etc.)
-        text = re.sub(r'[@#$%^&*()+={}\[\]|:;<>/\\]', '', text).strip()
+        text_raw = str(b["text"]).strip()
         h = b["h"]
         cy = b["y"] + h / 2
 
-        if any(p.search(text) for p in WATERMARK_PATTERNS):
-            print(f"[OCR] Filtrando marca de agua pre-merge: '{text}'")
+        # ── Filtros contra texto ORIGINAL (antes de limpiar simbolos) ──
+        # IMPORTANTE: Los patrones de ruido (fecha, hora: "13/7/26", "4.58 p.m")
+        # dependen de / y . que la limpieza de simbolos elimina. Verificar
+        # contra text_raw preserva estos caracteres.
+        if any(p.search(text_raw) for p in WATERMARK_PATTERNS):
+            print(f"[OCR] Filtrando marca de agua pre-merge: '{text_raw[:50]}'")
             continue
 
         in_margin = margin_top is not None and (cy < margin_top or cy > margin_bottom)
-        if in_margin and any(p.search(text) for p in MARGIN_NOISE_PATTERNS):
-            print(f"[OCR] Filtrando metadato de margen pre-merge: '{text}' en y={b['y']}")
+        if in_margin and any(p.search(text_raw) for p in MARGIN_NOISE_PATTERNS):
+            print(f"[OCR] Filtrando metadato de margen pre-merge: '{text_raw[:50]}' en y={b['y']}")
             continue
 
-        if re.search(r'https?://|www\.|\.(com|net|org|xyz|io)\b', text, re.IGNORECASE):
-            print(f"[OCR] Filtrando URL pre-merge: '{text}'")
+        if re.search(r'https?://|www\.|\.(com|net|org|xyz|io)\b', text_raw, re.IGNORECASE):
+            print(f"[OCR] Filtrando URL pre-merge: '{text_raw}'")
             continue
+
+        # ── Ahora limpiar simbolos para uso downstream ────────────────
+        text = re.sub(r'[@#$%^&*()+={}\[\]|:;<>/\\]', '', text_raw).strip()
+        b["text"] = text
 
         pre_filtered.append(b)
 

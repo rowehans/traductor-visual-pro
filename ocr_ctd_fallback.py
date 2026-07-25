@@ -58,6 +58,21 @@ _CTD_SENTINEL = os.path.join(_CTD_MODEL_DIR, ".ctd_ready")
 # CTD trabaja en 1024x1024, redimensionamos imagenes grandes a esto
 _CTD_INPUT_SIZE: tuple[int, int] = (1024, 1024)
 
+# ── Filtros post-detección CTD (constantes validadas) ────────────
+# Thresholds optimizados con barrido parametrico sobre pagina 125
+# (peor caso: 31 detecciones) y validados en paginas artisticas 3,11,12.
+# Ver test_ctd_thresholds.py (archivo temporal eliminado) para detalles.
+#
+#   area>=400px²  : filtra motas/patrones pequenos (< 20x20px)
+#   height>=8px   : filtra lineas finas de vineta
+#   aspect 0.4-20 : evita regiones extremadamente alargadas
+#   max 15 reg    : evita saturacion en paginas densas (125-127 tenian 31+)
+_CTD_FILTER_MIN_AREA: int = 400
+_CTD_FILTER_MIN_HEIGHT: int = 8
+_CTD_FILTER_ASPECT_MIN: float = 0.4
+_CTD_FILTER_ASPECT_MAX: float = 20.0
+_CTD_FILTER_MAX_REGIONS: int = 15
+
 # --- Estado global (thread-safe) ---
 _ctd_model: Any = None
 _ctd_seg_rep: Any = None
@@ -216,24 +231,11 @@ def _ctd_preprocess(img_bgr: np.ndarray
 def _detect_ctd_regions(
     img_bgr: np.ndarray,
     max_dim: int = 1024,
-    *,
-    filter_min_area: int = 400,
-    filter_min_height: int = 8,
-    filter_aspect_min: float = 0.4,
-    filter_aspect_max: float = 20.0,
-    filter_max_regions: int = 15,
 ) -> list[dict[str, Any]]:
     """
     Ejecuta CTD sobre una imagen y retorna regiones de texto detectadas.
     Cada region tiene: {x, y, w, h, confidence}
     Retorna lista vacia si no se detecta nada.
-
-    Args (keyword-only):
-        filter_min_area: Area minima en px² (default 400). 0 = desactivado.
-        filter_min_height: Altura minima en px (default 8). 0 = desactivado.
-        filter_aspect_min: Aspect ratio minimo w/h (default 0.4).
-        filter_aspect_max: Aspect ratio maximo w/h (default 20.0).
-        filter_max_regions: Maximo de regiones a retornar (default 15). 0 = sin limite.
     """
     global _ctd_model, _ctd_seg_rep
 
@@ -303,12 +305,17 @@ def _detect_ctd_regions(
             #   aspect 0.4-20 : evita regiones extremadamente alargadas
             #   max 15 reg    : evita saturacion en paginas densas
             area = rw * rh
-            if filter_min_area > 0 and area < filter_min_area:
-                continue
-            if filter_min_height > 0 and rh < filter_min_height:
-                continue
             aspect = rw / max(rh, 1)
-            if aspect < filter_aspect_min or aspect > filter_aspect_max:
+
+            # ── Log debug de regiones filtradas (verificar que son ruido) ──
+            if area < _CTD_FILTER_MIN_AREA:
+                print(f"[CTD] Filtrado por area  <{_CTD_FILTER_MIN_AREA}: ({rx},{ry}) {rw}x{rh} area={area} conf={float(score):.3f}")
+                continue
+            if rh < _CTD_FILTER_MIN_HEIGHT:
+                print(f"[CTD] Filtrado por altura <{_CTD_FILTER_MIN_HEIGHT}: ({rx},{ry}) {rw}x{rh} area={area} aspect={aspect:.2f} conf={float(score):.3f}")
+                continue
+            if aspect < _CTD_FILTER_ASPECT_MIN or aspect > _CTD_FILTER_ASPECT_MAX:
+                print(f"[CTD] Filtrado por aspect [{_CTD_FILTER_ASPECT_MIN}-{_CTD_FILTER_ASPECT_MAX}]: ({rx},{ry}) {rw}x{rh} area={area} aspect={aspect:.2f} conf={float(score):.3f}")
                 continue
 
             regions.append({
@@ -322,11 +329,11 @@ def _detect_ctd_regions(
         print(f"[CTD] Detectadas {len(regions)} regiones de texto (filtro: {len(filtered_lines)-len(regions)} descartadas)")
 
         # Ordenar por confianza descendente y limitar
-        if filter_max_regions > 0:
+        if _CTD_FILTER_MAX_REGIONS > 0:
             regions.sort(key=lambda r: r["confidence"], reverse=True)
-            if len(regions) > filter_max_regions:
-                print(f"[CTD] Limitando de {len(regions)} a {filter_max_regions} regiones (solo las mas confiables)")
-                regions = regions[:filter_max_regions]
+            if len(regions) > _CTD_FILTER_MAX_REGIONS:
+                print(f"[CTD] Limitando de {len(regions)} a {_CTD_FILTER_MAX_REGIONS} regiones (solo las mas confiables)")
+                regions = regions[:_CTD_FILTER_MAX_REGIONS]
         return regions
 
     except Exception as e:
