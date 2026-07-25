@@ -54,33 +54,34 @@ def _get_ocr_reader(lang: str = "auto") -> Any:
         else:
             langs = ["es", "en", "pt", "fr", "de"]
 
-        print(f"[OCR] Cargando EasyOCR para {langs}...")
+        # ═══ Fix cuDNN: EasyOCR siempre en CPU ════════════════════
+        # CT2 (CTranslate2) carga sus propias librerías CUDA/cuDNN
+        # al precargarse en server.py. Cuando PyTorch (para EasyOCR)
+        # intenta inicializar CUDA vía `torch.cuda.is_available()`,
+        # busca símbolos cuDNN que no existen en la versión cargada
+        # por CT2 → "Could not load symbol cudnnGetLibConfig" →
+        # crash fatal del proceso (error DLL 127).
+        #
+        # Solución: NO llamar nunca a `torch.cuda.is_available()`.
+        # EasyOCR se carga directamente en CPU (`gpu=False`).
+        # Esto evita que PyTorch inicialice CUDA/cuDNN por completo.
+        # CT2 sigue usando GPU sin problemas.
+        # ════════════════════════════════════════════════════════════
+        print(f"[OCR] Cargando EasyOCR para {langs} en CPU (evita conflicto cuDNN con CT2)...")
+
         try:
             import easyocr
-            import torch
-            gpu_available = torch.cuda.is_available()
-
-            for use_gpu in ([True, False] if gpu_available else [False]):
-                try:
-                    print(f"[OCR] Intentando {'GPU' if use_gpu else 'CPU'} para {langs}...")
-                    reader = easyocr.Reader(
-                        langs,
-                        gpu=use_gpu,
-                        model_storage_directory=str(ROOT / "ocr_models"),
-                        download_enabled=True,
-                        verbose=False,
-                    )
-                    _ocr_readers[lang_key] = reader
-                    print(f"[OCR] EasyOCR para {langs} listo en {'GPU' if use_gpu else 'CPU'}.")
-                    break
-                except Exception as e:
-                    if use_gpu:
-                        print(f"[OCR] GPU falló ({e}), reintentando en CPU...")
-                    else:
-                        print(f"[OCR] Error cargando EasyOCR para {langs}: {e}")
-                        return None
+            reader = easyocr.Reader(
+                langs,
+                gpu=False,
+                model_storage_directory=str(ROOT / "ocr_models"),
+                download_enabled=True,
+                verbose=False,
+            )
+            _ocr_readers[lang_key] = reader
+            print(f"[OCR] EasyOCR para {langs} listo en CPU.")
         except Exception as e:
-            print(f"[OCR] Error importando easyocr/torch: {e}")
+            print(f"[OCR] Error cargando EasyOCR para {langs}: {e}")
             return None
     return _ocr_readers[lang_key]
 

@@ -11,9 +11,9 @@
 | Archivo | Rol | Tamaño |
 |---|---|---|
 | `app.js` | Frontend completo (~2767 líneas): renderizado PDF/imagen vía pdf.js, editor de burbujas (draw/move/resize), OCR delegado al servidor EasyOCR, filtros de bloques, layout de texto en canvas (wrap+fit), comunicación con API Flask, exportación PNG/PDF, tema oscuro/claro, atajos de teclado, toasts, carga asíncrona de OpenCV.js vía callback. | 101KB |
-| `server.py` | Entry point Flask (~188 líneas). Importa de config.py/translator.py, envuelve _translate_one() con caché, registra blueprints. Puerto 5174. | 7KB |
+| `server.py` | Entry point Flask (~217 líneas). Importa de config.py/translator.py, envuelve _translate_one() con caché, **precarga CT2 en background** al arrancar, registra blueprints. Puerto 5174. | 8KB |
 | `config.py` | Constantes globales: paths, `LANGUAGES`, `CSP_POLICY`, patrones de ruido (`MARGIN_NOISE_PATTERNS`, `WATERMARK_PATTERNS`), glosario pre-OCR (`GLOSARIO_PRE`). | 6KB |
-| `translator.py` | Lógica de traducción: detección de idioma (`_detect_language_robust`), 3 motores en **paralelo** (CT2 CTranslate2 int8 → ArgosTranslate → Google Translate), validación de traducción (6 validaciones anti-basura), glosarios PRE/POST, filtro pre-Argos para OCR noise. **Google retry con backoff** (5s, 15s, 30s) cuando todos los motores fallan (fix SIN_TRAD). Cache injectado desde server.py. | 28KB |
+| `translator.py` | Lógica de traducción: detección de idioma (`_detect_language_robust`), 3 motores en **paralelo** vía **executor compartido** (4 threads, evita crear/destruir threads por llamada), validación de traducción (6 validaciones anti-basura), glosarios PRE/POST, filtro pre-Argos para OCR noise. **Google retry con backoff** (5s, 15s, 30s) cuando todos los motores fallan (fix SIN_TRAD). Cache injectado desde server.py. | 28KB |
 | `ocr_utils.py` | OCR con EasyOCR (GPU→CPU fallback), pre-filtro de imagen, inpainting con OpenCV (INPAINT_NS), detección de globos de diálogo, máscara de glifos, sampleo de color, fusión y filtrado de bloques (9 filtros post-merge). **3 niveles de fallback**: directo → CLAHE+sharpen → CTD (ComicTextDetector). **Modo CTD-only** (`use_ctd_only=True`) salta EasyOCR completo para páginas donde EasyOCR consistentemente falla. **Optimizado**: canvas_size=2500px, text_threshold=0.18, mag_ratio=1.2. | 24KB |
 | `routes/api.py` | Blueprint REST: `/api/health`, `/api/translate`, `/api/translate-batch`, `/api/process-page`. **Expone `ocr_mode`** en `/api/process-page` (default `"ctd"`): `"ctd"` (solo CTD, más rápido y mejor cobertura), `"auto"` (3 niveles), `"easyocr"` (solo EasyOCR). Importa directamente de los submódulos. | 11KB |
 | `routes/main.py` | Blueprint de rutas estáticas con protección contra path traversal. | 1KB |
@@ -27,7 +27,7 @@
 | `run_ci.py` | **CI unificado** — ejecuta syntax check + test_ci.py + servidor + analisis_calidad + stress test en un solo comando Python. No depende de PowerShell. `python run_ci.py --full` para test completo (~10 min). | 20KB |
 | `requirements.txt` | Dependencias Python pineadas. | 1KB |
 | `main.py` | Entry point del ejecutable (.exe). Modo launcher: oculta consola, inicia Flask, abre Chrome. Modo `--server`: solo servidor. | 4KB |
-| `main.spec` | PyInstaller spec para compilar `main.exe` con `console=False` (sin ventana CMD). Incluye CTD model como DATA. | 3KB |
+| `main.spec` | PyInstaller spec para compilar `main.exe` con `console=False` (sin ventana CMD). Incluye CTD model como DATA. **Excluye módulos pesados** (torch, transformers, ct2, easyocr) — se cargan desde `env/` en runtime. **UPX deshabilitado**. .exe resultante: **200MB** (antes 2.6GB). | 3KB |
 | `launcher.py` | Launcher alternativo (subprocess). Usa `env\Scripts\python.exe server.py` como proceso hijo. | 1KB |
 | `env/` | Entorno virtual Python con **todas** las dependencias (EasyOCR, OpenCV, Flask, ArgosTranslate, deep-translator, langdetect, torch). | — |
 
@@ -60,7 +60,7 @@
 
 | Función | Línea aprox. | Por qué es delicada |
 |---|---|---|
-| `_translate_one()` | ~185 | **3 motores en paralelo** (CT2 CTranslate2 int8 → Argos → Google) lanzados via `ThreadPoolExecutor` + `as_completed`. Acepta el PRIMER resultado válido inmediatamente. Fallback: si ningún motor pasa validación, usa el primero que devolvió algo. Acepta `cache_get`/`cache_set`/`translation_cache_available` para inyección. |
+| `_translate_one()` | ~185 | **3 motores en paralelo** (CT2 CTranslate2 int8 → Argos → Google) lanzados via **executor compartido** `_get_translate_engine_executor()` (4 threads, lazy init, double-checked locking). **Antes**: creaba/destruía un `ThreadPoolExecutor` por llamada (~1.857 ciclos para 619 bloques). **Ahora**: executor compartido, sin shutdown, retorno inmediato cuando CT2 gana. Acepta `cache_get`/`cache_set`/`translation_cache_available` para inyección. |
 | `_get_google_session()` | ~58 | Double-checked locking con `_google_session_lock`. La sesión HTTP se crea **dentro del lock**. |
 | `_detect_language_robust()` | ~96 | langdetect thread-local + heurística `_detect_language_simple`. Mapeo zh-cn/zh-tw → zh. |
 | `_ensure_argo_package()` | ~20 | Descarga modelos Argos con lock para evitar descargas duplicadas. |
@@ -105,7 +105,7 @@
 
 ## 4. Estado Actual
 
-**Última actualización**: 2026-07-24
+**Última actualización**: 2026-07-25
 
 ### Cambios acumulados (Julio 2026)
 
@@ -131,6 +131,14 @@ Tres optimizaciones que reducen el tiempo por página de ~35-50s a ~10-18s.
 | 30 | **Fix SIN_TRAD — Google retry con backoff**: cuando todos los motores (CT2, Argos, Google) fallan en paralelo, se reintenta Google 3 veces con backoff progresivo (5s, 15s, 30s), reseteando el rate limit entre intentos. También se eliminaron 2 líneas de código muerto duplicadas al final de `_translate_one()`. | `translator.py` | 🆕 Fix SIN_TRAD |
 | 31 | **Métrica de calidad real**: análisis de 723 bloques traducidos muestra 75.8% aceptable (BUENA + LITERAL + OCR_NOISY), 15.9% OCR_GARBAGE (running headers principalmente), 8.3% UNTRANSLATED. Documentado en CODEGRAPH.md como referencia de calidad. | `CODEGRAPH.md` | 📊 Benchmark real |
 | 32 | **Fix running headers**: el symbol cleaning (`re.sub` removiendo `/`, `.`, `,`, `:`) se ejecutaba ANTES de verificar MARGIN_NOISE_PATTERNS, destruyendo patrones de fecha/hora como "13/7/26" y "4.58 p.m". Movido el filtro ANTES del cleaning. | `ocr_utils.py` | 🐛 Fix bug crítico |
+
+#### Sesión 2026-07-25 — 3 optimizaciones de velocidad: CT2 preload + executor compartido + .exe 200MB
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 37 | **CT2 preload en background**: precarga modelos es→en y en→es al arrancar el servidor (hilo daemon). Evita el cold start de ~21.5s (carga del modelo de 300MB a GPU) en la primera traducción. Las traducciones pasan de ~2.8s a **0.12s**. | `server.py` | **~23x** primera traducción |
+| 38 | **Executor compartido en translator**: reemplaza `with ThreadPoolExecutor(...)` por llamada que creaba/destruía 3 threads por cada traducción (~1.857 ciclos para 619 bloques). Nuevo executor compartido con 4 threads siempre vivos y `_get_translate_engine_executor()` con lazy init + double-checked locking. Además: `import concurrent.futures` movido a nivel módulo (antes se importaba en cada llamada). **Beneficio adicional**: el `with` original llamaba `shutdown(wait=True)` en exit, bloqueando hasta que Argos/Google terminaran incluso después de que CT2 ganara. | `translator.py` | **Sin overhead de threads** + **retorno inmediato** |
+| 39 | **.exe optimizado**: excluye módulos pesados (torch, transformers, ctranslate2, easyocr, sentencepiece, huggingface_hub) del bundle via `EXCLUDES`. Se cargan desde `env/Lib/site-packages` en runtime via `_fix_cwd()`. UPX deshabilitado en COLLECT. .exe: **200MB** (antes 2.6GB). Build: **3.75 min** (antes 10+ min). Arranque estimado: **~3-5s** (antes 20-25s). Verificado: arranca, encuentra env/, responde health, traduce correctamente. | `main.spec` | **13x más pequeño** + **~5x arranque** |
 
 #### Sesión 2026-07-24 — Defaults optimizados + CT2 18 pares CJK
 

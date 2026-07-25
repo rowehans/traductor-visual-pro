@@ -20,9 +20,7 @@ import os, sys, time, json, base64, threading, concurrent.futures, argparse
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 sys.stdout.reconfigure(encoding='utf-8')
 
-import fitz, cv2, numpy as np, requests
-from PIL import Image
-from io import BytesIO
+import fitz, requests
 
 # ─── Argumentos CLI ──────────────────────────────────────────────
 _parser = argparse.ArgumentParser(description="Procesar PDF completo con OCR y traducción")
@@ -54,6 +52,16 @@ RETRY_DELAY = 5          # segundos de espera entre reintentos
 CHECKPOINT_EVERY = 10    # save every N pages
 # MAX_WORKERS se obtiene de --workers CLI (default: 3)
 
+# ── Sesión HTTP compartida (connection pooling, keep-alive) ────
+_http_session: requests.Session = requests.Session()
+_adapter = requests.adapters.HTTPAdapter(
+    pool_connections=10,
+    pool_maxsize=10,
+    pool_block=False,
+)
+_http_session.mount('http://', _adapter)
+_http_session.mount('https://', _adapter)
+
 # ── Thread-safe estado compartido ────────────────────────────────
 _lock = threading.Lock()
 _rendered_queue: list[tuple[int, str | None, float]] = []  # (page_num, b64_or_None, render_time)
@@ -82,6 +90,13 @@ def save_checkpoint(cp):
 
 # ── Render thread: produce imágenes y las encola ─────────────────
 def render_worker(doc, total_pages, pages_done):
+    """
+    Renderiza páginas en un hilo y las encola para los API workers.
+    
+    Optimizado: pix.tobytes('png') da PNG directo, solo falta base64.
+    Antes: pix→PNG→PIL→numpy→cv2→imencode→base64 (5 conversiones intermedias).
+    Ahora: pix→PNG→base64 (2 pasos, sin PIL/numpy/cv2).
+    """
     for pg_idx in range(total_pages):
         page_num = pg_idx + 1
         if page_num in pages_done:
@@ -90,13 +105,10 @@ def render_worker(doc, total_pages, pages_done):
         try:
             page = doc[pg_idx]
             pix = page.get_pixmap(matrix=fitz.Matrix(ZOOM, ZOOM))
-            img = Image.open(BytesIO(pix.tobytes('png')))
-            img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-            del img, pix, page
-
-            _, buf = cv2.imencode('.png', img_cv, [cv2.IMWRITE_PNG_COMPRESSION, 3])
-            b64 = 'data:image/png;base64,' + base64.b64encode(buf.tobytes()).decode()
-            del img_cv, buf
+            # PNG directo desde fitz — sin PIL/numpy/cv2 intermedios
+            png_bytes = pix.tobytes('png')
+            b64 = 'data:image/png;base64,' + base64.b64encode(png_bytes).decode()
+            del pix, page
             render_t = time.time() - t0
 
             with _lock:
@@ -104,6 +116,7 @@ def render_worker(doc, total_pages, pages_done):
             _rendered_event.set()
         except Exception as e:
             with _lock:
+                print(f"  Render error pág {page_num}: {e}")
                 _rendered_queue.append((page_num, None, 0))
                 _rendered_event.set()
 
@@ -125,9 +138,9 @@ def get_next_page(timeout=5):
 
 
 # ─── init ────────────────────────────────────────────────────────
-# Verificar servidor
+# Verificar servidor (usando sesión HTTP compartida)
 try:
-    r = requests.get(f"{API_URL}/api/health", timeout=5)
+    r = _http_session.get(f"{API_URL}/api/health", timeout=5)
     if not r.json().get("ok"):
         print("ERROR: Servidor no saludable"); sys.exit(1)
     print(f"Servidor OK - {r.json().get('version','?')}")
@@ -190,7 +203,7 @@ def procesar_pagina(page_num: int, b64: str | None, render_t: float):
     t0 = time.time()
     for attempt in range(1 + MAX_RETRIES):
         try:
-            resp = requests.post(f"{API_URL}/api/process-page",
+            resp = _http_session.post(f"{API_URL}/api/process-page",
                 json={'image': b64, 'target': TARGET, 'source': SOURCE, 'ocr_mode': OCR_MODE},
                 timeout=TIMEOUT_PER_PAGE)
             elapsed = time.time() - t0

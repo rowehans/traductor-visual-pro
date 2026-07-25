@@ -5,8 +5,11 @@
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                      server.py                          │
-│  Entry point Flask (port 5174, ~139 líneas)             │
+│  Entry point Flask (port 5174, ~217 líneas)             │
 │  ┌─ Flask app, static routes, DB init, cache init       │
+│  ├─ **CT2 preload en background** (hilo daemon):        │
+│  │   precarga modelos es→en y en→es al arrancar.       │
+│  │   Evita cold start de ~21.5s en 1ra traducción.     │
 │  └─ _translate_one wrapper (inyecta cache en módulo)    │
 ├─────────────────────────────────────────────────────────┤
 │                     config.py                            │
@@ -21,9 +24,12 @@
 │  │    ┌─ CT2 (CTranslate2 int8, ~53ms, 10 pares)        │
 │  │    ├─ Argos (~2.8s, lock global, 100% cobertura)      │
 │  │    └─ Google (~1.1s, HTTP pool singleton)             │
-│  │    ThreadPoolExecutor + as_completed: acepta el       │
-│  │    PRIMER resultado válido que llegue.                │
-│  │    Tiempo efectivo por bloque: ~53ms (el más rápido) │
+│  │    **Executor compartido** (4 threads, lazy init):   │
+│  │    _get_translate_engine_executor() con double-check │
+│  │    locking. Antes: ThreadPoolExecutor nuevo por      │
+│  │    llamada (~1.857 ciclos para 619 bloques). Ahora:  │
+│  │    threads siempre vivos, sin shutdown, retorno      │
+│  │    inmediato. Tiempo efectivo: ~53ms (el más rápido) │
 │  │    ├─ Fallback: si TODOS fallan → Google retry con    │
 │  │    │   backoff progresivo (5s, 15s, 30s). Resetea     │
 │  │    │   rate limit entre reintentos (fix SIN_TRAD).    │
@@ -187,13 +193,15 @@ main.spec -> PyInstaller -> dist/main/main.exe
 ```powershell
 cd D:\crear traductor
 .\env\Scripts\python.exe -m PyInstaller main.spec --clean --noconfirm
-# Output: dist/main/main.exe
+# Output: dist/main/main.exe (200MB, antes 2.6GB)
 ```
 
 **Importante**:
 - Usar `onedir` (no `--onefile`) — las dependencias pesadas se cargan desde `env/`
 - Si se añaden nuevos archivos, actualizar `main.spec: DATAS` y `HIDDEN_IMPORTS`
 - `main.py` acepta `--server` para modo servidor sin launcher: `main.exe --server`
+- Módulos pesados (torch, transformers, ct2, easyocr) **excluidos** del .exe vía `EXCLUDES`. Se cargan desde `env/Lib/site-packages` en runtime via `_fix_cwd()`. Esto reduce el .exe de 2.6GB a 200MB y acelera el arranque de 25s a ~3s.
+- `upx=False` en COLLECT (UPX compression deshabilitada — el cuello de botella era UPX en binarios grandes, no la compilación en sí). Build time: ~3.75 min (antes 10+ min).
 
 ## Pipeline CI (Integración Continua)
 
