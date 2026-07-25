@@ -156,6 +156,14 @@ _OCR_CANVAS_SIZE: int = 2500
 _OCR_TEXT_THRESHOLD: float = 0.18
 _OCR_LOW_TEXT: float = 0.12
 _OCR_MIN_SIZE: int = 8
+# Factor de upscaling interno de EasyOCR. 1.2 da un balance entre
+# detectar texto pequeño (manga) y no saturar con ruido de fondo.
+_OCR_MAG_RATIO: float = 1.2
+# Umbral de confianza para el tier híbrido EasyOCR→CTD.
+# Si EasyOCR encuentra bloques pero confianza promedio < este valor,
+# se ejecuta CTD como fallback directo (reemplaza basura de EasyOCR
+# en páginas con texto artístico/decorativo).
+_OCR_CONFIDENCE_HYBRID: float = 0.30
 
 
 def _run_ocr_on_image(reader: Any, img_bgr: _Img) -> list[Any]:
@@ -175,7 +183,7 @@ def _run_ocr_on_image(reader: Any, img_bgr: _Img) -> list[Any]:
             low_text=_OCR_LOW_TEXT,
             link_threshold=0.3,
             canvas_size=min(max(img_bgr.shape[:2]), _OCR_CANVAS_SIZE),
-            mag_ratio=1.2,  # Upscaling suave ayuda a detectar texto pequeño
+            mag_ratio=_OCR_MAG_RATIO,
         )
     except Exception as e:
         print(f"[OCR] Error en readtext: {e}")
@@ -228,28 +236,30 @@ def _detect_and_ocr(
     use_ctd_only: bool = False,
 ) -> list[dict[str, Any]]:
     """
-    OCR con fallback progresivo (3 niveles):
-    1. Imagen original -> EasyOCR (rápido, sin pre-filter)
-    2. CLAHE+sharpen -> EasyOCR (texto de bajo contraste)
+    OCR con pipeline híbrido (4 niveles):
+    1. EasyOCR directo (rápido, ~1s)
+       → Si confianza promedio >= 0.3: usar EasyOCR (confianza alta)
+       → Si confianza promedio < 0.3: ejecutar CTD en paralelo y comparar
+    2. CLAHE+sharpen -> EasyOCR (texto de bajo contraste, solo si EasyOCR=0)
     3. CTD detecta regiones -> EasyOCR reconoce (texto artístico)
 
+    El tier híbrido (1b) resuelve el problema de que EasyOCR detecta basura
+    en páginas artísticas ("AN", "4", "HA") con confianza baja, impidiendo
+    que CTD se ejecute como fallback. Ahora cuando EasyOCR produce basura,
+    se compara contra CTD y se elige el mejor.
+
     Args:
-        use_ctd_only: Si True, salta EasyOCR en imagen completa y va
-                      directo a CTD (detección + reconocimiento en
-                      regiones). Ahorra ~1s en páginas donde EasyOCR
-                      consistentemente falla.
+        use_ctd_only: Si True, salta EasyOCR completo y va directo a CTD
+        allow_fallback: Si False, desactiva tiers 2 y 3 (solo EasyOCR)
     """
     reader = _get_ocr_reader(lang_hint) if not use_ctd_only else None
-    # En modo CTD-only, necesitamos el reader igual para reconocimiento
-    # en regiones. Lo cargamos solo si CTD detecta algo.
 
     if use_ctd_only:
-        # ── Modo solo CTD: salta EasyOCR, va directo a CTD ─────
+        # ── Modo solo CTD ────────────────────────────────────────
         print("[OCR] Modo solo CTD activado")
         try:
             from ocr_ctd_fallback import ctd_fallback_ocr, preload_ctd
             preload_ctd()
-            # Cargar EasyOCR solo para reconocimiento (no detección)
             ctd_reader = _get_ocr_reader(lang_hint)
             if ctd_reader is None:
                 print("[OCR] No se pudo cargar EasyOCR para CTD")
@@ -264,21 +274,47 @@ def _detect_and_ocr(
             print(f"[OCR] CTD-only error: {e}")
             return []
 
-    # ── Pipeline normal: EasyOCR primero, CTD como fallback ────
     if reader is None:
         return []
 
-    # ── Intento 1: directo (sin pre-filter, ahorra ~0.3s) ───────
-    # El pre-filter (Canny, morfologia) se salta aqui porque los
-    # filtros post-merge atrapan cualquier metadato de margen.
+    # ── Intento 1: EasyOCR directo ──────────────────────────────
     results = _run_ocr_on_image(reader, img_bgr)
-    blocks = _ocr_results_to_blocks(results, img_bgr)
+    blocks_easy = _ocr_results_to_blocks(results, img_bgr)
 
-    if blocks or not allow_fallback:
-        return blocks
+    # ── Si EasyOCR encontró bloques con buena confianza, usarlos ──
+    if blocks_easy:
+        avg_conf = float(np.mean([b.get("confidence", 0) for b in blocks_easy]))
+        if avg_conf >= _OCR_CONFIDENCE_HYBRID:
+            print(f"[OCR] EasyOCR: {len(blocks_easy)} bloques (conf={avg_conf:.2f}) — suficiente")
+            return blocks_easy
+        
+        # ── Híbrido: EasyOCR confianza baja, CTD como fallback directo ──
+        # En páginas artísticas EasyOCR detecta basura ("AN", "4", "HA")
+        # con confianza baja pero > 0 bloques, impidiendo que CTD se ejecute.
+        # Con este fix: si la confianza es baja, CTD se ejecuta y reemplaza.
+        if allow_fallback:
+            print(f"[OCR] EasyOCR: {len(blocks_easy)} bloques conf={avg_conf:.2f}. "
+                  f"Probando CTD (confianza baja)...")
+            try:
+                from ocr_ctd_fallback import ctd_fallback_ocr, preload_ctd
+                preload_ctd()
+                blocks_ctd = ctd_fallback_ocr(img_bgr, reader, lang_hint)
+                if blocks_ctd:
+                    print(f"[OCR] CTD detecto {len(blocks_ctd)} bloques — usando CTD en vez de EasyOCR")
+                    return blocks_ctd
+                print(f"[OCR] CTD no detecto nada, usando EasyOCR (conf={avg_conf:.2f})")
+            except Exception as e:
+                print(f"[OCR] CTD fallback error: {e}, usando EasyOCR")
+        else:
+            print(f"[OCR] EasyOCR: {len(blocks_easy)} bloques conf={avg_conf:.2f} (easyocr-only)")
+        
+        return blocks_easy
+
+    if not allow_fallback:
+        return []
 
     # ── Intento 2: CLAHE + sharpen ──────────────────────────────
-    print(f"[OCR] 0 bloques con estandar. Probando CLAHE+sharpen...")
+    print("[OCR] 0 bloques con EasyOCR. Probando CLAHE+sharpen...")
     img_enhanced = _preprocess_enhanced(img_bgr)
     results2 = _run_ocr_on_image(reader, img_enhanced)
     blocks2 = _ocr_results_to_blocks(results2, img_enhanced)
@@ -288,7 +324,7 @@ def _detect_and_ocr(
         return blocks2
 
     # ── Intento 3: CTD (ComicTextDetector) ───────────────────────
-    print("[OCR] Estandar y CLAHE fallaron. Probando CTD...")
+    print("[OCR] EasyOCR y CLAHE fallaron. Probando CTD...")
     try:
         from ocr_ctd_fallback import ctd_fallback_ocr, preload_ctd
         preload_ctd()
@@ -341,9 +377,14 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
             continue
 
         in_margin = margin_top is not None and (cy < margin_top or cy > margin_bottom)
-        if in_margin and any(p.search(text_raw) for p in MARGIN_NOISE_PATTERNS):
-            print(f"[OCR] Filtrando metadato de margen pre-merge: '{text_raw[:50]}' en y={b['y']}")
-            continue
+        if in_margin:
+            if any(p.search(text_raw) for p in MARGIN_NOISE_PATTERNS):
+                print(f"[OCR] Filtrando metadato de margen pre-merge: '{text_raw[:50]}' en y={b['y']}")
+                continue
+            digit_count = sum(1 for c in text_raw if c.isdigit())
+            if len(text_raw) > 0 and (digit_count / len(text_raw) >= 0.35) and len(text_raw.split()) <= 4:
+                print(f"[OCR] Filtrando metadato numérico de margen pre-merge: '{text_raw[:50]}' en y={b['y']}")
+                continue
 
         if re.search(r'https?://|www\.|\.(com|net|org|xyz|io)\b', text_raw, re.IGNORECASE):
             print(f"[OCR] Filtrando URL pre-merge: '{text_raw}'")

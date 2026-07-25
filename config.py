@@ -97,9 +97,11 @@ MARGIN_NOISE_PATTERNS: Final[list[re.Pattern[str]]] = [
     re.compile(r'^\d{1,4}\s*/\s*\d{1,4}$'),
     re.compile(r'\b\d{1,4}\s+de\s+\d{1,4}\b', re.IGNORECASE),
     re.compile(r'\bp[aá]g(?:ina)?\.?\s?\d{1,4}\b', re.IGNORECASE),
-    # NOTA: Ya no se incluyen patrones de títulos de capítulo ("capítulo",
-    # "cómo criar", "how to raise") porque filtran contenido legítimo.
-    # Los números de página se siguen filtrando con los patrones superiores.
+    re.compile(r'\b(?:p[aá]g(?:ina)?|page)\s+\d+\s+(?:de|of)\s+\d+\b', re.IGNORECASE),
+    # Metadatos de exportación y timestamps en márgenes (ej. 20260713-11032519C, 13726, 458pm)
+    re.compile(r'\b\d{8,14}[A-Za-z0-9_\-]*\b'),
+    re.compile(r'\b\d{3,6}\s*,?\s*\d{3,4}\s*p\.?m\.?\b', re.IGNORECASE),
+    re.compile(r'\b\d{3,4}\s*p\.?m\.?\b', re.IGNORECASE),
 ]
 
 # Patrones de marcas de agua globales (sellos de grupos de escaneo)
@@ -109,6 +111,10 @@ MARGIN_NOISE_PATTERNS: Final[list[re.Pattern[str]]] = [
 WATERMARK_PATTERNS: Final[list[re.Pattern[str]]] = [
     re.compile(r'zonaolympus[\s-]?com', re.IGNORECASE),
     re.compile(r'\b1\s*[\s-]?c\s*[\s-]?2\s*[\s-]?e\b', re.IGNORECASE),
+    # Broken "http://" — OCR mangles "https://" into "htps fo", "htp ://", "htpsjj" etc.
+    re.compile(r'\bhtps?\s*[:\s/\'"\\\\]', re.IGNORECASE),
+    # Domain with underscore/apostrophe instead of dot before TLD: "xyz_com", "site'com"
+    re.compile(r'[a-z]+[_\\\'"\s]\s*(?:com|net|org|xyz|io)\b', re.IGNORECASE),
 ]
 
 

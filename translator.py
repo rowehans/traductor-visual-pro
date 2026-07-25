@@ -198,8 +198,13 @@ _SPA_VERB_SUFFIXES: tuple[str, ...] = (
 def _detect_language_simple(text: str) -> str:
     if any(0xac00 <= ord(c) <= 0xd7a3 for c in text):
         return "ko"
-    if any((0x3040 <= ord(c) <= 0x30ff) or (0x4e00 <= ord(c) <= 0x9faf) for c in text):
+    # ── CJK: kana (hiragana/katakana) → ja, hanzi sin kana → zh ──
+    has_kana = any(0x3040 <= ord(c) <= 0x30ff for c in text)
+    has_hanzi = any(0x4e00 <= ord(c) <= 0x9faf for c in text)
+    if has_kana:
         return "ja"
+    if has_hanzi:
+        return "zh"
     if any(c in "áéíóúñüÁÉÍÓÚÑÜ¿¡" for c in text):
         return "es"
     text_lower = text.lower()
@@ -219,8 +224,25 @@ def _detect_language_robust(text: str) -> str:
         return "en"
     if any(0xac00 <= ord(c) <= 0xd7a3 for c in text):
         return "ko"
-    if any((0x3040 <= ord(c) <= 0x30ff) or (0x4e00 <= ord(c) <= 0x9faf) for c in text):
+    # ── CJK: kana → ja; hanzi sin kana → langdetect desambigua ──
+    has_kana = any(0x3040 <= ord(c) <= 0x30ff for c in text)
+    has_hanzi = any(0x4e00 <= ord(c) <= 0x9faf for c in text)
+    if has_kana:
         return "ja"
+    if has_hanzi:
+        # Hanzi sin kana: puede ser chino (你好) o japonés kanji-puro (日本語)
+        # Si langdetect retorna algo inesperado (ej: "ko" para texto sin hangul),
+        # ignorarlo y asumir chino (más probable en manga scan).
+        try:
+            detect = _get_langdetect_detector()
+            lang = detect(text)
+            if "zh" in lang:
+                return "zh"
+            if lang == "ja":
+                return lang
+        except Exception:
+            pass
+        return "zh"
     simple = _detect_language_simple(text)
     has_spanish_accents = any(c in "áéíóúñüÁÉÍÓÚÑÜ¿¡" for c in text)
     try:
@@ -374,6 +396,15 @@ _CT2_MODELS: dict[str, str] = {
     # Inglés ↔ Italiano
     "en|it": "Helsinki-NLP/opus-mt-en-it",
     "it|en": "Helsinki-NLP/opus-mt-it-en",
+    # Japonés ↔ Inglés
+    "ja|en": "Helsinki-NLP/opus-mt-ja-en",
+    "en|ja": "Helsinki-NLP/opus-mt-en-ja",
+    # Coreano ↔ Inglés
+    "ko|en": "Helsinki-NLP/opus-mt-ko-en",
+    "en|ko": "Helsinki-NLP/opus-mt-en-ko",
+    # Chino ↔ Inglés
+    "zh|en": "Helsinki-NLP/opus-mt-zh-en",
+    "en|zh": "Helsinki-NLP/opus-mt-en-zh",
 }
 
 _CT2_BASE_DIR: str = str(ROOT / "models" / "ct2")
@@ -537,6 +568,11 @@ def _translate_one(
 
     is_lenient = source != "auto" and len(text_processed.split()) <= 3
 
+    # Normalización de Casing para textos en MAYÚSCULAS COMPLETAS (ej: "AHORA YUTIA", "PRIMERO SEOLLANG")
+    # Los motores como Google/Argos tienden a ignorar palabras en mayúsculas pegadas a nombres propios.
+    is_all_caps = text_processed.isupper() and any(c.isalpha() for c in text_processed) and len(text_processed) > 1
+    query_text = text_processed.title() if is_all_caps else text_processed
+
     # Detectar ruido OCR: si el texto parece basura, nos saltamos Argos
     # (que tarda ~3s y produce cadenas "mainstremainstre" inútiles)
     if _es_ocr_noise(text_processed):
@@ -553,15 +589,14 @@ def _translate_one(
         ]
 
     # ── Probar motores en PARALELO, aceptar el primer resultado valido ──
-    # En vez de probar CT2 → Argos → Google secuencialmente (hasta ~10s
-    # por bloque si todos fallan), lanzamos todos los motores disponibles
-    # en paralelo y aceptamos el primer resultado valido.
-    # Tiempo por bloque: O(max(tiempo_de_cada_motor)) en vez de O(sum(...)).
     import concurrent.futures
 
     def _probar_motor(method_name: str, fn: Callable) -> tuple[str, str | None]:
         try:
-            return method_name, fn(text_processed, src_lang, target)
+            res = fn(query_text, src_lang, target)
+            if res and is_all_caps:
+                res = res.upper()
+            return method_name, res
         except Exception as e:
             print(f"[translate] {method_name} error: {e}")
             return method_name, None
@@ -632,7 +667,9 @@ def _translate_one(
         with _google_rate_limit_lock:
             _google_rate_limit_state["backoff_until"] = 0.0
         try:
-            retry_result = _translate_google(text_processed, src_lang, target)
+            retry_result = _translate_google(query_text, src_lang, target)
+            if retry_result and is_all_caps:
+                retry_result = retry_result.upper()
             if retry_result and _resultado_valido("google-retry", retry_result, src_lang):
                 print(f"[translate] Google retry {attempt + 1} OK: '{retry_result[:50]}'")
                 if translation_cache_available and cache_set is not None:

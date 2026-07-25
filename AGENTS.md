@@ -15,7 +15,7 @@
 | `config.py` | Constantes globales: paths, `LANGUAGES`, `CSP_POLICY`, patrones de ruido (`MARGIN_NOISE_PATTERNS`, `WATERMARK_PATTERNS`), glosario pre-OCR (`GLOSARIO_PRE`). | 6KB |
 | `translator.py` | Lógica de traducción: detección de idioma (`_detect_language_robust`), 3 motores en **paralelo** (CT2 CTranslate2 int8 → ArgosTranslate → Google Translate), validación de traducción (6 validaciones anti-basura), glosarios PRE/POST, filtro pre-Argos para OCR noise. **Google retry con backoff** (5s, 15s, 30s) cuando todos los motores fallan (fix SIN_TRAD). Cache injectado desde server.py. | 28KB |
 | `ocr_utils.py` | OCR con EasyOCR (GPU→CPU fallback), pre-filtro de imagen, inpainting con OpenCV (INPAINT_NS), detección de globos de diálogo, máscara de glifos, sampleo de color, fusión y filtrado de bloques (9 filtros post-merge). **3 niveles de fallback**: directo → CLAHE+sharpen → CTD (ComicTextDetector). **Modo CTD-only** (`use_ctd_only=True`) salta EasyOCR completo para páginas donde EasyOCR consistentemente falla. **Optimizado**: canvas_size=2500px, text_threshold=0.18, mag_ratio=1.2. | 24KB |
-| `routes/api.py` | Blueprint REST: `/api/health`, `/api/translate`, `/api/translate-batch`, `/api/process-page`. **Expone `ocr_mode`** en `/api/process-page`: `"auto"` (3 niveles), `"easyocr"` (solo EasyOCR), `"ctd"` (solo CTD). Importa directamente de los submódulos. | 11KB |
+| `routes/api.py` | Blueprint REST: `/api/health`, `/api/translate`, `/api/translate-batch`, `/api/process-page`. **Expone `ocr_mode`** en `/api/process-page` (default `"ctd"`): `"ctd"` (solo CTD, más rápido y mejor cobertura), `"auto"` (3 niveles), `"easyocr"` (solo EasyOCR). Importa directamente de los submódulos. | 11KB |
 | `routes/main.py` | Blueprint de rutas estáticas con protección contra path traversal. | 1KB |
 | `ocr_ctd_fallback.py` | Fallback OCR con **CTD (ComicTextDetector)** para texto artístico. Detecta regiones de texto vía modelo ConvNeXt (76MB), luego EasyOCR reconoce en regiones recortadas. **Filtro post-detección**: área mínima 400px², altura mín 8px, aspect ratio 0.4-20, máximo 15 regiones. Usado como tier 3 en modo `auto`, o como único motor en modo `ctd`. Incluye `preload_ctd()` para carga lazy thread-safe. | 13KB |
 | `index.html` | UI HTML (~339 líneas): estructura del editor visual, CSP vía `<meta>`, detección de Brave Leo/Shields. | 17KB |
@@ -64,6 +64,7 @@
 | `_get_google_session()` | ~58 | Double-checked locking con `_google_session_lock`. La sesión HTTP se crea **dentro del lock**. |
 | `_detect_language_robust()` | ~96 | langdetect thread-local + heurística `_detect_language_simple`. Mapeo zh-cn/zh-tw → zh. |
 | `_ensure_argo_package()` | ~20 | Descarga modelos Argos con lock para evitar descargas duplicadas. |
+| `_CT2_MODELS` (dict global) | ~35 | **18 pares de idiomas** (10 originales + 6 CJK: ja|en, en|ja, ko|en, en|ko, zh|en, en|zh + 2 legacy). Cada entrada mapea `"src|tgt"` a un modelo Helsinki-NLP OPUS-MT. **Si se agrega un par, debe coincidir exactamente** con los códigos ISO de `_detect_language_robust()` (ja, ko, zh). Modelos lazy-load: descarga + conversión CT2 en primer uso. No modificar las keys sin verificar que el pipeline `_get_ct2_translator()` siga funcionando (usa `f"{source}|{target}"` como lookup). |
 
 ### `ocr_utils.py`
 
@@ -71,7 +72,7 @@
 |---|---|---|
 | `_get_ocr_reader()` | ~20 | Lazy-loading EasyOCR con `threading.Lock()`. GPU→CPU fallback. No cargar en hilo secundario en Windows. |
 | `_detect_and_ocr()` | ~160 | Parámetros actuales: `text_threshold=0.18`, `low_text=0.12`, `min_size=8`, `mag_ratio=1.2`, `canvas_size=2500`. 3 niveles de fallback: directo → CLAHE+sharpen → CTD. Acepta `use_ctd_only` (salta EasyOCR en imagen completa) y `allow_fallback` (desactiva fallbacks en modo easyocr-only). |
-| `_group_and_merge_blocks()` | ~260 | Aplica 9 filtros post-merge: números puros, patrones numéricos, comillas, puntuación suelta, aspecto estrecho, chars sueltos, baja confianza, dígito+letra. Fusión horizontal con gap tolerante `max(35, w*2.5)`. |
+| `_group_and_merge_blocks()` | ~260 | **⚠️ Bug histórico corregido**: los patrones `WATERMARK_PATTERNS`, `MARGIN_NOISE_PATTERNS` y URL ahora se verifican contra el texto ORIGINAL del OCR (**antes** de limpiar símbolos). Antes se verificaban después de `re.sub(r'[/.,:;...]', ...)` que destruía `/`, `.`, `,` — los caracteres que necesitan las fechas/horas ("13/7/26", "4.58 p.m") para matchear. **9 filtros post-merge**: números puros, patrones numéricos, comillas, puntuación suelta, aspecto estrecho, chars sueltos, baja confianza, dígito+letra. Fusión horizontal con gap tolerante `max(35, w*2.5)`. |
 | `_build_inpaint_mask()` | ~390 | Para globos de diálogo usa máscara de solo-glifos (preserva forma del globo). Para texto flotante usa rectángulo completo. |
 | `_pre_filter_image()` | ~120 | Filtro pre-OCR con morfología OpenCV. Franjas 4% superior/inferior + líneas horizontales. |
 
@@ -104,7 +105,7 @@
 
 ## 4. Estado Actual
 
-**Última actualización**: 2026-07-22
+**Última actualización**: 2026-07-24
 
 ### Cambios acumulados (Julio 2026)
 
@@ -122,14 +123,23 @@ Tres optimizaciones que reducen el tiempo por página de ~35-50s a ~10-18s.
 
 | # | Cambio | Archivo | Impacto |
 |---|--------|---------|---------|
-| 25 | **Procesamiento de páginas en paralelo**: `process_all_pages.py` reescrito con arquitectura productor-consumidor (1 render thread + N API workers). Checkpoint cada 10 páginas thread-safe. Tiempo 128 páginas: ~75-100 min → ~20-35 min. N=2 por defecto (--workers CLI) para evitar saturar semáforo OCR. | `process_all_pages.py` | **3x** total |
+| 25 | **Procesamiento de páginas en paralelo**: `process_all_pages.py` reescrito con arquitectura productor-consumidor (1 render thread + N API workers). Checkpoint cada 10 páginas thread-safe. Tiempo 128 páginas: ~75-100 min → ~20-35 min. N=3 por defecto (--workers CLI, punto óptimo benchmark: 2 es seguro, 4 causa timeouts). | `process_all_pages.py` | **3x** total |
 | 26 | **Bug fix**: `#` literal antes de URL en API call (`f"#{API_URL}/api/process-page"`) invalidaba TODAS las llamadas — 0 páginas procesadas. Corregido a `f"{API_URL}/api/process-page"`. También eliminado `import threading` duplicado. | `process_all_pages.py` | Bug crítico ✅ |
 | 27 | **Bug fix `is_lenient`**: cuando un motor devuelve `trad == orig` en modo lenient (≤3 palabras), ahora verifica con `_detect_language_robust()`. Si el texto sigue en idioma origen → rechazar y probar siguiente motor. Si ya está en destino → aceptar. Antes aceptaba cualquier resultado idéntico. | `translator.py` | Bug crítico ✅ |
-| 28 | **Modo CTD-only**: nuevo parámetro `ocr_mode` en `/api/process-page` (`auto`/`easyocr`/`ctd`). `use_ctd_only=True` en `_detect_and_ocr()` salta EasyOCR de imagen completa y va directo a CTD. `allow_fallback=False` en modo `easyocr` desactiva fallbacks. Ahorra ~1-2s en páginas donde EasyOCR consistentemente falla. | `ocr_utils.py`, `routes/api.py` | 🆕 Modo CTD |
+| 28 | **Modo CTD-only**: nuevo parámetro `ocr_mode` en `/api/process-page` (`auto`/`easyocr`/`ctd`). `use_ctd_only=True` en `_detect_and_ocr()` salta EasyOCR de imagen completa y va directo a CTD. `allow_fallback=False` en modo `easyocr` desactiva fallbacks. Ahorra ~1-2s en páginas donde EasyOCR consistentemente falla. **Default cambiado de `auto` a `ctd`** (benchmark: 2x más rápido, 93.9% cobertura vs 87.0%). | `ocr_utils.py`, `routes/api.py` | 🆕 Modo CTD |
 | 29 | **Sincronización de patrones app.js ↔ config.py**: eliminados `olympus|scanlation|zonaolympus|scan_group` de `GLOBAL_NOISE_PATTERNS` y `capítulo|cómo criar|how to raise` de `MARGIN_NOISE_PATTERNS` en `app.js` para coincidir con `config.py`. Verificado con `node --check`. | `app.js`, `config.py` | 🆕 Sincronizado |
 | 30 | **Fix SIN_TRAD — Google retry con backoff**: cuando todos los motores (CT2, Argos, Google) fallan en paralelo, se reintenta Google 3 veces con backoff progresivo (5s, 15s, 30s), reseteando el rate limit entre intentos. También se eliminaron 2 líneas de código muerto duplicadas al final de `_translate_one()`. | `translator.py` | 🆕 Fix SIN_TRAD |
 | 31 | **Métrica de calidad real**: análisis de 723 bloques traducidos muestra 75.8% aceptable (BUENA + LITERAL + OCR_NOISY), 15.9% OCR_GARBAGE (running headers principalmente), 8.3% UNTRANSLATED. Documentado en CODEGRAPH.md como referencia de calidad. | `CODEGRAPH.md` | 📊 Benchmark real |
 | 32 | **Fix running headers**: el symbol cleaning (`re.sub` removiendo `/`, `.`, `,`, `:`) se ejecutaba ANTES de verificar MARGIN_NOISE_PATTERNS, destruyendo patrones de fecha/hora como "13/7/26" y "4.58 p.m". Movido el filtro ANTES del cleaning. | `ocr_utils.py` | 🐛 Fix bug crítico |
+
+#### Sesión 2026-07-24 — Defaults optimizados + CT2 18 pares CJK
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 33 | **Default workers 3** (antes 2): benchmark demostró que 3 workers es el punto óptimo (4 causa timeouts en páginas pesadas). Tiempo 128 págs CTD: 4.6 min con 3 workers vs 5.8 min con 2. | `process_all_pages.py` | **-20%** tiempo |
+| 34 | **Default ocr_mode `ctd`** (antes `auto`): benchmark demostró que CTD es 2x más rápido (4.6 min vs 9.3 min) con mejor cobertura (93.9% vs 87.0%). El pipeline híbrido (EasyOCR con fallback CTD) sigue disponible explícitamente con `--ocr-mode auto`. | `routes/api.py`, `process_all_pages.py` | **2x** más rápido |
+| 35 | **Allow_fallback semánticamente correcto**: cuando `ocr_mode="ctd"`, `allow_fallback=False` explícitamente (antes era True pero inofensivo porque `use_ctd_only` saltaba el pipeline antes de llegar a `allow_fallback`). | `routes/api.py` | 🧹 Cleanup |
+| 36 | **CT2 18 pares CJK**: agregados ja|en, en|ja, ko|en, en|ko, zh|en, en|zh a `_CT2_MODELS`. Prueba ja→en con japonés real (kanji+kana): 10/10 traducciones exitosas en GPU (CUDA, int8). Modelos lazy-load: descarga+conversión automática en primer uso. Pipeline CT2 (busca `f"{source}|{target}"` en el dict) funciona sin cambios — `_detect_language_robust()` ya retorna ja, ko, zh. | `translator.py` | 🆕 CT2 CJK |
 
 #### Sesión anterior — CI unificado + calidad de traducción
 

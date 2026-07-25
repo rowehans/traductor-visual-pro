@@ -1016,6 +1016,7 @@ const MARGIN_NOISE_PATTERNS = [
   /^\d{1,4}\s*\/\s*\d{1,4}$/,
   /\b\d{1,4}\s+de\s+\d{1,4}\b/i,
   /\bp[aá]g(?:ina)?\.?\s?\d{1,4}\b/i,
+  /\b(?:p[aá]g(?:ina)?|page)\s+\d+\s+(?:de|of)\s+\d+\b/i,
   // NOTA: Ya no se incluyen patrones de títulos de capítulo ("capítulo",
   // "cómo criar", "how to raise") porque filtran contenido legítimo.
   // Los números de página y fechas se siguen filtrando con los patrones superiores.
@@ -1026,6 +1027,10 @@ const GLOBAL_NOISE_PATTERNS = [
   /https?:\/\/|www\.|\.(com|net|org|xyz|io)\b/i,
   /\bzonaolympus[\s-]?com\b/i,
   /\b1\s*[\s-]?c\s*[\s-]?2\s*[\s-]?e\b/i,           // sello "1 C 2 E"
+  // Broken "http://" — OCR mangles "https://" into "htps fo", "htp ://", "htpsjj" etc.
+  /\bhtps?\s*[:\s\/'"\\]/i,
+  // Domain with underscore/apostrophe instead of dot before TLD: "xyz_com", "site'com"
+  /[a-z]+[_'"\s]\s*(?:com|net|org|xyz|io)\b/i,
 ];
 
 function getBlockText(b) {

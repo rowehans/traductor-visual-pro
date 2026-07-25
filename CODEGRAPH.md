@@ -66,10 +66,10 @@
 │  ├─ POST /api/translate (texto individual)              │
 │  ├─ POST /api/translate-batch (multiples textos)        │
 │  └─ POST /api/process-page (OCR + inpainting + trad.)   │
-│       ├─ ocr_mode: "auto" | "easyocr" | "ctd"          │
-│       │   auto:    3 niveles (directo→CLAHE→CTD)       │
-│       │   easyocr: solo EasyOCR, sin fallbacks          │
-│       │   ctd:     solo CTD, salta EasyOCR completo    │
+│       ├─ ocr_mode (default "ctd"): "ctd" | "auto" | "easyocr"          │
+│       │   ctd:     solo CTD, salta EasyOCR completo (más rápido)    │
+│       │   auto:    3 niveles (directo→CLAHE→CTD)                     │
+│       │   easyocr: solo EasyOCR, sin fallbacks                       │
 ├─────────────────────────────────────────────────────────┤
 │                     routes/main.py                       │
 │  └─ GET /, GET /<path> (estaticos con path traversal    │
@@ -277,7 +277,7 @@ Cambio en código
 | `test_ci.py` | Test standalone de detección de idioma (sin modelos) |
 | `analisis_calidad.py` | Auditoría de calidad de traducción contra corpus de 221 textos |
 | `stress_test_memory.py` | Test de estrés **paralelo** (50 páginas, 4 workers, ~5 min con -Full) |
-| `process_all_pages.py` | **Procesamiento completo de PDF en paralelo** — 128 páginas, `--workers N` (default 2), `--ocr-mode auto|easyocr|ctd`, checkpoint cada 10 páginas, productor-consumidor (1 render + N API) |
+| `process_all_pages.py` | **Procesamiento completo de PDF en paralelo** — 128 páginas, `--workers N` (default 3, punto óptimo), `--ocr-mode ctd|auto|easyocr` (default `ctd`, 2x más rápido), checkpoint cada 10 páginas, productor-consumidor (1 render + N API) |
 | `.github/workflows/ci.yml` | CI en GitHub Actions |
 | `main.spec` | Configuración de PyInstaller para build del .exe |
 
