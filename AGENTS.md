@@ -219,6 +219,14 @@ Esto genera:
 
 El CI (Integración Continua) verifica que el proyecto esté sano después de cambios.
 
+### Pre-commit hook (se ejecuta automáticamente en cada `git commit`)
+
+El hook verifica sintaxis de Python (con `py_compile`) y JavaScript (con `node --check`)
+antes de permitir el commit. Usa el Python del entorno virtual (`env/Scripts/python.exe`)
+para evitar el stub de Microsoft Store. Si `node` no está en PATH, salta la verificación JS.
+
+Ubicación: `.git/hooks/pre-commit`
+
 ### Qué verifica
 
 | Paso | Test | Qué comprueba |
@@ -257,15 +265,17 @@ cd D:\crear traductor
 
 - **Siempre** después de cambiar `server.py`, `translator.py`, `ocr_utils.py`, `routes/api.py`, `config.py`
 - **Siempre** antes de compilar el .exe (ver §5)
-- **Siempre** antes de hacer commit
+- **Siempre** antes de hacer commit (el pre-commit hook verifica syntax automáticamente)
 - **Con `--full`** antes de un release o después de cambios grandes en el pipeline de traducción
 
 ### Si el CI falla
 
 1. Revisa el paso que falló (syntax, tests, servidor)
 2. Para errores de sintaxis: `python -m py_compile <archivo>` te da la línea exacta
-3. Para error del servidor: revisa `ci_server.log` en la raíz del proyecto
-4. Si `test_ci.py` falla: revisa `_detect_language_simple()` o `_detect_language_robust()` en `translator.py`
+3. Para errores de JavaScript: `node --check app.js`
+4. Para error del servidor: revisa `ci_server.log` en la raíz del proyecto
+5. Si `test_ci.py` falla: revisa `_detect_language_simple()` o `_detect_language_robust()` en `translator.py`
+6. Si el pre-commit hook falla porque no encuentra Python, verifica que `env/Scripts/python.exe` exista. Si el hook usa `sys.executable` por fallback, asegúrate de que no sea el stub de Microsoft Store (desinstalar desde Configuración > Aplicaciones > Alias de ejecución).
 
 ## 7. Flujo de Trabajo Recomendado
 

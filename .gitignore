@@ -48,6 +48,7 @@ result_hf.txt
 # Server logs
 server_*.txt
 srv_*.txt
+*.log
 nul
 
 # ─── Application Data ────────────────────────────

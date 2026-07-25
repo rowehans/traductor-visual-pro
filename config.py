@@ -114,7 +114,7 @@ WATERMARK_PATTERNS: Final[list[re.Pattern[str]]] = [
     # Broken "http://" — OCR mangles "https://" into "htps fo", "htp ://", "htpsjj" etc.
     re.compile(r'\bhtps?\s*[:\s/\'"\\\\]', re.IGNORECASE),
     # Domain with underscore/apostrophe instead of dot before TLD: "xyz_com", "site'com"
-    re.compile(r'[a-z]+[_\\\'"\s]\s*(?:com|net|org|xyz|io)\b', re.IGNORECASE),
+    re.compile(r'[a-z]+[_\'"\s]\s*(?:com|net|org|xyz|io)\b', re.IGNORECASE),
 ]
 
 
