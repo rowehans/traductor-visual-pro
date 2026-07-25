@@ -21,6 +21,7 @@ sentencepiece>=0.1.99
 
 # Database
 flask-sqlalchemy>=3.1.0
+flask-limiter>=3.5.0
 
 # Utilities
 requests>=2.31.0
