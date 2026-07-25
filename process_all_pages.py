@@ -6,15 +6,15 @@ semáforo, pero el inpainting/translate puede overlapearse entre requests.
 
 Parametros:
   --ocr-mode auto|easyocr|ctd    Modo OCR (default: auto)
-  --workers N                    Workers paralelos (default: 2)
+  --workers N                    Workers paralelos (default: 3)
 
-Tiempo estimado (128 páginas, 2 workers):
-  auto:    ~30-50 min
-  easyocr: ~25-40 min
-  ctd:     ~80-150 min
+Tiempo estimado (128 páginas, 3 workers):
+  auto:    ~8-12 min
+  easyocr: ~8-12 min
+  ctd:     ~4-6 min
 
-Nota: 4 workers satura el semaforo OCR (solo 1 request a la vez)
-      causando timeouts. 2 workers es optimo para este servidor.
+Nota: 4+ workers satura el semaforo OCR (solo 1 request a la vez)
+      causando timeouts. 3 workers es el punto optimo para este servidor.
 """
 import os, sys, time, json, base64, threading, concurrent.futures, argparse
 os.environ['PYTHONIOENCODING'] = 'utf-8'
@@ -35,8 +35,8 @@ _parser.add_argument(
 _parser.add_argument(
     "--workers",
     type=int,
-    default=2,
-    help="Workers paralelos (default: 2). 4+ satura el semaforo OCR"
+    default=3,
+    help="Workers paralelos (default: 3). 4+ satura el semaforo OCR"
 )
 _args, _ = _parser.parse_known_args()
 OCR_MODE: str = _args.ocr_mode
@@ -52,7 +52,7 @@ TIMEOUT_PER_PAGE = 120  # 120s per page
 MAX_RETRIES = 2          # reintentos en caso de timeout
 RETRY_DELAY = 5          # segundos de espera entre reintentos
 CHECKPOINT_EVERY = 10    # save every N pages
-# MAX_WORKERS se obtiene de --workers CLI (default: 2)
+# MAX_WORKERS se obtiene de --workers CLI (default: 3)
 
 # ── Thread-safe estado compartido ────────────────────────────────
 _lock = threading.Lock()
