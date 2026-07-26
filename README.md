@@ -10,6 +10,12 @@
   <a href="https://github.com/rowehans/traductor-visual-pro/releases">
     <img src="https://img.shields.io/github/downloads/rowehans/traductor-visual-pro/total?label=Descargas&color=success&logo=download" alt="Total downloads">
   </a>
+  <a href="https://github.com/rowehans/traductor-visual-pro/actions/workflows/ci.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/rowehans/traductor-visual-pro/ci.yml?label=CI&logo=github&color=blueviolet" alt="CI status">
+  </a>
+  <a href="https://github.com/rowehans/traductor-visual-pro/actions/workflows/release.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/rowehans/traductor-visual-pro/release.yml?label=Build&logo=githubactions&color=purple" alt="Build status">
+  </a>
   <a href="https://github.com/rowehans/traductor-visual-pro">
     <img src="https://img.shields.io/github/stars/rowehans/traductor-visual-pro?style=social" alt="Stars">
   </a>
