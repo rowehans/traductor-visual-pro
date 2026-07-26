@@ -63,28 +63,43 @@ except Exception as e:
     print(f"[cache] Cache no disponible: {e}")
 
 
-# ─── CT2 preload (background) ──────────────────────────────────
-# Pre-carga el modelo CT2 es→en al arrancar el servidor para evitar
-# la penalidad de ~21.5s en la primera traducción (carga de modelo
-# de 300MB a GPU, tokenizer, CUDA libraries, etc.).
-# Se ejecuta en un hilo daemon para no bloquear el arranque.
-def _preload_ct2_models() -> None:
+# ─── Preload EasyOCR + CT2 (background) ─────────────────────────
+# ORDEN CRÍTICO: EasyOCR PRIMERO (toma GPU, inicializa torch.cuda),
+# luego CT2 (detecta CUDA disponible, carga en GPU).
+# No se necesita force_cpu porque EasyOCR ya inicializó CUDA.
+# Si se invierte el orden, CT2 carga sus DLLs CUDA/cuDNN primero y
+# EasyOCR crashea con "Could not load symbol cudnnGetLibConfig".
+#
+# Ambos en GPU: EasyOCR ~0.5s/página, CT2 ~0.06s/traducción.
+# Verificado: GTX 1050 Ti, 4GB VRAM, VRAM usada ~130MB (por modelo).
+def _preload_background() -> None:
     try:
+        # ── Paso 1: EasyOCR en GPU ──────────────────────────────
+        print("[preload] Cargando EasyOCR (toma GPU, inicializa CUDA)...")
+        from ocr_utils import _get_ocr_reader
+        t0 = time.time()
+        reader = _get_ocr_reader("es")
+        if reader:
+            print(f"[preload] EasyOCR cargado en {time.time()-t0:.1f}s")
+        else:
+            print("[preload] EasyOCR no disponible")
+        
+        # ── Paso 2: CT2 en GPU (detecta CUDA disponible, auto-selecciona GPU) ──
         from translator import _get_ct2_translator
-        print("[preload] Precargando modelo CT2 es→en (background)...")
+        print("[preload] Precargando modelo CT2 es→en (auto-detecta GPU)...")
         t0 = time.time()
         translator, tokenizer = _get_ct2_translator("es", "en")
         if translator:
-            print(f"[preload] ✅ CT2 es→en cargado en {time.time()-t0:.1f}s")
-        # También precargar en→es (común en traducción inversa)
+            print(f"[preload] CT2 es→en cargado en {time.time()-t0:.1f}s (device: {translator.device})")
+        # También precargar en→es
         translator2, tokenizer2 = _get_ct2_translator("en", "es")
         if translator2:
-            print(f"[preload] ✅ CT2 en→es cargado")
+            print(f"[preload] CT2 en→es cargado (device: {translator2.device})")
     except Exception as e:
-        print(f"[preload] Error precargando CT2: {e}")
+        print(f"[preload] Error en precarga: {e}")
 
 
-_preload_thread = threading.Thread(target=_preload_ct2_models, daemon=True)
+_preload_thread = threading.Thread(target=_preload_background, daemon=True)
 _preload_thread.start()
 
 

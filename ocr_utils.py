@@ -54,35 +54,56 @@ def _get_ocr_reader(lang: str = "auto") -> Any:
         else:
             langs = ["es", "en", "pt", "fr", "de"]
 
-        # ═══ Fix cuDNN: EasyOCR siempre en CPU ════════════════════
-        # CT2 (CTranslate2) carga sus propias librerías CUDA/cuDNN
-        # al precargarse en server.py. Cuando PyTorch (para EasyOCR)
-        # intenta inicializar CUDA vía `torch.cuda.is_available()`,
-        # busca símbolos cuDNN que no existen en la versión cargada
-        # por CT2 → "Could not load symbol cudnnGetLibConfig" →
-        # crash fatal del proceso (error DLL 127).
-        #
-        # Solución: NO llamar nunca a `torch.cuda.is_available()`.
-        # EasyOCR se carga directamente en CPU (`gpu=False`).
-        # Esto evita que PyTorch inicialice CUDA/cuDNN por completo.
-        # CT2 sigue usando GPU sin problemas.
+        # ═══ Carga EasyOCR: GPU si CUDA disponible, CPU si no ═══════
+        # El orden de carga es CRÍTICO para evitar conflicto cuDNN:
+        #   - Si CT2 carga PRIMERO CUDA/cuDNN, luego PyTorch no puede
+        #     cargar sus propios símbolos cuDNN → crash.
+        #   - Server.py ahora carga EasyOCR PRIMERO (PyTorch toma GPU,
+        #     carga cuDNN), y luego CT2 con force_cpu=True.
+        #   - Si el usuario llama EasyOCR sin preload (caso de esquina),
+        #     también funciona: PyTorch inicializa CUDA, CT2 detecta
+        #     que CUDA está disponible pero se pasa force_cpu como fallback.
         # ════════════════════════════════════════════════════════════
-        print(f"[OCR] Cargando EasyOCR para {langs} en CPU (evita conflicto cuDNN con CT2)...")
+        print(f"[OCR] Cargando EasyOCR para {langs}...")
 
         try:
             import easyocr
+            # Intentar GPU primero. Si falla (CUDA no disponible, memoria insuficiente),
+            # EasyOCR automáticamente cae a CPU via el try/except que sigue.
+            gpu_available = True
+            try:
+                import torch
+                gpu_available = torch.cuda.is_available()
+            except Exception:
+                gpu_available = False
+
             reader = easyocr.Reader(
                 langs,
-                gpu=False,
+                gpu=gpu_available,
                 model_storage_directory=str(ROOT / "ocr_models"),
                 download_enabled=True,
                 verbose=False,
             )
             _ocr_readers[lang_key] = reader
-            print(f"[OCR] EasyOCR para {langs} listo en CPU.")
+            device_str = "GPU" if gpu_available else "CPU"
+            print(f"[OCR] EasyOCR para {langs} listo en {device_str}.")
         except Exception as e:
-            print(f"[OCR] Error cargando EasyOCR para {langs}: {e}")
-            return None
+            print(f"[OCR] Error cargando EasyOCR en GPU para {langs}: {e}")
+            print(f"[OCR] Reintentando en CPU...")
+            try:
+                import easyocr
+                reader = easyocr.Reader(
+                    langs,
+                    gpu=False,
+                    model_storage_directory=str(ROOT / "ocr_models"),
+                    download_enabled=True,
+                    verbose=False,
+                )
+                _ocr_readers[lang_key] = reader
+                print(f"[OCR] EasyOCR para {langs} listo en CPU (fallback).")
+            except Exception as e2:
+                print(f"[OCR] Error cargando EasyOCR incluso en CPU: {e2}")
+                return None
     return _ocr_readers[lang_key]
 
 

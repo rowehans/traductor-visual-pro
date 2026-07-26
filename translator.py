@@ -415,12 +415,16 @@ _ct2_tokenizers: dict[str, Any] = {}
 _ct2_lock: threading.Lock = threading.Lock()
 
 
-def _get_ct2_translator(source: str, target: str) -> tuple[Any, Any] | tuple[None, None]:
+def _get_ct2_translator(source: str, target: str, force_cpu: bool = False) -> tuple[Any, Any] | tuple[None, None]:
     """
     Obtiene (translator, tokenizer) para el par source|target.
     Descarga y convierte el modelo HF→CT2 automáticamente en la primera
     llamada para cada par. Usa archivo centinela para evitar reconversión
     si se interrumpe el proceso.
+
+    Args:
+        force_cpu: Si True, fuerza CT2 a usar CPU aunque CUDA esté disponible.
+                   Útil cuando EasyOCR ya tomó la GPU para evitar conflicto cuDNN.
     """
     pair_key = f"{source}|{target}"
     model_name = _CT2_MODELS.get(pair_key)
@@ -453,10 +457,10 @@ def _get_ct2_translator(source: str, target: str) -> tuple[Any, Any] | tuple[Non
                     f.write("ok")
                 print(f"[CT2] Conversión completada → {model_dir}")
 
-            # Cargar modelo CT2 (GPU si CUDA disponible, CPU si no)
+            # Cargar modelo CT2 (GPU si CUDA disponible y force_cpu=False, CPU si no)
             import ctranslate2
             import torch
-            ct2_device = "cuda" if torch.cuda.is_available() else "cpu"
+            ct2_device = "cpu" if force_cpu else ("cuda" if torch.cuda.is_available() else "cpu")
             _ct2_translators[pair_key] = ctranslate2.Translator(model_dir, device=ct2_device)
             if ct2_device == "cuda":
                 print(f"[CT2] Modelo {pair_key} cargado en GPU (CUDA, int8)")
