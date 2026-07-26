@@ -181,11 +181,6 @@ _OCR_MIN_SIZE: int = 8
 # Factor de upscaling interno de EasyOCR. 1.2 da un balance entre
 # detectar texto pequeño (manga) y no saturar con ruido de fondo.
 _OCR_MAG_RATIO: float = 1.2
-# Umbral de confianza para el tier híbrido EasyOCR→CTD.
-# Si EasyOCR encuentra bloques pero confianza promedio < este valor,
-# se ejecuta CTD como fallback directo (reemplaza basura de EasyOCR
-# en páginas con texto artístico/decorativo).
-_OCR_CONFIDENCE_HYBRID: float = 0.30
 
 
 def _run_ocr_on_image(reader: Any, img_bgr: _Img) -> list[Any]:
@@ -255,47 +250,16 @@ def _detect_and_ocr(
     img_bgr: _Img,
     lang_hint: str = "auto",
     allow_fallback: bool = True,
-    use_ctd_only: bool = False,
 ) -> list[dict[str, Any]]:
     """
-    OCR con pipeline híbrido (4 niveles):
+    OCR con pipeline de 2 niveles:
     1. EasyOCR directo (rápido, ~1s)
-       → Si confianza promedio >= 0.3: usar EasyOCR (confianza alta)
-       → Si confianza promedio < 0.3: ejecutar CTD en paralelo y comparar
     2. CLAHE+sharpen -> EasyOCR (texto de bajo contraste, solo si EasyOCR=0)
-    3. CTD detecta regiones -> EasyOCR reconoce (texto artístico)
-
-    El tier híbrido (1b) resuelve el problema de que EasyOCR detecta basura
-    en páginas artísticas ("AN", "4", "HA") con confianza baja, impidiendo
-    que CTD se ejecute como fallback. Ahora cuando EasyOCR produce basura,
-    se compara contra CTD y se elige el mejor.
 
     Args:
-        use_ctd_only: Si True, salta EasyOCR completo y va directo a CTD
-        allow_fallback: Si False, desactiva tiers 2 y 3 (solo EasyOCR)
+        allow_fallback: Si False, desactiva tier 2 (solo EasyOCR)
     """
-    reader = _get_ocr_reader(lang_hint) if not use_ctd_only else None
-
-    if use_ctd_only:
-        # ── Modo solo CTD ────────────────────────────────────────
-        print("[OCR] Modo solo CTD activado")
-        try:
-            from ocr_ctd_fallback import ctd_fallback_ocr, preload_ctd
-            preload_ctd()
-            ctd_reader = _get_ocr_reader(lang_hint)
-            if ctd_reader is None:
-                print("[OCR] No se pudo cargar EasyOCR para CTD")
-                return []
-            blocks = ctd_fallback_ocr(img_bgr, ctd_reader, lang_hint)
-            if blocks:
-                print(f"[OCR] CTD detecto {len(blocks)} bloques en modo solo CTD")
-                return blocks
-            print("[OCR] CTD no detecto texto en modo solo CTD")
-            return []
-        except Exception as e:
-            print(f"[OCR] CTD-only error: {e}")
-            return []
-
+    reader = _get_ocr_reader(lang_hint)
     if reader is None:
         return []
 
@@ -303,33 +267,9 @@ def _detect_and_ocr(
     results = _run_ocr_on_image(reader, img_bgr)
     blocks_easy = _ocr_results_to_blocks(results, img_bgr)
 
-    # ── Si EasyOCR encontró bloques con buena confianza, usarlos ──
     if blocks_easy:
         avg_conf = float(np.mean([b.get("confidence", 0) for b in blocks_easy]))
-        if avg_conf >= _OCR_CONFIDENCE_HYBRID:
-            print(f"[OCR] EasyOCR: {len(blocks_easy)} bloques (conf={avg_conf:.2f}) — suficiente")
-            return blocks_easy
-        
-        # ── Híbrido: EasyOCR confianza baja, CTD como fallback directo ──
-        # En páginas artísticas EasyOCR detecta basura ("AN", "4", "HA")
-        # con confianza baja pero > 0 bloques, impidiendo que CTD se ejecute.
-        # Con este fix: si la confianza es baja, CTD se ejecuta y reemplaza.
-        if allow_fallback:
-            print(f"[OCR] EasyOCR: {len(blocks_easy)} bloques conf={avg_conf:.2f}. "
-                  f"Probando CTD (confianza baja)...")
-            try:
-                from ocr_ctd_fallback import ctd_fallback_ocr, preload_ctd
-                preload_ctd()
-                blocks_ctd = ctd_fallback_ocr(img_bgr, reader, lang_hint)
-                if blocks_ctd:
-                    print(f"[OCR] CTD detecto {len(blocks_ctd)} bloques — usando CTD en vez de EasyOCR")
-                    return blocks_ctd
-                print(f"[OCR] CTD no detecto nada, usando EasyOCR (conf={avg_conf:.2f})")
-            except Exception as e:
-                print(f"[OCR] CTD fallback error: {e}, usando EasyOCR")
-        else:
-            print(f"[OCR] EasyOCR: {len(blocks_easy)} bloques conf={avg_conf:.2f} (easyocr-only)")
-        
+        print(f"[OCR] EasyOCR: {len(blocks_easy)} bloques (conf={avg_conf:.2f})")
         return blocks_easy
 
     if not allow_fallback:
@@ -344,19 +284,6 @@ def _detect_and_ocr(
     if blocks2:
         print(f"[OCR] CLAHE+sharpen detecto {len(blocks2)} bloques!")
         return blocks2
-
-    # ── Intento 3: CTD (ComicTextDetector) ───────────────────────
-    print("[OCR] EasyOCR y CLAHE fallaron. Probando CTD...")
-    try:
-        from ocr_ctd_fallback import ctd_fallback_ocr, preload_ctd
-        preload_ctd()
-        blocks3 = ctd_fallback_ocr(img_bgr, reader, lang_hint)
-        if blocks3:
-            print(f"[OCR] CTD detecto {len(blocks3)} bloques!")
-            return blocks3
-        print("[OCR] CTD tampoco detecto texto")
-    except Exception as e:
-        print(f"[OCR] CTD fallback error: {e}")
 
     print("[OCR] Todos los fallbacks agotados")
     return []

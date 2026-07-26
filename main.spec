@@ -28,18 +28,13 @@ DATAS = [
     (str(PROJECT_ROOT / "config.py"), "."),
     (str(PROJECT_ROOT / "translator.py"), "."),
     (str(PROJECT_ROOT / "ocr_utils.py"), "."),
-    (str(PROJECT_ROOT / "ocr_ctd_fallback.py"), "."),
     (str(PROJECT_ROOT / "cache.py"), "."),
     (str(PROJECT_ROOT / "models.py"), "."),
     (str(PROJECT_ROOT / "ratelimit.py"), "."),
     # Paquete routes/ (blueprints Flask)
     (str(PROJECT_ROOT / "routes"), "routes"),
 
-    # Módulos CTD (detección de texto artístico, ~100KB)
-    (str(PROJECT_ROOT / "ctd_lib"), "ctd_lib"),
 
-    # Modelo CTD (ComicTextDetector) — descargado ya en local
-    (str(PROJECT_ROOT / "models" / "ctd"), "models/ctd"),
 ]
 
 # ─── Hidden imports (módulos que PyInstaller no detecta) ─
@@ -67,10 +62,6 @@ HIDDEN_IMPORTS = [
     "PIL",
     "PIL.Image",
     "numpy",
-    # CTD dependencies (imports condicionales, PyInstaller no los detecta)
-    "pyclipper",
-    "shapely",
-    "einops",
     # Network / utils
     "requests",
     "urllib3",

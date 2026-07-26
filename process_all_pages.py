@@ -5,16 +5,14 @@ servidor simultáneamente. El servidor serializa el OCR internamente con
 semáforo, pero el inpainting/translate puede overlapearse entre requests.
 
 Parametros:
-  --ocr-mode auto|easyocr|ctd    Modo OCR (default: auto — EasyOCR GPU con fallbacks)
-  --workers N                    Workers paralelos (default: 3)
+  --ocr-mode auto|easyocr    Modo OCR (default: auto — EasyOCR GPU con fallback CLAHE)
+  --workers N                Workers paralelos (default: 3)
 
 Tiempo estimado real (128 páginas, 3 workers, benchmark Jul 2026):
-  auto:    ~8-12 min  ← DEFAULT (87.0% traduccion, EasyOCR GPU ~0.88s con fallback CTD)
-  ctd:     ~4-6 min (93.9% traduccion, mas rapido pero fragil)
-  easyocr: ~8-12 min (sin fallback CTD para texto artistico)
+  auto:    ~5-8 min  ← DEFAULT (EasyOCR GPU ~0.88s + CLAHE fallback)
+  easyocr: ~4-6 min (sin fallback CLAHE, mas rapido pero menor cobertura)
 
-Recomendacion: usar --ocr-mode auto (default) para mejor equilibrio velocidad/cobertura.
-CTD sigue disponible como opt-in (--ocr-mode ctd) pero es mas fragil.
+Recomendacion: usar --ocr-mode auto (default) para mejor cobertura.
 """
 import os, sys, time, json, base64, threading, concurrent.futures, argparse
 os.environ['PYTHONIOENCODING'] = 'utf-8'
@@ -26,9 +24,9 @@ import fitz, requests
 _parser = argparse.ArgumentParser(description="Procesar PDF completo con OCR y traducción")
 _parser.add_argument(
     "--ocr-mode",
-    choices=["auto", "easyocr", "ctd"],
+    choices=["auto", "easyocr"],
     default="auto",
-    help="Modo OCR: auto (default, 3 niveles con fallbacks), easyocr (solo EasyOCR GPU), ctd (solo CTD)"
+    help="Modo OCR: auto (default, EasyOCR GPU + CLAHE fallback), easyocr (solo EasyOCR GPU)"
 )
 _parser.add_argument(
     "--workers",
