@@ -2,22 +2,22 @@
 
 <p align="center">
   <a href="https://github.com/rowehans/traductor-visual-pro/releases/latest">
-    <img src="https://img.shields.io/github/v/release/rowehans/traductor-visual-pro?label=%C3%9Altima%20versi%C3%B3n&color=brightgreen" alt="Latest release">
+    <img src="https://img.shields.io/badge/%C3%9Altima%20versi%C3%B3n-IR%20a%20Releases-brightgreen?logo=github" alt="Latest release">
   </a>
   <a href="https://github.com/rowehans/traductor-visual-pro/releases/tag/v0.1.37">
     <img src="https://img.shields.io/badge/Descargar-Instalador%20(373%20MB)-blue?logo=windows" alt="Download">
   </a>
   <a href="https://github.com/rowehans/traductor-visual-pro/releases">
-    <img src="https://img.shields.io/github/downloads/rowehans/traductor-visual-pro/total?label=Descargas&color=success&logo=download" alt="Total downloads">
+    <img src="https://img.shields.io/badge/Descargas-IR%20a%20Releases-success?logo=download" alt="Downloads">
   </a>
   <a href="https://github.com/rowehans/traductor-visual-pro/actions/workflows/ci.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/rowehans/traductor-visual-pro/ci.yml?label=CI&logo=github&color=blueviolet" alt="CI status">
+    <img src="https://img.shields.io/badge/CI-Ver%20Actions-blueviolet?logo=github" alt="CI status">
   </a>
   <a href="https://github.com/rowehans/traductor-visual-pro/actions/workflows/release.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/rowehans/traductor-visual-pro/release.yml?label=Build&logo=githubactions&color=purple" alt="Build status">
+    <img src="https://img.shields.io/badge/Release-Ver%20Actions-purple?logo=githubactions" alt="Build status">
   </a>
   <a href="https://github.com/rowehans/traductor-visual-pro">
-    <img src="https://img.shields.io/github/stars/rowehans/traductor-visual-pro?style=social" alt="Stars">
+    <img src="https://img.shields.io/badge/Repo-Privado-lightgrey?logo=github" alt="Private repo">
   </a>
 </p>
 
