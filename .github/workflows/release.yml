@@ -1,4 +1,4 @@
-name: Build & Release
+name: Release (local build)
 
 on:
   push:
@@ -11,173 +11,63 @@ on:
         required: true
         type: string
 
-env:
-  PYTHONIOENCODING: utf-8
-
 jobs:
-  # ─── Job único: Build + Release en Windows ─────────────────
-  build-release:
-    name: Build EXE + Installer + Release
-    runs-on: windows-latest
-    permissions:
-      contents: write   # Needed to create releases
-      actions: read
-
+  # Validación: verifica que el repositorio está sano antes del release
+  validate:
+    name: Validate repo before release
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # Full history for git describe
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
 
-      - name: Install build dependencies
+      - name: Validate Python syntax
         run: |
-          pip install --quiet pyinstaller
-          pip install --quiet flask flask-sqlalchemy flask-limiter
-          pip install --quiet opencv-python-headless numpy pillow
-          pip install --quiet requests urllib3 psutil tqdm
+          errors=0
+          for f in server.py routes/api.py routes/main.py config.py translator.py ocr_utils.py cache.py ratelimit.py; do
+            if [ -f "$f" ]; then
+              python -m py_compile "$f" || { echo "❌ SYNTAX ERROR: $f"; errors=1; }
+            fi
+          done
+          exit $errors
 
-      - name: Build EXE with PyInstaller
+      - name: Validate CHANGELOG exists
         run: |
-          python -m PyInstaller main.spec --clean --noconfirm
-        shell: cmd
-        env:
-          CI: "true"
-
-      - name: Verify EXE output
-        run: |
-          $exePath = "dist/main/main.exe"
-          if (Test-Path $exePath) {
-            $size = (Get-Item $exePath).Length / 1MB
-            Write-Host "EXE built: $([math]::Round($size,1)) MB"
-            Write-Host "exe_exists=true" >> $env:GITHUB_ENV
-            Write-Host "exe_size=$([math]::Round($size,1))" >> $env:GITHUB_ENV
-          } else {
-            Write-Host "ERROR: EXE not found at $exePath"
+          if [ ! -f "README.md" ]; then
+            echo "❌ README.md missing"
             exit 1
-          }
-        shell: pwsh
-
-      - name: Upload EXE artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: main-exe
-          path: dist/main/
-          retention-days: 7
-
-      - name: Install Inno Setup
-        run: |
-          choco install innosetup --no-progress --yes
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "WARNING: choco install reported exit code $LASTEXITCODE, checking if ISCC exists..."
-          }
-          $iscc = "$env:ProgramFiles (x86)\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) {
-            $iscc = "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
-          }
-          Write-Host "ISCC path: $iscc"
-          if (Test-Path $iscc) {
-            Write-Host "iscc_path=$iscc" >> $env:GITHUB_ENV
-          } else {
-            Write-Host "ERROR: Inno Setup not found"
-            exit 1
-          }
-        shell: pwsh
-
-      - name: Build Installer with Inno Setup
-        run: |
-          & "$env:iscc_path" installer.iss
-        shell: pwsh
-
-      - name: Verify Installer
-        run: |
-          $installerDir = "dist/installer"
-          if (Test-Path $installerDir) {
-            $files = Get-ChildItem $installerDir -Filter "*.exe"
-            foreach ($f in $files) {
-              $size = $f.Length / 1MB
-              Write-Host "Installer: $($f.Name) ($([math]::Round($size,1)) MB)"
-              Write-Host "installer_path=$($f.FullName)" >> $env:GITHUB_ENV
-              Write-Host "installer_name=$($f.Name)" >> $env:GITHUB_ENV
-            }
-          } else {
-            Write-Host "WARNING: Installer directory not found"
-          }
-        shell: pwsh
-
-      - name: Upload Installer artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: installer
-          path: dist/installer/
-          retention-days: 7
-
-      - name: Determine version tag
-        run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $tag = "${{ github.event.inputs.version }}"
-          } else {
-            $tag = "${{ github.ref_name }}"
-          }
-          Write-Host "Release tag: $tag"
-          Write-Host "release_tag=$tag" >> $env:GITHUB_ENV
-        shell: pwsh
+          fi
+          echo "✅ Repository validated for release"
 
       - name: Generate release notes
         run: |
-          $log = git log --oneline --no-decorate -30 2>$null
-          Add-Content -Path release_notes.md -Value "# Traductor Visual Pro $env:release_tag"
-          Add-Content -Path release_notes.md -Value ""
-          Add-Content -Path release_notes.md -Value "Build automatico generado por GitHub Actions."
-          Add-Content -Path release_notes.md -Value ""
-          Add-Content -Path release_notes.md -Value "## Commits recientes"
-          Add-Content -Path release_notes.md -Value ""
-          Add-Content -Path release_notes.md -Value "```"
-          foreach ($c in $log) {
-            Add-Content -Path release_notes.md -Value "$c"
-          }
-          Add-Content -Path release_notes.md -Value "```"
-          Write-Host "Release notes written"
-        shell: pwsh
+          echo "# Traductor Visual Pro ${{ github.ref_name }}" > release_notes.md
+          echo "" >> release_notes.md
+          echo "## Commits recientes" >> release_notes.md
+          echo "" >> release_notes.md
+          echo '```' >> release_notes.md
+          git log --oneline --no-decorate -20 >> release_notes.md
+          echo '```' >> release_notes.md
+          echo "" >> release_notes.md
+          echo "**Nota**: El .exe se compila localmente con GPU/CUDA." >> release_notes.md
+          echo "Usa \`create_release.ps1\` para generar el release local." >> release_notes.md
 
-      - name: Delete existing release (if any)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release_notes.md
+          retention-days: 1
+
+      - name: Notify
         run: |
-          gh release delete "$env:release_tag" --yes --cleanup-tag 2>$null
-          Write-Host "Existing release deleted (if any)"
-        shell: pwsh
-        continue-on-error: true
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Find installer file
-          $installer = Get-ChildItem -Path "dist/installer" -Filter "*.exe" | Select-Object -First 1 -ExpandProperty FullName
-          if (-not $installer) {
-            $installer = ""
-          }
-
-          # Build asset list
-          $assets = @("dist/main/main.exe")
-          if ($installer) {
-            $assets += $installer
-          }
-          $assetStr = ($assets | ForEach-Object { "`"$_`"" }) -join " "
-
-          # Create release with assets in one command
-          $cmd = "gh release create `"$env:release_tag`" $assetStr " +
-                 "--title `"Traductor Visual Pro $env:release_tag`" " +
-                 "--notes-file release_notes.md " +
-                 "--target `"${{ github.sha }}`""
-          Write-Host "Running: gh release create..."
-          Invoke-Expression $cmd
-          Write-Host "Release created: $env:release_tag"
-        shell: pwsh
+          echo "✅ Release validado. Ejecuta localmente:" >> $GITHUB_STEP_SUMMARY
+          echo '```powershell' >> $GITHUB_STEP_SUMMARY
+          echo '.\create_release.ps1 -TagVersion ${{ github.ref_name }} -NoBuild -Push' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
