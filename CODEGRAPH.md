@@ -250,7 +250,7 @@ Cambio en código
       ▼  (si todo OK)
 ┌──────────────────────────────────────┐
 │  Compilar .exe (PyInstaller)         │  ← main.spec
-│     └─ dist/main/main.exe (321MB)    │
+│     └─ dist/main/main.exe (200MB)    │
 └──────────────────────────────────────┘
 ```
 

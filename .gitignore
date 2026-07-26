@@ -69,3 +69,14 @@ reporte_final.html
 
 # ─── Test Archives ─────────────────────────────
 tests/archive/
+
+# ─── Legacy / Temp ───────────────────────────────
+/no uso/
+/manga-image-translator/
+profiles/
+*.prof
+
+# ─── Test PDFs ──────────────────────────────────
+*_compressed.pdf
+*_test.pdf
+
