@@ -195,6 +195,9 @@ _SPA_VERB_SUFFIXES: tuple[str, ...] = (
     "ar", "er", "ir",
 )
 
+# Abreviaturas comunes sin vocales (no confundir con OCR garbage)
+_SHORT_TEXT_ALLOWED: set[str] = {"dr", "mr", "sr", "st", "jr", "vs", "tv", "cd", "pc", "ok", "km", "wc"}
+
 
 def _detect_language_simple(text: str) -> str:
     if any(0xac00 <= ord(c) <= 0xd7a3 for c in text):
@@ -323,6 +326,22 @@ def _es_ocr_noise(text: str) -> bool:
     weird_ocr_chars = sum(1 for c in t if ord(c) > 127 and c not in 'áéíóúñüÁÉÍÓÚÑÜ¿¡')
     if weird_ocr_chars >= 2:
         return True
+
+    # 6. Textos de 1 carácter que no sean vocales ni Y
+    #    ("Q", "N", "Z" son fragmentos de OCR, no palabras reales)
+    if len(t) == 1:
+        first = t[0].lower()
+        if first not in ("a", "e", "i", "o", "u", "y"):
+            return True
+
+    # 7. Textos de 2-3 caracteres sin vocales ni digitos (OCR fragments como "ze", "kc")
+    #    Excluye ordinales ("4th", "3rd") y etiquetas ("10%") con digitos.
+    if len(t) <= 3:
+        t_lower = t.lower()
+        has_vowel = any(c in "aeiouáéíóúü" for c in t_lower)
+        has_digit = any(c.isdigit() for c in t_lower)
+        if not has_vowel and not has_digit and t_lower not in _SHORT_TEXT_ALLOWED:
+            return True
 
     return False
 
@@ -632,6 +651,10 @@ def _translate_one(
         if not resultado:
             return False
         if resultado == text_processed:
+            # Lenient: textos cortos (nombres, SFX, onomatopeyas)
+            # se aceptan sin cambios aunque src_lang != target
+            if is_lenient:
+                return True
             # Si el texto no cambio y el idioma origen NO es el destino,
             # es una NO-traduccion (garbage in, garbage out).
             # Esto evita que OCR ruidoso como 'momms@' pase validacion
@@ -640,8 +663,6 @@ def _translate_one(
             if src_lang != target:
                 print(f"[translate] {method_name} mismo texto "
                       f"(src_lang={src_lang}, target={target}) — descartado")
-                return False
-            if not is_lenient:
                 return False
             result_lang = _detect_language_robust(resultado)
             if result_lang != target:
