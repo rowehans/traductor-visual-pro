@@ -14,10 +14,9 @@
 | `server.py` | Entry point Flask (~217 líneas). Importa de config.py/translator.py, envuelve _translate_one() con caché, **precarga EasyOCR + CT2 en background** (orden crítico: EasyOCR primero para inicializar CUDA, luego CT2 auto-detecta GPU). Puerto 5174. | 8KB |
 | `config.py` | Constantes globales: paths, `LANGUAGES`, `CSP_POLICY`, patrones de ruido (`MARGIN_NOISE_PATTERNS`, `WATERMARK_PATTERNS`), glosario pre-OCR (`GLOSARIO_PRE`). | 6KB |
 | `translator.py` | Lógica de traducción: detección de idioma (`_detect_language_robust`), 3 motores en **paralelo** vía **executor compartido** (4 threads, evita crear/destruir threads por llamada), validación de traducción (6 validaciones anti-basura), glosarios PRE/POST, filtro pre-Argos para OCR noise. **Google retry con backoff** (5s, 15s, 30s) cuando todos los motores fallan (fix SIN_TRAD). Cache injectado desde server.py. | 28KB |
-| `ocr_utils.py` | OCR con EasyOCR (GPU prioritario, CPU fallback automático si CUDA no disponible), pre-filtro de imagen, inpainting con OpenCV (INPAINT_NS), detección de globos de diálogo, máscara de glifos, sampleo de color, fusión y filtrado de bloques (9 filtros post-merge). **3 niveles de fallback**: directo → CLAHE+sharpen → CTD (ComicTextDetector). **Modo CTD-only** (`use_ctd_only=True`) salta EasyOCR completo para páginas donde EasyOCR consistentemente falla. **Optimizado**: canvas_size=2500px, text_threshold=0.18, mag_ratio=1.2. **GPU**: GTX 1050 Ti verificado ~0.88s/pág vs 5s CPU. | 24KB |
-| `routes/api.py` | Blueprint REST: `/api/health`, `/api/translate`, `/api/translate-batch`, `/api/process-page`. **Expone `ocr_mode`** en `/api/process-page` (default `"ctd"`): `"ctd"` (solo CTD), `"auto"` (3 niveles), `"easyocr"` (solo EasyOCR). **Incluye decorador `@profile_endpoint`** para profiling cProfile inline activable vía `?profile=1`. Importa directamente de los submódulos. | 11KB |
+| `ocr_utils.py` | OCR con EasyOCR (GPU prioritario, CPU fallback automático si CUDA no disponible), pre-filtro de imagen, inpainting con OpenCV (INPAINT_NS), detección de globos de diálogo, máscara de glifos, sampleo de color, fusión y filtrado de bloques (9 filtros post-merge). **Pipeline simplificado: 2 niveles**: EasyOCR directo → CLAHE+sharpen (sin CTD). **Optimizado**: canvas_size=2500px, text_threshold=0.18, mag_ratio=1.2. **GPU**: GTX 1050 Ti verificado ~0.88s/pág vs 5s CPU (5.7x). | 23KB |
+| `routes/api.py` | Blueprint REST: `/api/health`, `/api/translate`, `/api/translate-batch`, `/api/process-page`. **Expone `ocr_mode`** en `/api/process-page` (default `"easyocr"`): `"easyocr"` (solo EasyOCR GPU, ~18 min 128 págs), `"auto"` (EasyOCR + CLAHE fallback, ~72 min). **Incluye decorador `@profile_endpoint`** para profiling cProfile inline activable vía `?profile=1`. Importa directamente de los submódulos. | 11KB |
 | `routes/main.py` | Blueprint de rutas estáticas con protección contra path traversal. | 1KB |
-| `ocr_ctd_fallback.py` | Fallback OCR con **CTD (ComicTextDetector)** para texto artístico. Detecta regiones de texto vía modelo ConvNeXt (76MB), luego EasyOCR reconoce en regiones recortadas. **Filtro post-detección**: área mínima 400px², altura mín 8px, aspect ratio 0.4-20, máximo 15 regiones. Usado como tier 3 en modo `auto`, o como único motor en modo `ctd`. Incluye `preload_ctd()` para carga lazy thread-safe. | 13KB |
 | `index.html` | UI HTML (~339 líneas): estructura del editor visual, CSP vía `<meta>`, detección de Brave Leo/Shields. | 17KB |
 | `styles.css` | Estilos visuales premium (tema dark/light con variables CSS, glassmorphism, animaciones, responsive). | 40KB |
 | `cache.py` | Caché de traducciones en filesystem con TTL (7 días) y LRU eviction (5000 entradas máx). | 2KB |
@@ -27,7 +26,7 @@
 | `run_ci.py` | **CI unificado** — ejecuta syntax check + test_ci.py + servidor + analisis_calidad + stress test en un solo comando Python. No depende de PowerShell. `python run_ci.py --full` para test completo (~10 min). | 20KB |
 | `requirements.txt` | Dependencias Python pineadas. | 1KB |
 | `main.py` | Entry point del ejecutable (.exe). Modo launcher: oculta consola, inicia Flask, abre Chrome. Modo `--server`: solo servidor. | 4KB |
-| `main.spec` | PyInstaller spec para compilar `main.exe` con `console=False` (sin ventana CMD). Incluye CTD model como DATA. **Excluye módulos pesados** (torch, transformers, ct2, easyocr) — se cargan desde `env/` en runtime. **UPX deshabilitado**. .exe resultante: **200MB** (antes 2.6GB). | 3KB |
+| `main.spec` | PyInstaller spec para compilar `main.exe` con `console=False` (sin ventana CMD). CTD eliminado del bundle. **Excluye módulos pesados** (torch, transformers, ct2, easyocr) — se cargan desde `env/` en runtime. **UPX deshabilitado**. .exe resultante: **200MB** (antes 2.6GB). | 3KB |
 | `launcher.py` | Launcher alternativo (subprocess). Usa `env\Scripts\python.exe server.py` como proceso hijo. | 1KB |
 | `env/` | Entorno virtual Python con **todas** las dependencias (EasyOCR, OpenCV, Flask, ArgosTranslate, deep-translator, langdetect, torch). | — |
 
@@ -35,36 +34,33 @@
 
 Métricas obtenidas con profiling standalone directo (sin overhead HTTP) sobre el PDF de prueba (128 págs, manga español→inglés).
 
-| Etapa | Modo CTD | Modo EasyOCR (CPU) | % del pipeline |
-|:------|:--------:|:------------------:|:--------------:|
-| **Detección de texto** (OCR/CTD) | **0.21-0.25s**/pág | **5.06s**/pág | CTD: 30%, EasyOCR: 93% 🐌 |
-| **Inpainting** (OpenCV) | 0.15-0.22s/pág | 0.15-0.22s/pág | 27% (compartido) |
-| **Traducción CT2** (GPU int8) | 0.02-0.17s/bloque | 0.02-0.17s/bloque | 20% |
-| **Merge + filtros** | <0.01s/pág | <0.01s/pág | 0% (despreciable) |
-| **Overhead serialización** | ~0.1s/pág | ~0.1s/pág | 13% |
-| **Total por página** | **~0.7s** | **~5.5s** | 100% |
+| Etapa | EasyOCR GPU | % del pipeline |
+|:------|:-----------:|:--------------:|
+| **OCR** (EasyOCR GPU) | **0.88s**/pág | 70% |
+| **Inpainting** (OpenCV) | 0.15-0.22s/pág | 15% |
+| **Traducción CT2** (GPU int8) | 0.02-0.17s/bloque | 10% |
+| **Merge + filtros** | <0.01s/pág | 0% |
+| **Overhead serialización** | ~0.1s/pág | 5% |
+| **Total por página** | **~1.2s** | 100% |
 
-**Bottleneck principal:** EasyOCR en CPU consume **93%** del tiempo en modo `auto`. CTD (modo `ctd`, el default) es **13-24x más rápido** y reduce el tiempo total a ~0.7s/página.
+**Bottleneck principal:** EasyOCR GPU consume **70%** del tiempo/página. Traducción CT2 en GPU es casi instantánea (0.048s/bloque).
 
-**Proyección 128 páginas (3 workers, CTD):**
+**Benchmark real 128 páginas (workers=4, easyocr GPU, Jul 2026):**
 ```
-CTD:        0.25s × 128 / 3  =  10.7s
-Inpainting: 0.22s × 128 / 3  =   9.4s
-Traducción: 0.10s × 128 / 3  =   4.3s
-Overhead:   0.05s × 128 / 3  =   2.1s
-Trabajo puro (sin contención): ~27s
-+ colas worker + semáforo OCR
-  + render secuencial + warmup    3-5 min   ← benchmark real
-  (brecha por semáforo OCR=1, render secuencial fitz, colas entre workers)
+Tiempo total: 425s (7.1 min)  🚀
+Promedio/pág: 3.3s
+Cobertura:    128/128 (100%)
+Traducción:   519/623 (83.3%)
+Errores:      0
 ```
 
 **Jerarquía de bottlenecks:**
 
 | # | Bottleneck | Impacto | Estado |
 |:-:|:-----------|:-------:|:-------|
-| 1 | **EasyOCR en CPU** | 5s/pág cuando se usa | 🟢 Resuelto: **ambos en GPU** (EasyOCR 0.88s + CT2 0.048s). Orden de precarga crítico: EasyOCR primero → inicializa CUDA, luego CT2 auto-detecta GPU. GTX 1050 Ti verificado, 128MB VRAM, sin crash cuDNN. |
+| 1 | **EasyOCR GPU** | 0.88s/pág (70% del tiempo) | 🟢 Aceptable: GPU GTX 1050 Ti, 128MB VRAM, 5.7x vs CPU |
 | 2 | **Carga de modelos** (1ra llamada) | 1.6-8.8s one-time | 🟢 Resuelto: preload CT2 en background al arrancar |
-| 3 | **CTD en páginas vacías** | ~0.3s inútil | 🟡 Mitigado: semáforo OCR limita concurrencia |
+| 3 | **Semáforo OCR** (concurrencia limitada) | Colas entre workers | 🟡 Mitigado: workers=4 es punto óptimo, 5+ satura |
 | 4 | **Inpainting bloques grandes** | ~0.3s | 🟢 Aceptable: radio adaptativo ya optimizado |
 | 5 | **Overhead HTTP** | ~0.1s/pág | 🟢 Aceptable: sesión persistente reutiliza conexiones |
 
@@ -109,7 +105,7 @@ Trabajo puro (sin contención): ~27s
 | Función | Línea aprox. | Por qué es delicada |
 |---|---|---|
 | `_get_ocr_reader()` | ~20 | Lazy-loading EasyOCR con `threading.Lock()`. **GPU prioritario** (torch.cuda.is_available() → gpu=True), CPU fallback automático si CUDA no disponible o hay error. **Importante**: el orden de carga respecto a CT2 es crítico — EasyOCR debe cargar PRIMERO para inicializar torch.cuda antes que CT2 cargue sus DLLs cuDNN. Verificado: GTX 1050 Ti, ~0.88s/pág vs 5s CPU (5.7x). No cargar en hilo secundario en Windows. |
-| `_detect_and_ocr()` | ~160 | Parámetros actuales: `text_threshold=0.18`, `low_text=0.12`, `min_size=8`, `mag_ratio=1.2`, `canvas_size=2500`. 3 niveles de fallback: directo → CLAHE+sharpen → CTD. Acepta `use_ctd_only` (salta EasyOCR en imagen completa) y `allow_fallback` (desactiva fallbacks en modo easyocr-only). |
+| `_detect_and_ocr()` | ~160 | Parámetros actuales: `text_threshold=0.18`, `low_text=0.12`, `min_size=8`, `mag_ratio=1.2`, `canvas_size=2500`. **2 niveles** de fallback: directo → CLAHE+sharpen. CTD eliminado (dependencia externa frágil, ~84MB ahorrados). Acepta `allow_fallback` (desactiva CLAHE en modo easyocr-only). |
 | `_group_and_merge_blocks()` | ~260 | **⚠️ Bug histórico corregido**: los patrones `WATERMARK_PATTERNS`, `MARGIN_NOISE_PATTERNS` y URL ahora se verifican contra el texto ORIGINAL del OCR (**antes** de limpiar símbolos). Antes se verificaban después de `re.sub(r'[/.,:;...]', ...)` que destruía `/`, `.`, `,` — los caracteres que necesitan las fechas/horas ("13/7/26", "4.58 p.m") para matchear. **9 filtros post-merge**: números puros, patrones numéricos, comillas, puntuación suelta, aspecto estrecho, chars sueltos, baja confianza, dígito+letra. Fusión horizontal con gap tolerante `max(35, w*2.5)`. |
 | `_build_inpaint_mask()` | ~390 | Para globos de diálogo usa máscara de solo-glifos (preserva forma del globo). Para texto flotante usa rectángulo completo. |
 | `_pre_filter_image()` | ~120 | Filtro pre-OCR con morfología OpenCV. Franjas 4% superior/inferior + líneas horizontales. |
@@ -223,6 +219,14 @@ El refactor en módulos (`config.py`, `translator.py`, `ocr_utils.py`) fue compl
 | 20 | **Flag ENCODING_ROTO en analizador**: Reemplazado `SIN_MARCA` (`"[!]" not in t`, inútil ~100% de bloques) por `ENCODING_ROTO` (`"\ufffd" in t`) que detecta corrupción de encoding real. | `analizar_traduccion.py` |
 | 21 | **Eliminado catch-all en is_onomatopoeia()**: Ya no clasifica cualquier palabra mayúscula suelta como SFX; esos casos caen a UNTRANSLATED para revisión manual. | `analisis_calidad.py` |
 
+#### Sesión 2026-07-25-v2 — CTD eliminado + default easyocr + lenient fix (3 cambios)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 43 | **CTD eliminado completamente**: `ctd_lib/` (100KB), `ocr_ctd_fallback.py` (218 líneas), `models/ctd/comictextdetector.pt` (77MB), y 3 dependencias pip (pyclipper, shapely, einops ≈7MB). Pipeline OCR simplificado de 3 a 2 niveles (EasyOCR → CLAHE). `choices=["auto","easyocr"]`, sin modo `ctd`. Ahorro total: **~84MB**, 2690 líneas menos. | `ctd_lib/`, `ocr_ctd_fallback.py`, `ocr_utils.py`, `routes/api.py`, `process_all_pages.py`, `main.spec`, `requirements.txt` | **~84MB** + **~2.7K LOC** |
+| 44 | **Default OCR cambiado de `ctd` a `easyocr`**: el modo `auto` tomaba ~72 min por fallback CLAHE en páginas densas. `easyocr` (solo GPU) tarda **7.1 min** con workers=4, 100% cobertura, 0 errores. Modo `auto` sigue disponible como opt-in. | `process_all_pages.py`, `routes/api.py` | **10x** más rápido (72 min → 7.1 min) |
+| 45 | **Fix textos cortos — OCR garbage + lenient mode**: `_es_ocr_noise()` filtros 6-7 atrapan Q/N/ze (≤3 chars sin vocal). `_resultado_valido()` reordenado para aceptar nombres/SFX en lenient mode primero. Tasa traducción esperada: 82.8% → ~90%+. | `translator.py` | **+~7%** tasa traducción |
+
 #### Sesiones anteriores (2026-07-14 a 2026-07-20)
 
 _[46 correcciones de bugs: renderToken, hasServerInpainted, export canvases, base64 validation, glyph mask try/finally, Tesseract getter/setter, pdfPage.cleanup(), renderTask.cancel(), patrones de ruido unificados, mag_ratio adaptativo, fusión vertical, filtros OCR post-merge, traducción leniente para texto corto (1-3 palabras), etc.]_
@@ -285,6 +289,16 @@ Ubicación: `.git/hooks/pre-commit`
 | 3 | Iniciar servidor | `/api/health` + endpoints translate, batch, config, static |
 | 4 | `analisis_calidad.py` | Calidad de traducciones vs corpus de referencia |
 | 5 (opcional) | `stress_test_memory.py` | 50 páginas bajo carga (con `--full`) |
+
+### Archivos verificados por el CI
+
+```
+server.py, config.py, translator.py, ocr_utils.py,
+routes/api.py, routes/main.py, cache.py, models.py,
+ratelimit.py, main.py, process_all_pages.py
+```
+
+> **Nota**: `ocr_ctd_fallback.py` y `ctd_lib/` fueron eliminados en Julio 2026 (dependencia CTD frágil, ~84MB).
 
 ### Cómo ejecutar (recomendado)
 

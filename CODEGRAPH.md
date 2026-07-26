@@ -43,14 +43,11 @@
 │  ├─ _pre_filter_image (morfologia: 4% strips + lineas)  │
 │  ├─ _detect_and_ocr (text_threshold=0.18, mag_ratio=1.2,│
 │  │                   canvas_size=2500)                   │
-│  │    ├─ 3 niveles de fallback:                          │
-│  │    │    Tier 1: EasyOCR directo (rápido, ~1s)        │
+│  │    ├─ 2 niveles de fallback:                          │
+│  │    │    Tier 1: EasyOCR directo (GPU, ~0.88s)        │
 │  │    │    Tier 2: CLAHE+sharpen → EasyOCR (~1s)        │
-│  │    │    Tier 3: CTD detecta → EasyOCR reconoce (~3-5s)│
-│  │    ├─ use_ctd_only=True: salta tier 1 y 2, va directo│
-│  │    │   a CTD (modo ctd en API)                       │
-│  │    ├─ allow_fallback=False: desactiva tiers 2 y 3    │
-│  │    │   (modo easyocr en API)                         │
+│  │    ├─ allow_fallback=False: desactiva tier 2         │
+│  │    │   (modo easyocr, default)                       │
 │  ├─ _group_and_merge_blocks (9 filtros post-merge)      │
 │  ├─ _is_inside_speech_bubble (deteccion de globos)      │
 │  ├─ _build_glyph_mask_for_bubble (mascara solo-glifos)  │
@@ -59,23 +56,18 @@
 │  ├─ _sample_bg_color (perimetro del bloque)             │
 │  ├─ _base64_to_cv2 / _cv2_to_base64 (conversion)       │
 │  └─ _filter_watermarks_from_blocks (pre-filtro rapido)  │
-├─────────────────────────────────────────────────────────┤
-│                  ocr_ctd_fallback.py                      │
-│  Fallback OCR con CTD (ComicTextDetector).               │
-│  ┌─ Modelo: comictextdetector.pt (~76MB, ConvNeXt)      │
-│  ├─ _download_ctd_model (descarga lazy con .ctd_ready)  │
-│  ├─ preload_ctd (carga thread-safe con lock)            │
-│  └─ ctd_fallback_ocr (detecta regiones, EasyOCR lee)   │
+│  **CTD eliminado** (Julio 2026): dependencia externa    │
+│  frágil (~84MB) reemplazada por EasyOCR GPU (~0.88s/pág)│
 ├─────────────────────────────────────────────────────────┤
 │                     routes/api.py                        │
 │  ┌─ GET /api/health (estado: memoria, modelos, cache)   │
 │  ├─ POST /api/translate (texto individual)              │
 │  ├─ POST /api/translate-batch (multiples textos)        │
 │  └─ POST /api/process-page (OCR + inpainting + trad.)   │
-│       ├─ ocr_mode (default "ctd"): "ctd" | "auto" | "easyocr"          │
-│       │   ctd:     solo CTD, salta EasyOCR completo (más rápido)    │
-│       │   auto:    3 niveles (directo→CLAHE→CTD)                     │
-│       │   easyocr: solo EasyOCR, sin fallbacks                       │
+│       ├─ ocr_mode (default "easyocr"): "easyocr" | "auto"            │
+│       │   easyocr: solo EasyOCR GPU (default, ~7.1 min 128 págs)    │
+│       │   auto:    EasyOCR + CLAHE fallback (~72 min)                │
+│       ├─ Modos CTD eliminados: choices ahora ["easyocr", "auto"]     │
 ├─────────────────────────────────────────────────────────┤
 │                     routes/main.py                       │
 │  └─ GET /, GET /<path> (estaticos con path traversal    │
@@ -216,8 +208,7 @@ Cambio en código
 │     ├─ server.py / routes/*.py       │
 │     ├─ config.py / translator.py     │
 │     ├─ ocr_utils.py / models.py      │
-│     ├─ ocr_ctd_fallback.py            │
-│     └─ cache.py / ratelimit.py / main.py
+│     └─ cache.py / ratelimit.py / main.py / process_all_pages.py
 └──────────────────────────────────────┘
       │
       ▼
@@ -283,44 +274,43 @@ Métricas obtenidas con profiling standalone directo (sin overhead HTTP) sobre e
 
 | Etapa | Modo CTD | Modo EasyOCR (CPU) | % del pipeline |
 |:------|:--------:|:------------------:|:--------------:|
-| **Detección de texto** (OCR/CTD) | **0.21-0.25s**/pág | **5.06s**/pág | CTD: 30%, EasyOCR: 93% |
-| **Inpainting** (OpenCV) | 0.15-0.22s/pág | 0.15-0.22s/pág | 27% |
-| **Traducción CT2** (GPU int8) | 0.02-0.17s/bloque | 0.02-0.17s/bloque | 20% |
-| **Merge + filtros** | <0.01s/pág | <0.01s/pág | 0% |
-| **Overhead serialización** | ~0.1s/pág | ~0.1s/pág | 13% |
-| **Total por página** | **~0.7s** | **~5.5s** | 100% |
+| **OCR** (EasyOCR GPU) | **0.88s**/pág | 70% |
+| **Inpainting** (OpenCV) | 0.15-0.22s/pág | 15% |
+| **Traducción CT2** (GPU int8) | 0.02-0.17s/bloque | 10% |
+| **Merge + filtros** | <0.01s/pág | 0% |
+| **Overhead serialización** | ~0.1s/pág | 5% |
+| **Total por página** | **~1.2s** | 100% |
 
-**Bottleneck principal:** EasyOCR en CPU consume **93%** del tiempo en modo `auto`. CTD (modo `ctd`, el default) es **13-24x más rápido** y reduce el tiempo total a ~0.7s/página.
+**Bottleneck principal:** EasyOCR GPU consume **70%** del tiempo/página. Traducción en GPU es casi instantánea (0.048s/bloque).
 
-**Proyección 128 páginas (3 workers, CTD):**
+**Benchmark real 128 páginas (workers=4, easyocr GPU, Jul 2026):**
 ```
-CTD:        0.25s × 128 / 3  =  10.7s
-Inpainting: 0.22s × 128 / 3  =   9.4s
-Traducción: 0.10s × 128 / 3  =   4.3s
-Overhead:   0.05s × 128 / 3  =   2.1s
-Trabajo puro (sin contención): ~27s
-+ colas + warmup + render         3-5 min   ← benchmark real
+Tiempo total: 425s (7.1 min)
+Promedio/pág: 3.3s (incluye overhead de workers + render)
+Cobertura:    128/128 (100%)
+Traducción:   519/623 (83.3%)
+Errores:      0
 ```
 
-**Jerarquía de bottlenecks:**
+**Jerarquía de bottlenecks (modo easyocr, default):**
 
 | # | Bottleneck | Impacto | Estado |
 |:-:|:-----------|:-------:|:-------|
-| 1 | **EasyOCR en CPU** | 5s/pág cuando se usa | 🟢 **Resuelto: ambos en GPU** (EasyOCR 0.88s + CT2 0.048s). Orden precarga: EasyOCR → CUDA, luego CT2. Sin crash cuDNN. |
-| 2 | **Carga de modelos** (1ra llamada) | 1.6-8.8s one-time | Resuelto: preload CT2 en background al arrancar |
-| 3 | **CTD en páginas vacías** | ~0.3s inútil | Mitigado: semáforo OCR limita concurrencia |
-| 4 | **Inpainting bloques grandes** | ~0.3s | Aceptable: radio adaptativo ya optimizado |
-| 5 | **Overhead HTTP** | ~0.1s/pág | Aceptable: sesión persistente reutiliza conexiones |
+| 1 | **EasyOCR GPU** | 0.88s/pág (70%) | 🟢 Aceptable: GTX 1050 Ti, 128MB VRAM |
+| 2 | **Carga de modelos** (1ra llamada) | 1.6-8.8s one-time | 🟢 Resuelto: preload background |
+| 3 | **Semáforo OCR** (concurrencia) | Colas entre workers | 🟡 Mitigado: workers=4 punto óptimo |
+| 4 | **Inpainting bloques grandes** | ~0.3s | 🟢 Aceptable |
+| 5 | **Overhead HTTP** | ~0.1s/pág | 🟢 Aceptable |
 
 **Benchmark GPU (GTX 1050 Ti) — EasyOCR en GPU vs CPU:**
 
 | Métrica | CPU | GPU | Mejora |
 |:--------|:--:|:---:|:------:|
 | EasyOCR avg/página | 5.06s | **0.88s** | **5.7x** |
-| Pipeline total/página | ~5.5s | **0.7s** | **7.9x** |
-| 128 páginas (estimado, 3 workers) | ~18-35 min | **~8 min** | ~3x |
+| Pipeline total/página | ~5.5s | **~1.2s** | **4.6x** |
+| 128 páginas (workers=4) | ~18-35 min | **7.1 min** | **3-5x** |
 
-> **Nota actualizada (2026-07-25)**: **Ambos motores en GPU simultáneamente** ✅. Se eliminó `force_cpu=True` — CT2 ahora auto-detecta CUDA y carga en GPU. Orden de precarga crítico: **EasyOCR primero** (inicializa torch.cuda/cuDNN), luego **CT2** (auto-detecta `cuda`). Verificado: GTX 1050 Ti, 128MB VRAM, sin crash cuDNN. EasyOCR: 0.88s/pág (5.7x), CT2: 0.048s/trad (~6x). Pipeline total: **~0.7s/pág** en GPU vs ~5.5s en CPU.
+> **Nota**: Ambos motores en GPU simultáneamente ✅. Se eliminó `force_cpu=True` — CT2 ahora auto-detecta CUDA. Orden precarga crítico: **EasyOCR primero** (inicializa torch.cuda/cuDNN), luego **CT2** (auto-detecta `cuda`). Verificado: GTX 1050 Ti, sin crash. Pipeline total: **7.1 min/128 págs**.
 
 ### Herramientas CI y scripts de procesamiento
 | Archivo | Propósito |
@@ -330,7 +320,7 @@ Trabajo puro (sin contención): ~27s
 | `test_ci.py` | Test standalone de detección de idioma (sin modelos) |
 | `analisis_calidad.py` | Auditoría de calidad de traducción contra corpus de 221 textos |
 | `stress_test_memory.py` | Test de estrés **paralelo** (50 páginas, 4 workers, ~5 min con -Full) |
-| `process_all_pages.py` | **Procesamiento completo de PDF en paralelo** — 128 páginas, `--workers N` (default 3, punto óptimo), `--ocr-mode ctd|auto|easyocr` (default `ctd`, 2x más rápido), checkpoint cada 10 páginas, productor-consumidor (1 render + N API) |
+| `process_all_pages.py` | **Procesamiento completo de PDF en paralelo** — 128 páginas, `--workers N` (default 4, punto óptimo), `--ocr-mode easyocr|auto` (default `easyocr`, ~7.1 min), checkpoint cada 10 páginas, productor-consumidor (1 render + N API) |
 | `.github/workflows/ci.yml` | CI en GitHub Actions |
 | `main.spec` | Configuración de PyInstaller para build del .exe |
 
