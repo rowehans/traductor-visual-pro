@@ -3,6 +3,7 @@ name: CI/CD
 on:
   push:
     branches: [main, master]
+    tags: ['v*.*.*']
     paths-ignore:
       - '**.md'
       - '.gitignore'
@@ -18,7 +19,7 @@ env:
   PYTHONIOENCODING: utf-8
 
 jobs:
-  # ─── Job 1: Syntax check + test_ci.py (rápido, ~30s) ──────────
+  # ─── Job 1: Syntax + test_ci (rápido, ~30s) ──────────────────
   lint-test:
     name: Lint + Test
     runs-on: ubuntu-latest
@@ -39,20 +40,14 @@ jobs:
         run: |
           python run_ci.py --skip-server
         env:
-          # Env vars for run_ci.py in CI context
           CI: "true"
 
-      - name: Show CI summary
-        if: always()
-        run: |
-          echo "=== CI Summary ==="
-          echo "Lint + Test complete. Check output above for [OK]/[FAIL] markers."
-
-  # ─── Job 2: Server + endpoints (full deps, ~2 min) ──────────
+  # ─── Job 2: Server + endpoints (deps completas, ~2 min) ──────
   server-test:
     name: Server + API
     runs-on: ubuntu-latest
     needs: lint-test
+    if: github.ref_type == 'branch'  # Solo en branches, no en tags
     steps:
       - uses: actions/checkout@v4
 
@@ -70,17 +65,11 @@ jobs:
             2>/dev/null || true
 
       - name: Install Python dependencies
-        # Nota: server-test solo verifica health/startup del servidor Flask.
-        # Las dependencias pesadas (torch, easyocr, argostranslate) se
-        # importan lazy y no son necesarias para que el servidor arranque.
-        # Para probar endpoints reales de traduccion/OCR se necesitarian:
-        #   torch easyocr argostranslate
         run: |
           pip install --quiet \
             flask opencv-python-headless numpy pillow \
             langdetect deep-translator \
             flask-sqlalchemy \
-            ctranslate2 transformers sentencepiece huggingface_hub \
             requests
 
       - name: Run CI with server test
@@ -97,12 +86,12 @@ jobs:
           path: ci_server.log
           retention-days: 7
 
-  # ─── Job 3: Build distribution ───────────────────────────────
+  # ─── Job 3: Build frontend (solo main) ───────────────────────
   build:
     name: Build
     runs-on: ubuntu-latest
     needs: lint-test
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && github.ref_type == 'branch'
     steps:
       - uses: actions/checkout@v4
 
@@ -134,18 +123,85 @@ jobs:
           path: dist/
           retention-days: 14
 
-  # ─── Job 4: Notify ────────────────────────────────────────────
+  # ─── Job 4: Release validation (solo tags) ───────────────────
+  release-validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    needs: lint-test
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate Python syntax
+        run: |
+          errors=0
+          for f in server.py routes/api.py routes/main.py config.py translator.py ocr_utils.py cache.py ratelimit.py; do
+            if [ -f "$f" ]; then
+              python -m py_compile "$f" || { echo "❌ SYNTAX ERROR: $f"; errors=1; }
+            fi
+          done
+          exit $errors
+
+      - name: Validate README exists
+        run: |
+          if [ ! -f "README.md" ]; then
+            echo "❌ README.md missing"
+            exit 1
+          fi
+          echo "✅ Repository validated for release"
+
+      - name: Generate release notes
+        run: |
+          echo "# Traductor Visual Pro ${{ github.ref_name }}" > release_notes.md
+          echo "" >> release_notes.md
+          echo "## Commits recientes" >> release_notes.md
+          echo "" >> release_notes.md
+          echo '```' >> release_notes.md
+          git log --oneline --no-decorate -20 >> release_notes.md
+          echo '```' >> release_notes.md
+          echo "" >> release_notes.md
+          echo "**Nota**: El .exe se compila localmente con GPU/CUDA." >> release_notes.md
+          echo "Usa \`create_release.ps1\` para generar el release local." >> release_notes.md
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release_notes.md
+          retention-days: 1
+
+      - name: Notify
+        run: |
+          echo "## ✅ Release ${{ github.ref_name }} validado" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Ejecuta localmente para crear el release con GPU:" >> $GITHUB_STEP_SUMMARY
+          echo '```powershell' >> $GITHUB_STEP_SUMMARY
+          echo '.\create_release.ps1 -TagVersion ${{ github.ref_name }} -Push' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ─── Job 5: Summary ──────────────────────────────────────────
   summary:
     name: Summary
     runs-on: ubuntu-latest
     if: always()
-    needs: [lint-test, server-test, build]
+    needs: [lint-test, server-test, build, release-validate]
     steps:
       - run: |
           echo "## CI/CD Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Lint + Test | ${{ needs.lint-test.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Server + API | ${{ needs.server-test.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Build | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status | Trigger |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint + Test | ${{ needs.lint-test.result }} | Push/PR a main |" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "| Release validate | ${{ needs.release-validate.result }} | Tag push |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Server + API | ${{ needs.server-test.result }} | Push/PR a main |" >> $GITHUB_STEP_SUMMARY
+            echo "| Build | ${{ needs.build.result }} | Push a main |" >> $GITHUB_STEP_SUMMARY
+          fi
