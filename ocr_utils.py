@@ -171,16 +171,14 @@ def _preprocess_enhanced(img_bgr: _Img) -> _Img:
 # texto pequeño en burbujas de manga, pero sin llegar al original (4096+)
 # que saturaba EasyOCR.
 _OCR_CANVAS_SIZE: int = 2500
-# Thresholds equilibrados: ni demasiado agresivos (baja detección) ni
-# demasiado laxos (mucho ruido). ZOOM 1.2 reduce píxeles un 36%, pero
-# mag_ratio 1.2 compensa con upscaling interno. min_size 8 evita que
-# EasyOCR filtre texto pequeño real en burbujas de manga.
-_OCR_TEXT_THRESHOLD: float = 0.18
-_OCR_LOW_TEXT: float = 0.12
-_OCR_MIN_SIZE: int = 8
-# Factor de upscaling interno de EasyOCR. 1.2 da un balance entre
-# detectar texto pequeño (manga) y no saturar con ruido de fondo.
-_OCR_MAG_RATIO: float = 1.2
+# Thresholds ajustados para manga denso: más sensibles para capturar
+# texto pequeño en burbujas, onomatopeyas y diálogos fragmentados.
+_OCR_TEXT_THRESHOLD: float = 0.15
+_OCR_LOW_TEXT: float = 0.10
+_OCR_MIN_SIZE: int = 6
+# Factor de upscaling interno de EasyOCR. 1.3 mejora detección de
+# texto muy pequeño (manga) sin saturar con ruido de fondo.
+_OCR_MAG_RATIO: float = 1.3
 
 
 def _run_ocr_on_image(reader: Any, img_bgr: _Img) -> list[Any]:
@@ -308,8 +306,8 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
     if not blocks:
         return []
 
-    margin_top: float | None = img_h * 0.08 if img_h else None
-    margin_bottom: float | None = img_h * 0.92 if img_h else None
+    margin_top: float | None = img_h * 0.07 if img_h else None
+    margin_bottom: float | None = img_h * 0.96 if img_h else None
 
     pre_filtered: list[dict[str, Any]] = []
     for b in blocks:
@@ -339,9 +337,11 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
             print(f"[OCR] Filtrando URL pre-merge: '{text_raw}'")
             continue
 
-        # ── Ahora limpiar simbolos para uso downstream ────────────────
-        text = re.sub(r'[@#$%^&*()+={}\[\]|:;<>/\\]', '', text_raw).strip()
-        b["text"] = text
+        # ── Ahora corregir errores de OCR con glosario y limpiar simbolos ──
+        from translator import _aplicar_glosario
+        text_corr = _aplicar_glosario(text_raw)
+        text = re.sub(r'[@#$%^&*()+={}\[\]|:;<>/\\]', '', text_corr).strip()
+        b["text"] = text if text else text_corr
 
         pre_filtered.append(b)
 
@@ -389,6 +389,51 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
                 "fontSize": max(g["fontSize"] for g in group),
                 "textColor": group[0]["textColor"],
             })
+
+    # ─── Segunda pasada: fusión vertical (líneas de mismo globo) ───
+    # Combina bloques en la misma columna y cerca verticalmente
+    if len(merged) > 1:
+        sorted_v = sorted(merged, key=lambda b: (b["x"], b["y"]))
+        v_merged: list[dict[str, Any]] = []
+        v_used = [False] * len(sorted_v)
+        for i, b in enumerate(sorted_v):
+            if v_used[i]:
+                continue
+            v_group = [b]
+            v_used[i] = True
+            for j, b2 in enumerate(sorted_v):
+                if v_used[j] or i == j:
+                    continue
+                # Mismo columna (x overlap significativo)
+                x_overlap = min(b["x"] + b["w"], b2["x"] + b2["w"]) - max(b["x"], b2["x"])
+                min_w = min(b["w"], b2["w"])
+                if x_overlap < min_w * 0.5:
+                    continue
+                # Cerca verticalmente (gap < 1.5x altura)
+                gap_y = abs(b2["y"] - (b["y"] + b["h"]))
+                if gap_y < max(b["h"], b2["h"]) * 1.5:
+                    v_group.append(b2)
+                    v_used[j] = True
+            if len(v_group) > 1:
+                v_group.sort(key=lambda g: g["y"])
+                all_x = [g["x"] for g in v_group]
+                all_y = [g["y"] for g in v_group]
+                all_x2 = [g["x"] + g["w"] for g in v_group]
+                all_y2 = [g["y"] + g["h"] for g in v_group]
+                mx = min(all_x)
+                my = min(all_y)
+                mw = max(all_x2) - mx
+                mh = max(all_y2) - my
+                v_merged.append({
+                    "x": mx, "y": my, "w": mw, "h": mh,
+                    "text": " ".join(g["text"] for g in v_group),
+                    "confidence": float(np.mean([g["confidence"] for g in v_group])),
+                    "fontSize": max(g["fontSize"] for g in v_group),
+                    "textColor": v_group[0]["textColor"],
+                })
+            else:
+                v_merged.append(b)
+        merged = v_merged
 
     final_blocks: list[dict[str, Any]] = []
     for b in merged:

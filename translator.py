@@ -265,6 +265,72 @@ def _detect_language_robust(text: str) -> str:
     return simple
 
 
+# ─── Detección de SFX/Onomatopeyas (preservar sin traducir) ───────
+# Patrones comunes de onomatopeyas y efectos de sonido en manga/cómic
+_SFX_PATTERNS: list[re.Pattern[str]] = [
+    # Repetidos: "BANG BANG", "CRASH CRASH"
+    re.compile(r'^([A-Z]{2,})\s+\1+$', re.IGNORECASE),
+    # SFX con números: "BOOM 1", "CRASH 2"
+    re.compile(r'^[A-Z]{3,}\s+\d+$', re.IGNORECASE),
+    # SFX clásico manga: solo mayúsculas, 3-8 chars
+    re.compile(r'^[A-Z]{3,8}$'),
+    # SFX con puntuación: "KABOOM!", "CRASH...", "SFX:"
+    re.compile(r'^[A-Z]{3,}[!?.…:]+$', re.IGNORECASE),
+    # Onomatopeyas japonesas comunes romanizadas
+    re.compile(r'^(DON|DOOON|BAKU|BOKU|GARA|GORO|KARA|PACHIN|PAN|PAKU|PON|ZUDON|ZUBAN|GAKU|GYAA|HAA|HYUU|KYUU|MOKU|NYUU|PIKU|PUN|PURU|PYON|SHIN|SHUU|TON|TSU|UZU|WAKU|ZU|ZUN|ZUZU|BAAM|BOOM|CRASH|SLAM|THUD|WHAM|ZAP|ZAP)\d*[!?.]*$', re.IGNORECASE),
+    # Texto en burbuja de pensamiento: *pensamiento*
+    re.compile(r'^\*[^*]+\*$'),
+    # Nombres propios en mayúsculas (personajes): "NARUTO", "SAKURA"
+    re.compile(r'^[A-ZÁÉÍÓÚÑ]{3,12}$'),
+]
+
+
+def _es_sfx(text: str) -> bool:
+    """Detecta si un texto es onomatopeya/SFX y debe preservarse sin traducir."""
+    t = text.strip()
+    if not t or len(t) > 20:
+        return False
+    for pat in _SFX_PATTERNS:
+        if pat.match(t):
+            return True
+    return False
+
+
+def _post_process_translation(text: str, source_lang: str, target_lang: str) -> str:
+    """
+    Post-procesa la traducción para manga/cómic:
+    - Capitalización correcta de primera letra
+    - Puntuación final si falta
+    - Normaliza espacios múltiples
+    - Preserva SFX detectados
+    """
+    if not text:
+        return text
+    t = text.strip()
+    if not t:
+        return t
+    # Normalizar espacios múltiples
+    t = re.sub(r'\s{2,}', ' ', t)
+    # Si es SFX, devolver tal cual (ya se verifica antes de traducir, pero por si acaso)
+    if _es_sfx(t):
+        return t
+    # Capitalizar primera letra si es minúscula y hay más texto
+    if t[0].islower() and len(t) > 1 and t[1:].lstrip():
+        t = t[0].upper() + t[1:]
+    # Asegurar puntuación final para diálogos (no SFX, no nombres propios cortos)
+    if target_lang in ("en", "es") and len(t) > 2:
+        if not re.search(r'[.!?…。]$', t):
+            # No añadir punto si parece nombre propio o SFX
+            words = t.split()
+            if not (len(words) == 1 and words[0].isupper() and len(words[0]) > 2):
+                # Estilo manga: añadir "..." para diálogos continuados
+                if len(words) <= 8:
+                    t += "..."
+                else:
+                    t += "."
+    return t
+
+
 # ─── Glosario (correcciones pre/post traducción) ─────────────────
 def _aplicar_glosario(text: str) -> str:
     """Aplica correcciones del glosario usando patrones pre-compilados (GLOSARIO_REGEX)."""
@@ -597,6 +663,11 @@ def _translate_one(
     if not text:
         return ""
 
+    # ── SFX/Onomatopeyas: detectar y preservar sin traducir ──
+    if _es_sfx(text):
+        print(f"[translate] SFX detectado, preservando: '{text}'")
+        return text
+
     text_processed = _aplicar_glosario(text) if source == "es" or source == "auto" else text
 
     src_lang = source if source != "auto" else _detect_language_robust(text_processed)
@@ -611,7 +682,7 @@ def _translate_one(
 
     print(f"[translate] src_lang={src_lang}, target={target}, text='{text_processed[:50]}'")
 
-    is_lenient = source != "auto" and len(text_processed.split()) <= 3
+    is_lenient = len(text_processed.split()) <= 3
 
     # Normalización de Casing para textos en MAYÚSCULAS COMPLETAS (ej: "AHORA YUTIA", "PRIMERO SEOLLANG")
     # Los motores como Google/Argos tienden a ignorar palabras en mayúsculas pegadas a nombres propios.
@@ -687,13 +758,15 @@ def _translate_one(
         method_name, resultado = future.result()
         if _resultado_valido(method_name, resultado, src_lang):
             # Primer resultado valido: aceptarlo inmediatamente
-            print(f"[translate] {method_name} OK: '{resultado[:50]}'")
+            # Aplicar post-procesado para manga
+            final_result = _post_process_translation(resultado, src_lang, target)
+            print(f"[translate] {method_name} OK: '{final_result[:50]}'")
             if translation_cache_available and cache_set is not None:
                 try:
-                    cache_set(text_processed, src_lang, target, resultado)
+                    cache_set(text_processed, src_lang, target, final_result)
                 except Exception:
                     pass
-            return resultado  # type: ignore[no-any-return]
+            return final_result  # type: ignore[no-any-return]
         # Guardar el mejor para fallback si ninguno es valido
         if resultado and mejor_resultado is None:
             mejor_resultado = resultado
@@ -715,25 +788,29 @@ def _translate_one(
             if retry_result and is_all_caps:
                 retry_result = retry_result.upper()
             if retry_result and _resultado_valido("google-retry", retry_result, src_lang):
-                print(f"[translate] Google retry {attempt + 1} OK: '{retry_result[:50]}'")
+                final_result = _post_process_translation(retry_result, src_lang, target)
+                print(f"[translate] Google retry {attempt + 1} OK: '{final_result[:50]}'")
                 if translation_cache_available and cache_set is not None:
                     try:
-                        cache_set(text_processed, src_lang, target, retry_result)
+                        cache_set(text_processed, src_lang, target, final_result)
                     except Exception:
                         pass
-                return retry_result  # type: ignore[no-any-return]
+                return final_result  # type: ignore[no-any-return]
         except Exception as e:
             print(f"[translate] Google retry {attempt + 1} error: {e}")
 
-    # Fallback final: lo mejor que tengamos o el original
+    # Fallback final: lo mejor que tengamos
     if mejor_resultado is not None and mejor_nombre is not None:
-        print(f"[translate] Fallback final ({mejor_nombre}): '{mejor_resultado[:50]}'")
+        final_result = _post_process_translation(mejor_resultado, src_lang, target)
+        print(f"[translate] Fallback final ({mejor_nombre}): '{final_result[:50]}'")
         if translation_cache_available and cache_set is not None:
             try:
-                cache_set(text_processed, src_lang, target, mejor_resultado)
+                cache_set(text_processed, src_lang, target, final_result)
             except Exception:
                 pass
-        return mejor_resultado
+        return final_result
 
-    print(f"[translate] Todos los métodos fallaron (incluyendo retry), devolviendo original")
+    # ── SIN_TRAD fallback: copiar original si TODO falla ──
+    # Esto garantiza que nunca perdamos el texto original
+    print(f"[translate] SIN_TRAD: todos fallaron, copiando original")
     return text_processed

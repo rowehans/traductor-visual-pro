@@ -1042,8 +1042,8 @@ function getBlockText(b) {
 // local y bloques devueltos por el servidor (todos comparten x,y,w,h,text/source).
 function filterPageBlocks(blocks, pageHeight = pdfCanvas.height) {
   if (!blocks || !blocks.length) return blocks || [];
-  const marginTop = pageHeight * 0.08;
-  const marginBottom = pageHeight * 0.92;
+  const marginTop = pageHeight * 0.07;
+  const marginBottom = pageHeight * 0.96;
 
   return blocks.filter(b => {
     const text = getBlockText(b);

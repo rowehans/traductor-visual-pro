@@ -60,6 +60,8 @@ GLOSARIO_PRE: Final[dict[str, str]] = {
     r"\bTRAJCÓN\b": "TRAICIÓN",
     r"\bTRAIQÓN\b": "TRAICIÓN",  # OCR: 'C' misread as 'Q'
     r"\b@NCO\b": "CINCO",
+    r"\bNCO\b": "CINCO",        # OCR: 'CI' misread as '@' then stripped
+    r"\bNC0\b": "CINCO",
     r"\bLaaYUDa\b": "La ayuda",
     r"\bCavBrE\b": "Cabre",
     r"\bHANTENÍA\b": "MANTENÍA",
