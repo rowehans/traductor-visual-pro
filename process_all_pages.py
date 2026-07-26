@@ -4,15 +4,16 @@ AHORA EN PARALELO: usa ThreadPoolExecutor para enviar múltiples páginas al
 servidor simultáneamente. El servidor serializa el OCR internamente con
 semáforo, pero el inpainting/translate puede overlapearse entre requests.
 
-Parametros:
-  --ocr-mode auto|easyocr    Modo OCR (default: auto — EasyOCR GPU con fallback CLAHE)
+Parametros:  --ocr-mode auto|easyocr    Modo OCR (default: easyocr — solo EasyOCR GPU)
+
   --workers N                Workers paralelos (default: 3)
 
 Tiempo estimado real (128 páginas, 3 workers, benchmark Jul 2026):
-  auto:    ~5-8 min  ← DEFAULT (EasyOCR GPU ~0.88s + CLAHE fallback)
-  easyocr: ~4-6 min (sin fallback CLAHE, mas rapido pero menor cobertura)
+  easyocr: ~15-20 min  ← DEFAULT (EasyOCR GPU ~0.88s/pág, sin fallback)
+  auto:    ~60-75 min  (con fallback CLAHE, mejor cobertura pero mas lento)
 
-Recomendacion: usar --ocr-mode auto (default) para mejor cobertura.
+Recomendacion: usar --ocr-mode easyocr (default) para velocidad. Usar auto
+solo si hay páginas donde EasyOCR no detecta texto.
 """
 import os, sys, time, json, base64, threading, concurrent.futures, argparse
 os.environ['PYTHONIOENCODING'] = 'utf-8'
@@ -25,8 +26,8 @@ _parser = argparse.ArgumentParser(description="Procesar PDF completo con OCR y t
 _parser.add_argument(
     "--ocr-mode",
     choices=["auto", "easyocr"],
-    default="auto",
-    help="Modo OCR: auto (default, EasyOCR GPU + CLAHE fallback), easyocr (solo EasyOCR GPU)"
+    default="easyocr",
+    help="Modo OCR: easyocr (default, solo EasyOCR GPU), auto (EasyOCR GPU + CLAHE fallback)"
 )
 _parser.add_argument(
     "--workers",
