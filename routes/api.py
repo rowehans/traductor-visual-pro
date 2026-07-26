@@ -220,7 +220,7 @@ def process_page() -> Any:
     b64_image = str(payload.get("image", ""))
     target_lang = str(payload.get("target", "en")).strip() or "en"
     source_lang = str(payload.get("source", "auto")).strip() or "auto"
-    ocr_mode = str(payload.get("ocr_mode", "easyocr")).strip().lower()  # "auto", "easyocr", "ctd"
+    ocr_mode = str(payload.get("ocr_mode", "auto")).strip().lower()  # "auto" (default), "easyocr", "ctd"
     if not b64_image:
         return jsonify({"error": "No se proporcion\u00f3 imagen"}), 400
 
@@ -266,7 +266,7 @@ def process_page() -> Any:
         # OCR
         ocr_lang = "es" if detected_lang in ("es", "spa", "spanish", "espanol") else detected_lang
         t_ocr_before = _time.time()
-        # Modo OCR: "easyocr" (default, GPU 0.88s), "auto" (3 niveles con fallbacks), "ctd" (solo CTD)
+        # Modo OCR: "auto" (default, 3 niveles con fallbacks: EasyOCR→CLAHE→CTD), "easyocr" (solo EasyOCR GPU), "ctd" (solo CTD)
         use_ctd_only = ocr_mode == "ctd"
         allow_fallback = ocr_mode not in ("easyocr", "ctd")  # Solo auto tiene fallbacks
         blocks: list[dict[str, Any]] = _detect_and_ocr(

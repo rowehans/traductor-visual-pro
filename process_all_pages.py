@@ -5,16 +5,16 @@ servidor simultáneamente. El servidor serializa el OCR internamente con
 semáforo, pero el inpainting/translate puede overlapearse entre requests.
 
 Parametros:
-  --ocr-mode auto|easyocr|ctd    Modo OCR (default: ctd — 2x mas rapido, mejor tasa traduccion)
+  --ocr-mode auto|easyocr|ctd    Modo OCR (default: auto — EasyOCR GPU con fallbacks)
   --workers N                    Workers paralelos (default: 3)
 
 Tiempo estimado real (128 páginas, 3 workers, benchmark Jul 2026):
-  ctd:     ~4-6 min  ← DEFAULT (93.9% traduccion, 0 timeouts)
-  auto:    ~8-12 min (87.0% traduccion, 2x mas lento)
+  auto:    ~8-12 min  ← DEFAULT (87.0% traduccion, EasyOCR GPU ~0.88s con fallback CTD)
+  ctd:     ~4-6 min (93.9% traduccion, mas rapido pero fragil)
   easyocr: ~8-12 min (sin fallback CTD para texto artistico)
 
-Recomendacion: usar --ocr-mode ctd (default) para maxima velocidad.
-Usar --ocr-mode auto solo si hay paginas donde CTD no detecta texto.
+Recomendacion: usar --ocr-mode auto (default) para mejor equilibrio velocidad/cobertura.
+CTD sigue disponible como opt-in (--ocr-mode ctd) pero es mas fragil.
 """
 import os, sys, time, json, base64, threading, concurrent.futures, argparse
 os.environ['PYTHONIOENCODING'] = 'utf-8'
@@ -27,8 +27,8 @@ _parser = argparse.ArgumentParser(description="Procesar PDF completo con OCR y t
 _parser.add_argument(
     "--ocr-mode",
     choices=["auto", "easyocr", "ctd"],
-    default="easyocr",
-    help="Modo OCR: ctd (solo CTD, recomendado), auto (3 niveles), easyocr (solo EasyOCR)"
+    default="auto",
+    help="Modo OCR: auto (default, 3 niveles con fallbacks), easyocr (solo EasyOCR GPU), ctd (solo CTD)"
 )
 _parser.add_argument(
     "--workers",
