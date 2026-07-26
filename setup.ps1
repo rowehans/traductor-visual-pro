@@ -21,10 +21,10 @@ $Requirements = Join-Path $InstallDir "requirements.txt"
 $LogFile = Join-Path $InstallDir "install.log"
 
 function Write-Log {
-    param([string]$Message)
+    param([string]$Message, [string]$ForegroundColor = "White")
     $ts = Get-Date -Format "HH:mm:ss"
     $line = "[$ts] $Message"
-    Write-Host $line
+    Write-Host $line -ForegroundColor $ForegroundColor
     Add-Content -Path $LogFile -Value $line
 }
 
@@ -50,27 +50,63 @@ if ($OnlyExe) {
 if (Test-Path $PythonPath) {
     Write-Log "Entorno virtual ya existe"
 } else {
-    Write-Log "Creando entorno virtual..."
-    $py = "python"
-    $candidates = @("python.exe", "python3.exe")
-    if (Test-Path "${env:ProgramFiles}\Python312\python.exe") {
-        $candidates = $candidates + "${env:ProgramFiles}\Python312\python.exe"
-    }
-    if (Test-Path "${env:LocalAppData}\Programs\Python\Python312\python.exe") {
-        $candidates = $candidates + "${env:LocalAppData}\Programs\Python\Python312\python.exe"
-    }
+    Write-Log "Buscando Python 3..."
+    $py = $null
+    $candidates = @(
+        "${env:ProgramFiles}\Python313\python.exe",
+        "${env:ProgramFiles}\Python312\python.exe",
+        "${env:ProgramFiles}\Python311\python.exe",
+        "${env:LocalAppData}\Programs\Python\Python313\python.exe",
+        "${env:LocalAppData}\Programs\Python\Python312\python.exe",
+        "${env:LocalAppData}\Programs\Python\Python311\python.exe",
+        "python.exe",
+        "python3.exe"
+    )
     foreach ($c in $candidates) {
         try {
+            if (-not (Get-Command $c -ErrorAction SilentlyContinue)) { continue }
             $v = & $c --version 2>&1
             if ($v -match "Python 3") {
                 $py = $c
-                Write-Log "  Python: $v"
+                Write-Log "  Python encontrado: $v"
                 break
             }
-        } catch { }
+        } catch {
+            Write-Log "  Intentando $c ... no disponible"
+        }
     }
+    
+    if (-not $py) {
+        Write-Log ""
+        Write-Log "ERROR: No se encontro Python 3 instalado." -ForegroundColor Red
+        Write-Log "Este programa requiere Python 3.11 o superior."
+        Write-Log "Descargalo desde: https://www.python.org/downloads/"
+        Write-Log ""
+        Write-Log "Rutas buscadas (excluyendo PATH):"
+        foreach ($c in $candidates) {
+            if ($c -match "^[a-zA-Z]:") {
+                # Path absoluto: verificar con Test-Path
+                if (Test-Path $c) { Write-Log "  [EXISTE] $c" }
+                else { Write-Log "  [NO]    $c" }
+            } else {
+                # Comando en PATH: verificar con Get-Command
+                if (Get-Command $c -ErrorAction SilentlyContinue) {
+                    $resolved = (Get-Command $c).Source
+                    Write-Log "  [EXISTE] $c -> $resolved"
+                } else { Write-Log "  [NO]    $c" }
+            }
+        }
+        Write-Log ""
+        Write-Log "Despues de instalar Python, ejecuta este script nuevamente."
+        exit 1
+    }
+    
     & $py -m venv (Join-Path $InstallDir "env")
-    if ($LASTEXITCODE -ne 0) { Write-Log "Error creando venv"; exit 1 }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Log "Error creando venv con: $py"
+        Write-Log "Verifica que Python 3 este correctamente instalado."
+        exit 1
+    }
     Write-Log "Entorno virtual creado"
 }
 

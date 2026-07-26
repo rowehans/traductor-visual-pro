@@ -11,11 +11,11 @@
 | Archivo | Rol | Tamaño |
 |---|---|---|
 | `app.js` | Frontend completo (~2767 líneas): renderizado PDF/imagen vía pdf.js, editor de burbujas (draw/move/resize), OCR delegado al servidor EasyOCR, filtros de bloques, layout de texto en canvas (wrap+fit), comunicación con API Flask, exportación PNG/PDF, tema oscuro/claro, atajos de teclado, toasts, carga asíncrona de OpenCV.js vía callback. | 101KB |
-| `server.py` | Entry point Flask (~217 líneas). Importa de config.py/translator.py, envuelve _translate_one() con caché, **precarga CT2 en background** al arrancar, registra blueprints. Puerto 5174. | 8KB |
+| `server.py` | Entry point Flask (~217 líneas). Importa de config.py/translator.py, envuelve _translate_one() con caché, **precarga EasyOCR + CT2 en background** (orden crítico: EasyOCR primero para inicializar CUDA, luego CT2 auto-detecta GPU). Puerto 5174. | 8KB |
 | `config.py` | Constantes globales: paths, `LANGUAGES`, `CSP_POLICY`, patrones de ruido (`MARGIN_NOISE_PATTERNS`, `WATERMARK_PATTERNS`), glosario pre-OCR (`GLOSARIO_PRE`). | 6KB |
 | `translator.py` | Lógica de traducción: detección de idioma (`_detect_language_robust`), 3 motores en **paralelo** vía **executor compartido** (4 threads, evita crear/destruir threads por llamada), validación de traducción (6 validaciones anti-basura), glosarios PRE/POST, filtro pre-Argos para OCR noise. **Google retry con backoff** (5s, 15s, 30s) cuando todos los motores fallan (fix SIN_TRAD). Cache injectado desde server.py. | 28KB |
-| `ocr_utils.py` | OCR con EasyOCR (GPU→CPU fallback), pre-filtro de imagen, inpainting con OpenCV (INPAINT_NS), detección de globos de diálogo, máscara de glifos, sampleo de color, fusión y filtrado de bloques (9 filtros post-merge). **3 niveles de fallback**: directo → CLAHE+sharpen → CTD (ComicTextDetector). **Modo CTD-only** (`use_ctd_only=True`) salta EasyOCR completo para páginas donde EasyOCR consistentemente falla. **Optimizado**: canvas_size=2500px, text_threshold=0.18, mag_ratio=1.2. | 24KB |
-| `routes/api.py` | Blueprint REST: `/api/health`, `/api/translate`, `/api/translate-batch`, `/api/process-page`. **Expone `ocr_mode`** en `/api/process-page` (default `"ctd"`): `"ctd"` (solo CTD, más rápido y mejor cobertura), `"auto"` (3 niveles), `"easyocr"` (solo EasyOCR). Importa directamente de los submódulos. | 11KB |
+| `ocr_utils.py` | OCR con EasyOCR (GPU prioritario, CPU fallback automático si CUDA no disponible), pre-filtro de imagen, inpainting con OpenCV (INPAINT_NS), detección de globos de diálogo, máscara de glifos, sampleo de color, fusión y filtrado de bloques (9 filtros post-merge). **3 niveles de fallback**: directo → CLAHE+sharpen → CTD (ComicTextDetector). **Modo CTD-only** (`use_ctd_only=True`) salta EasyOCR completo para páginas donde EasyOCR consistentemente falla. **Optimizado**: canvas_size=2500px, text_threshold=0.18, mag_ratio=1.2. **GPU**: GTX 1050 Ti verificado ~0.88s/pág vs 5s CPU. | 24KB |
+| `routes/api.py` | Blueprint REST: `/api/health`, `/api/translate`, `/api/translate-batch`, `/api/process-page`. **Expone `ocr_mode`** en `/api/process-page` (default `"ctd"`): `"ctd"` (solo CTD), `"auto"` (3 niveles), `"easyocr"` (solo EasyOCR). **Incluye decorador `@profile_endpoint`** para profiling cProfile inline activable vía `?profile=1`. Importa directamente de los submódulos. | 11KB |
 | `routes/main.py` | Blueprint de rutas estáticas con protección contra path traversal. | 1KB |
 | `ocr_ctd_fallback.py` | Fallback OCR con **CTD (ComicTextDetector)** para texto artístico. Detecta regiones de texto vía modelo ConvNeXt (76MB), luego EasyOCR reconoce en regiones recortadas. **Filtro post-detección**: área mínima 400px², altura mín 8px, aspect ratio 0.4-20, máximo 15 regiones. Usado como tier 3 en modo `auto`, o como único motor en modo `ctd`. Incluye `preload_ctd()` para carga lazy thread-safe. | 13KB |
 | `index.html` | UI HTML (~339 líneas): estructura del editor visual, CSP vía `<meta>`, detección de Brave Leo/Shields. | 17KB |
@@ -30,6 +30,43 @@
 | `main.spec` | PyInstaller spec para compilar `main.exe` con `console=False` (sin ventana CMD). Incluye CTD model como DATA. **Excluye módulos pesados** (torch, transformers, ct2, easyocr) — se cargan desde `env/` en runtime. **UPX deshabilitado**. .exe resultante: **200MB** (antes 2.6GB). | 3KB |
 | `launcher.py` | Launcher alternativo (subprocess). Usa `env\Scripts\python.exe server.py` como proceso hijo. | 1KB |
 | `env/` | Entorno virtual Python con **todas** las dependencias (EasyOCR, OpenCV, Flask, ArgosTranslate, deep-translator, langdetect, torch). | — |
+
+### Perfilado de Rendimiento (2026-07-25)
+
+Métricas obtenidas con profiling standalone directo (sin overhead HTTP) sobre el PDF de prueba (128 págs, manga español→inglés).
+
+| Etapa | Modo CTD | Modo EasyOCR (CPU) | % del pipeline |
+|:------|:--------:|:------------------:|:--------------:|
+| **Detección de texto** (OCR/CTD) | **0.21-0.25s**/pág | **5.06s**/pág | CTD: 30%, EasyOCR: 93% 🐌 |
+| **Inpainting** (OpenCV) | 0.15-0.22s/pág | 0.15-0.22s/pág | 27% (compartido) |
+| **Traducción CT2** (GPU int8) | 0.02-0.17s/bloque | 0.02-0.17s/bloque | 20% |
+| **Merge + filtros** | <0.01s/pág | <0.01s/pág | 0% (despreciable) |
+| **Overhead serialización** | ~0.1s/pág | ~0.1s/pág | 13% |
+| **Total por página** | **~0.7s** | **~5.5s** | 100% |
+
+**Bottleneck principal:** EasyOCR en CPU consume **93%** del tiempo en modo `auto`. CTD (modo `ctd`, el default) es **13-24x más rápido** y reduce el tiempo total a ~0.7s/página.
+
+**Proyección 128 páginas (3 workers, CTD):**
+```
+CTD:        0.25s × 128 / 3  =  10.7s
+Inpainting: 0.22s × 128 / 3  =   9.4s
+Traducción: 0.10s × 128 / 3  =   4.3s
+Overhead:   0.05s × 128 / 3  =   2.1s
+Trabajo puro (sin contención): ~27s
++ colas worker + semáforo OCR
+  + render secuencial + warmup    3-5 min   ← benchmark real
+  (brecha por semáforo OCR=1, render secuencial fitz, colas entre workers)
+```
+
+**Jerarquía de bottlenecks:**
+
+| # | Bottleneck | Impacto | Estado |
+|:-:|:-----------|:-------:|:-------|
+| 1 | **EasyOCR en CPU** | 5s/pág cuando se usa | 🟢 Resuelto: **ambos en GPU** (EasyOCR 0.88s + CT2 0.048s). Orden de precarga crítico: EasyOCR primero → inicializa CUDA, luego CT2 auto-detecta GPU. GTX 1050 Ti verificado, 128MB VRAM, sin crash cuDNN. |
+| 2 | **Carga de modelos** (1ra llamada) | 1.6-8.8s one-time | 🟢 Resuelto: preload CT2 en background al arrancar |
+| 3 | **CTD en páginas vacías** | ~0.3s inútil | 🟡 Mitigado: semáforo OCR limita concurrencia |
+| 4 | **Inpainting bloques grandes** | ~0.3s | 🟢 Aceptable: radio adaptativo ya optimizado |
+| 5 | **Overhead HTTP** | ~0.1s/pág | 🟢 Aceptable: sesión persistente reutiliza conexiones |
 
 ---
 
@@ -53,6 +90,7 @@
 
 | Elemento | Línea | Por qué es delicado |
 |---|---|---|
+| `_preload_background()` | ~50 | **ORDEN CRÍTICO**: EasyOCR primero (inicializa CUDA), luego CT2 (auto-detecta GPU). NO INVERTIR. Si CT2 carga primero, sus DLLs cuDNN conflictúan con las de PyTorch → crash "Could not load symbol cudnnGetLibConfig". Verificado: GTX 1050 Ti, ambos en GPU, 128MB VRAM usados, sin crash. |
 | `_translate_one()` | ~95 | Wrapper que inyecta `cache_get`/`cache_set` en `translator._translate_one()`. **Debe importarse desde `server` en routes/api.py** — NO desde `translator.py` directo. |
 | `from config import ...` | ~12 | Importaciones controladas. No agregar imports circulares. |
 
@@ -70,7 +108,7 @@
 
 | Función | Línea aprox. | Por qué es delicada |
 |---|---|---|
-| `_get_ocr_reader()` | ~20 | Lazy-loading EasyOCR con `threading.Lock()`. GPU→CPU fallback. No cargar en hilo secundario en Windows. |
+| `_get_ocr_reader()` | ~20 | Lazy-loading EasyOCR con `threading.Lock()`. **GPU prioritario** (torch.cuda.is_available() → gpu=True), CPU fallback automático si CUDA no disponible o hay error. **Importante**: el orden de carga respecto a CT2 es crítico — EasyOCR debe cargar PRIMERO para inicializar torch.cuda antes que CT2 cargue sus DLLs cuDNN. Verificado: GTX 1050 Ti, ~0.88s/pág vs 5s CPU (5.7x). No cargar en hilo secundario en Windows. |
 | `_detect_and_ocr()` | ~160 | Parámetros actuales: `text_threshold=0.18`, `low_text=0.12`, `min_size=8`, `mag_ratio=1.2`, `canvas_size=2500`. 3 niveles de fallback: directo → CLAHE+sharpen → CTD. Acepta `use_ctd_only` (salta EasyOCR en imagen completa) y `allow_fallback` (desactiva fallbacks en modo easyocr-only). |
 | `_group_and_merge_blocks()` | ~260 | **⚠️ Bug histórico corregido**: los patrones `WATERMARK_PATTERNS`, `MARGIN_NOISE_PATTERNS` y URL ahora se verifican contra el texto ORIGINAL del OCR (**antes** de limpiar símbolos). Antes se verificaban después de `re.sub(r'[/.,:;...]', ...)` que destruía `/`, `.`, `,` — los caracteres que necesitan las fechas/horas ("13/7/26", "4.58 p.m") para matchear. **9 filtros post-merge**: números puros, patrones numéricos, comillas, puntuación suelta, aspecto estrecho, chars sueltos, baja confianza, dígito+letra. Fusión horizontal con gap tolerante `max(35, w*2.5)`. |
 | `_build_inpaint_mask()` | ~390 | Para globos de diálogo usa máscara de solo-glifos (preserva forma del globo). Para texto flotante usa rectángulo completo. |
@@ -132,14 +170,6 @@ Tres optimizaciones que reducen el tiempo por página de ~35-50s a ~10-18s.
 | 31 | **Métrica de calidad real**: análisis de 723 bloques traducidos muestra 75.8% aceptable (BUENA + LITERAL + OCR_NOISY), 15.9% OCR_GARBAGE (running headers principalmente), 8.3% UNTRANSLATED. Documentado en CODEGRAPH.md como referencia de calidad. | `CODEGRAPH.md` | 📊 Benchmark real |
 | 32 | **Fix running headers**: el symbol cleaning (`re.sub` removiendo `/`, `.`, `,`, `:`) se ejecutaba ANTES de verificar MARGIN_NOISE_PATTERNS, destruyendo patrones de fecha/hora como "13/7/26" y "4.58 p.m". Movido el filtro ANTES del cleaning. | `ocr_utils.py` | 🐛 Fix bug crítico |
 
-#### Sesión 2026-07-25 — 3 optimizaciones de velocidad: CT2 preload + executor compartido + .exe 200MB
-
-| # | Cambio | Archivo | Impacto |
-|---|--------|---------|---------|
-| 37 | **CT2 preload en background**: precarga modelos es→en y en→es al arrancar el servidor (hilo daemon). Evita el cold start de ~21.5s (carga del modelo de 300MB a GPU) en la primera traducción. Las traducciones pasan de ~2.8s a **0.12s**. | `server.py` | **~23x** primera traducción |
-| 38 | **Executor compartido en translator**: reemplaza `with ThreadPoolExecutor(...)` por llamada que creaba/destruía 3 threads por cada traducción (~1.857 ciclos para 619 bloques). Nuevo executor compartido con 4 threads siempre vivos y `_get_translate_engine_executor()` con lazy init + double-checked locking. Además: `import concurrent.futures` movido a nivel módulo (antes se importaba en cada llamada). **Beneficio adicional**: el `with` original llamaba `shutdown(wait=True)` en exit, bloqueando hasta que Argos/Google terminaran incluso después de que CT2 ganara. | `translator.py` | **Sin overhead de threads** + **retorno inmediato** |
-| 39 | **.exe optimizado**: excluye módulos pesados (torch, transformers, ctranslate2, easyocr, sentencepiece, huggingface_hub) del bundle via `EXCLUDES`. Se cargan desde `env/Lib/site-packages` en runtime via `_fix_cwd()`. UPX deshabilitado en COLLECT. .exe: **200MB** (antes 2.6GB). Build: **3.75 min** (antes 10+ min). Arranque estimado: **~3-5s** (antes 20-25s). Verificado: arranca, encuentra env/, responde health, traduce correctamente. | `main.spec` | **13x más pequeño** + **~5x arranque** |
-
 #### Sesión 2026-07-24 — Defaults optimizados + CT2 18 pares CJK
 
 | # | Cambio | Archivo | Impacto |
@@ -148,6 +178,17 @@ Tres optimizaciones que reducen el tiempo por página de ~35-50s a ~10-18s.
 | 34 | **Default ocr_mode `ctd`** (antes `auto`): benchmark demostró que CTD es 2x más rápido (4.6 min vs 9.3 min) con mejor cobertura (93.9% vs 87.0%). El pipeline híbrido (EasyOCR con fallback CTD) sigue disponible explícitamente con `--ocr-mode auto`. | `routes/api.py`, `process_all_pages.py` | **2x** más rápido |
 | 35 | **Allow_fallback semánticamente correcto**: cuando `ocr_mode="ctd"`, `allow_fallback=False` explícitamente (antes era True pero inofensivo porque `use_ctd_only` saltaba el pipeline antes de llegar a `allow_fallback`). | `routes/api.py` | 🧹 Cleanup |
 | 36 | **CT2 18 pares CJK**: agregados ja|en, en|ja, ko|en, en|ko, zh|en, en|zh a `_CT2_MODELS`. Prueba ja→en con japonés real (kanji+kana): 10/10 traducciones exitosas en GPU (CUDA, int8). Modelos lazy-load: descarga+conversión automática en primer uso. Pipeline CT2 (busca `f"{source}|{target}"` en el dict) funciona sin cambios — `_detect_language_robust()` ya retorna ja, ko, zh. | `translator.py` | 🆕 CT2 CJK |
+
+#### Sesión 2026-07-25 — Aceleración GPU dual + profiling cProfile inline
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 37 | **CT2 preload en background**: precarga modelos es→en y en→es al arrancar el servidor (hilo daemon). Evita el cold start de ~21.5s (carga del modelo de 300MB a GPU) en la primera traducción. Las traducciones pasan de ~2.8s a **0.12s**. | `server.py` | **~23x** primera traducción |
+| 38 | **Executor compartido en translator**: reemplaza `with ThreadPoolExecutor(...)` que creaba/destruía 3 threads por cada traducción (~1.857 ciclos). Nuevo executor compartido 4 threads con lazy init + double-checked locking. | `translator.py` | **Sin overhead de threads** + **retorno inmediato** |
+| 39 | **.exe optimizado**: excluye módulos pesados del bundle (torch, transformers, ct2, easyocr, etc.) vía `EXCLUDES`. .exe: **200MB** (antes 2.6GB). Build: **3.75 min** (antes 10+ min). | `main.spec` | **13x más pequeño** + **~5x arranque** |
+| 40 | **GPU dual: EasyOCR + CT2 ambos en GPU**: reemplazado `force_cpu=True` por auto-detect CUDA en `_get_ct2_translator()`. Orden precarga: EasyOCR primero → CUDA, luego CT2. Sin crash cuDNN. 5.7x OCR (0.88s) + ~6x CT2 (0.048s). | `server.py`, `translator.py`, `ocr_utils.py` | **~6x** CT2 + **5.7x** OCR |
+| 41 | **cProfile inline decorator**: `@profile_endpoint` en routes/api.py activable con `?profile=1`. Guarda .prof, log consola top-5 cumtime, header X-Profile. Post-procesamiento protegido, fast-pass sin overhead. | `routes/api.py` | 🆕 Profiling server-side |
+| 42 | **py-spy evaluado**: no funciona en Windows sin SeDebugPrivilege (incluso con `--`). Alternativas: cProfile inline, profile_standalone.py, Windows ETW. | `profile_pyspy.py` | 📊 Diagnóstico |
 
 #### Sesión anterior — CI unificado + calidad de traducción
 

@@ -277,6 +277,51 @@ Cambio en código
 
 > **Nota**: La cobertura del pipeline (~86%) mide si el texto de salida es DIFERENTE al original (logró traducir algo). La calidad (~76% aceptable) es más estricta: requiere que la traducción sea útil (natural, literal aceptable, o comprensible a pesar de ruido OCR). La diferencia principal son 115 bloques de OCR_GARBAGE que el pipeline tradujo pero produjeron basura (principalmente running headers con fecha/hora/metadatos de página).
 
+### Perfilado de Rendimiento (2026-07-25)
+
+Métricas obtenidas con profiling standalone directo (sin overhead HTTP) sobre el PDF de prueba (128 págs, manga español→inglés).
+
+| Etapa | Modo CTD | Modo EasyOCR (CPU) | % del pipeline |
+|:------|:--------:|:------------------:|:--------------:|
+| **Detección de texto** (OCR/CTD) | **0.21-0.25s**/pág | **5.06s**/pág | CTD: 30%, EasyOCR: 93% |
+| **Inpainting** (OpenCV) | 0.15-0.22s/pág | 0.15-0.22s/pág | 27% |
+| **Traducción CT2** (GPU int8) | 0.02-0.17s/bloque | 0.02-0.17s/bloque | 20% |
+| **Merge + filtros** | <0.01s/pág | <0.01s/pág | 0% |
+| **Overhead serialización** | ~0.1s/pág | ~0.1s/pág | 13% |
+| **Total por página** | **~0.7s** | **~5.5s** | 100% |
+
+**Bottleneck principal:** EasyOCR en CPU consume **93%** del tiempo en modo `auto`. CTD (modo `ctd`, el default) es **13-24x más rápido** y reduce el tiempo total a ~0.7s/página.
+
+**Proyección 128 páginas (3 workers, CTD):**
+```
+CTD:        0.25s × 128 / 3  =  10.7s
+Inpainting: 0.22s × 128 / 3  =   9.4s
+Traducción: 0.10s × 128 / 3  =   4.3s
+Overhead:   0.05s × 128 / 3  =   2.1s
+Trabajo puro (sin contención): ~27s
++ colas + warmup + render         3-5 min   ← benchmark real
+```
+
+**Jerarquía de bottlenecks:**
+
+| # | Bottleneck | Impacto | Estado |
+|:-:|:-----------|:-------:|:-------|
+| 1 | **EasyOCR en CPU** | 5s/pág cuando se usa | 🟢 **Resuelto: ambos en GPU** (EasyOCR 0.88s + CT2 0.048s). Orden precarga: EasyOCR → CUDA, luego CT2. Sin crash cuDNN. |
+| 2 | **Carga de modelos** (1ra llamada) | 1.6-8.8s one-time | Resuelto: preload CT2 en background al arrancar |
+| 3 | **CTD en páginas vacías** | ~0.3s inútil | Mitigado: semáforo OCR limita concurrencia |
+| 4 | **Inpainting bloques grandes** | ~0.3s | Aceptable: radio adaptativo ya optimizado |
+| 5 | **Overhead HTTP** | ~0.1s/pág | Aceptable: sesión persistente reutiliza conexiones |
+
+**Benchmark GPU (GTX 1050 Ti) — EasyOCR en GPU vs CPU:**
+
+| Métrica | CPU | GPU | Mejora |
+|:--------|:--:|:---:|:------:|
+| EasyOCR avg/página | 5.06s | **0.88s** | **5.7x** |
+| Pipeline total/página | ~5.5s | **0.7s** | **7.9x** |
+| 128 páginas (estimado, 3 workers) | ~18-35 min | **~8 min** | ~3x |
+
+> **Nota actualizada (2026-07-25)**: **Ambos motores en GPU simultáneamente** ✅. Se eliminó `force_cpu=True` — CT2 ahora auto-detecta CUDA y carga en GPU. Orden de precarga crítico: **EasyOCR primero** (inicializa torch.cuda/cuDNN), luego **CT2** (auto-detecta `cuda`). Verificado: GTX 1050 Ti, 128MB VRAM, sin crash cuDNN. EasyOCR: 0.88s/pág (5.7x), CT2: 0.048s/trad (~6x). Pipeline total: **~0.7s/pág** en GPU vs ~5.5s en CPU.
+
 ### Herramientas CI y scripts de procesamiento
 | Archivo | Propósito |
 |---|---|

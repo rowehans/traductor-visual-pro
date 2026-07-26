@@ -1,7 +1,11 @@
 """
 routes/api.py — Blueprint para endpoints de API REST.
 """
+import cProfile
+import functools
 import gc
+import io
+import pstats
 import time as _time
 from concurrent.futures import as_completed
 from typing import Any
@@ -16,6 +20,105 @@ _Img = np.ndarray  # type: ignore[type-arg]
 from ratelimit import limiter, RATE_LIMIT_AVAILABLE
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
+
+
+# ── Profiling decorator (activar con ?profile=1) ───────────────
+_PROFILE_DIR: str = ""  # Se inicializa en runtime
+
+
+def _get_profile_dir() -> str:
+    """Obtiene / crea el directorio de profiles."""
+    global _PROFILE_DIR
+    if not _PROFILE_DIR:
+        import os
+        _PROFILE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "profiles")
+        os.makedirs(_PROFILE_DIR, exist_ok=True)
+    return _PROFILE_DIR
+
+
+def profile_endpoint(f):
+    """Decorador: perfila el endpoint si ?profile=1 está presente.
+
+    Uso:
+        @api_bp.post("/translate")
+        @profile_endpoint
+        def translate():
+            ...
+
+    Resultados:
+        - Archivo .prof en profiles/{endpoint}_{timestamp}.prof
+        - Log en consola con top-15 por tiempo acumulado
+        - Header HTTP X-Profile: endpoint y resumen rápido
+    """
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        if request.args.get("profile") != "1":
+            return f(*args, **kwargs)
+
+        profiler = cProfile.Profile()
+        profiler.enable()
+        try:
+            result = f(*args, **kwargs)
+        except BaseException:
+            profiler.disable()
+            raise
+        else:
+            profiler.disable()
+
+        # Post-procesamiento protegido: no debe romper la respuesta
+        try:
+            s = io.StringIO()
+            ps = pstats.Stats(profiler, stream=s).sort_stats("cumtime")
+            ps.print_stats(30)
+            profile_text = s.getvalue()
+
+            # Guardar archivo .prof
+            import os
+            import time
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            endpoint_name = request.endpoint or "unknown"
+            safe_name = endpoint_name.replace(".", "_")
+            prof_path = os.path.join(_get_profile_dir(), f"{safe_name}_{ts}.prof")
+            ps.dump_stats(prof_path)
+
+            # Log a consola
+            print(f"\n{'='*60}", flush=True)
+            print(f"[PROFILE] {endpoint_name} ({ts})", flush=True)
+            print(f"[PROFILE] Archivo: {prof_path}", flush=True)
+
+            # Extraer resumen de ps.stats
+            total_time = 0.0
+            top_funcs = []
+            for key, (cc, nc, tt, ct, callers) in ps.stats.items():
+                filename, lineno, funcname = key
+                total_time = max(total_time, ct)
+                top_funcs.append((ct, funcname, filename))
+            top_funcs.sort(reverse=True)
+            top5 = top_funcs[:5]
+
+            print(f"[PROFILE] Tiempo total simulado: {total_time:.3f}s", flush=True)
+            print(f"[PROFILE] Top-5 por tiempo acumulado:", flush=True)
+            for ct, funcname, filename in top5:
+                short_file = filename.split("\\")[-1] if "\\" in filename else filename.split("/")[-1]
+                print(f"[PROFILE]   {ct*1000:.1f}ms  {funcname} ({short_file}:{ct:.3f}s)", flush=True)
+            print(f"{'='*60}\n", flush=True)
+
+            # Agregar header HTTP
+            if isinstance(result, tuple):
+                resp, status = result[0], result[1]
+            else:
+                resp, status = result, 200
+
+            if hasattr(resp, "headers"):
+                top_str = "; ".join([f"{fn}({ct*1000:.0f}ms)" for ct, fn, _ in top5])
+                resp.headers["X-Profile"] = f"{endpoint_name} | {top_str}"[:400]
+        except Exception as e:
+            print(f"[PROFILE] Error en post-procesamiento: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+
+        return result
+    return wrapper
 
 
 def _get_memory_mb() -> float:
@@ -53,6 +156,7 @@ _MAX_IMAGE_BYTES: int = 50 * 1024 * 1024  # 50MB raw base64
 
 
 @api_bp.post("/translate")
+@profile_endpoint
 def translate() -> Any:
     from server import _translate_one
     from config import LANGUAGES
@@ -71,6 +175,7 @@ def translate() -> Any:
 
 
 @api_bp.post("/translate-batch")
+@profile_endpoint
 def translate_batch() -> Any:
     from server import _translate_one, _get_executor
     from config import LANGUAGES
@@ -100,6 +205,7 @@ def translate_batch() -> Any:
 
 
 @api_bp.post("/process-page")
+@profile_endpoint
 def process_page() -> Any:
     from ocr_utils import (
         _base64_to_cv2, _cv2_to_base64, _detect_and_ocr,
