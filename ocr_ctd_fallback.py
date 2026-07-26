@@ -26,13 +26,12 @@ import requests
 import torch
 from tqdm import tqdm
 
-# Anadir manga-image-translator al path (necesario para imports locales)
-# Esto ocurre UNA vez al cargar el modulo, no en cada llamada.
-_CTD_SUBMODULE = os.path.join(os.path.dirname(__file__), "manga-image-translator")
-if os.path.isdir(_CTD_SUBMODULE) and _CTD_SUBMODULE not in sys.path:
-    sys.path.insert(0, _CTD_SUBMODULE)
+# ── Módulos CTD locales (extraídos de manga-image-translator, ~100KB) ──
+# Solo los módulos CTD necesarios están en ctd_lib/ (sin los 1.2GB completos).
+_CTD_LIB = os.path.join(os.path.dirname(__file__), "ctd_lib")
+if os.path.isdir(_CTD_LIB) and _CTD_LIB not in sys.path:
+    sys.path.insert(0, _CTD_LIB)
 
-# Importaciones de manga-image-translator (ahora con path correcto)
 try:
     from manga_translator.detection.ctd_utils.basemodel import TextDetBase
     from manga_translator.detection.ctd_utils.utils.db_utils import (
@@ -41,7 +40,9 @@ try:
     from manga_translator.detection.ctd_utils.utils.imgproc_utils import letterbox
     _CTD_IMPORTS_OK = True
 except ImportError as e:
-    print(f"[CTD] No se pudieron importar modulos de manga-image-translator: {e}")
+    print(f"[CTD] No se pudieron importar modulos CTD: {e}")
+    import traceback
+    traceback.print_exc()
     _CTD_IMPORTS_OK = False
 
 from config import ROOT

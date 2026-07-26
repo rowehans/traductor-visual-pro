@@ -27,7 +27,7 @@ _parser = argparse.ArgumentParser(description="Procesar PDF completo con OCR y t
 _parser.add_argument(
     "--ocr-mode",
     choices=["auto", "easyocr", "ctd"],
-    default="ctd",
+    default="easyocr",
     help="Modo OCR: ctd (solo CTD, recomendado), auto (3 niveles), easyocr (solo EasyOCR)"
 )
 _parser.add_argument(
