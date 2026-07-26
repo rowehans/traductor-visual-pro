@@ -1,6 +1,39 @@
 # Traductor Visual Pro
 
+<p align="center">
+  <a href="https://github.com/rowehans/traductor-visual-pro/releases/latest">
+    <img src="https://img.shields.io/github/v/release/rowehans/traductor-visual-pro?label=%C3%9Altima%20versi%C3%B3n&color=brightgreen" alt="Latest release">
+  </a>
+  <a href="https://github.com/rowehans/traductor-visual-pro/releases/tag/v0.1.37">
+    <img src="https://img.shields.io/badge/Descargar-Instalador%20(373%20MB)-blue?logo=windows" alt="Download">
+  </a>
+  <a href="https://github.com/rowehans/traductor-visual-pro/releases">
+    <img src="https://img.shields.io/github/downloads/rowehans/traductor-visual-pro/total?label=Descargas&color=success&logo=download" alt="Total downloads">
+  </a>
+  <a href="https://github.com/rowehans/traductor-visual-pro">
+    <img src="https://img.shields.io/github/stars/rowehans/traductor-visual-pro?style=social" alt="Stars">
+  </a>
+</p>
+
 App local para traducir manga, cómics y documentos en PDF e imagen. Backend Python con EasyOCR + OpenCV + ArgosTranslate, frontend JavaScript con canvas interactivo y editor de burbujas.
+
+---
+
+## Descargar
+
+**Opción recomendada — Instalador profesional:**
+
+[![Download Installer](https://img.shields.io/badge/Descargar_TraductorVisual_Setup_20260725.exe-373MB-blue?style=for-the-badge&logo=windows)](https://github.com/rowehans/traductor-visual-pro/releases/download/v0.1.37/TraductorVisual_Setup_20260725.exe)
+
+El instalador incluye:
+- Ejecutable `main.exe` (200 MB)
+- Modelo CTD (ComicTextDetector) para detección de texto artístico
+- Script `setup.ps1` para configuración automatizada del entorno
+- Descarga bajo demanda de modelos OCR y CT2 durante la instalación
+
+**Requisitos:** Windows 10/11 (64-bit), Python 3.8+, 8 GB RAM, GPU NVIDIA con CUDA (opcional)
+
+---
 
 ## Iniciar la app
 
