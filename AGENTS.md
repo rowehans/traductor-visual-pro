@@ -10,7 +10,7 @@
 
 | Archivo | Rol | Tamaño |
 |---|---|---|
-| `app.js` | Frontend completo (~2767 líneas): renderizado PDF/imagen vía pdf.js, editor de burbujas (draw/move/resize), OCR delegado al servidor EasyOCR, filtros de bloques, layout de texto en canvas (wrap+fit), comunicación con API Flask, exportación PNG/PDF, tema oscuro/claro, atajos de teclado, toasts, carga asíncrona de OpenCV.js vía callback. | 101KB |
+| `app.js` | Frontend completo (~2533 líneas, -230 líneas netas): renderizado PDF/imagen vía pdf.js, editor de burbujas (draw/move/resize), OCR delegado al servidor EasyOCR, filtros de bloques, **drawTextOnCanvas() compartida** (unifica renderBoxes + drawProfessionalText), **glow exterior** neón configurable, **relleno semitransparente** (fillOpacity), layout de texto en canvas (wrap+fit), comunicación con API Flask (ES6 modules), exportación PNG/PDF, tema oscuro/claro, atajos de teclado (incl. G para glow), toasts, carga asíncrona de OpenCV.js vía callback. **JS modularizado**: `import` desde js/config.js, js/theme.js, js/toast.js, js/filters.js, js/utils.js. | 99KB |
 | `server.py` | Entry point Flask (~217 líneas). Importa de config.py/translator.py, envuelve _translate_one() con caché, **precarga EasyOCR + CT2 en background** (orden crítico: EasyOCR primero para inicializar CUDA, luego CT2 auto-detecta GPU). Puerto 5174. | 8KB |
 | `config.py` | Constantes globales: paths, `LANGUAGES`, `CSP_POLICY`, patrones de ruido (`MARGIN_NOISE_PATTERNS`, `WATERMARK_PATTERNS`), glosario pre-OCR (`GLOSARIO_PRE`). | 6KB |
 | `translator.py` | Lógica de traducción: detección de idioma (`_detect_language_robust`), 3 motores en **paralelo** vía **executor compartido** (4 threads, evita crear/destruir threads por llamada), validación de traducción (6 validaciones anti-basura), glosarios PRE/POST, filtro pre-Argos para OCR noise. **Google retry con backoff** (5s, 15s, 30s) cuando todos los motores fallan (fix SIN_TRAD). Cache injectado desde server.py. | 28KB |
@@ -80,6 +80,7 @@ Errores:      0
 | `autoTranslateCurrentPage(pageNo, ...)` | ~1419 | Camino único: servidor. `serverProcessPage()` → guarda `inpaintedBgByPage` → carga `erasedBgCanvas` → filtra bloques → `makeAutoTextBox` → render. |
 | `renderPage()` | ~744 | Usa `_renderToken` para cancelación, `_renderTempCanvas` global reutilizado, `renderTask.cancel()` en timeout. Retorna `{aborted: bool}`. |
 | `filterPageBlocks(blocks, pageHeight)` | ~1038 | Único punto que filtra bloques antes de crear cajas. `marginTop` = 8% de altura. |
+| `drawTextOnCanvas(ctx, text, box, layout)` | ~1440 | **Función compartida** que unifica el dibujo de texto entre `renderBoxes()` y `drawProfessionalText()`. Orden de dibujo: (1) relleno semitransparente, (2) glow exterior con `shadowColor` + `fillStyle="transparent"`, (3) sombra de legibilidad (si no hay glow), (4) contorno (`strokeWidth * 2`), (5) texto principal. Cualquier cambio visual debe hacerse aquí y se refleja en pantalla y exportación. |
 | `exportFullPdf()` | ~2105 | Genera PDF completo página por página: renderRawPdfPage → renderEditedCanvas → jsPDF.addPage. |
 
 ### `server.py` (entry point)
@@ -139,7 +140,7 @@ Errores:      0
 
 ## 4. Estado Actual
 
-**Última actualización**: 2026-07-25
+**Última actualización**: 2026-07-26
 
 ### Cambios acumulados (Julio 2026)
 
@@ -175,7 +176,21 @@ Tres optimizaciones que reducen el tiempo por página de ~35-50s a ~10-18s.
 | 35 | **Allow_fallback semánticamente correcto**: cuando `ocr_mode="ctd"`, `allow_fallback=False` explícitamente (antes era True pero inofensivo porque `use_ctd_only` saltaba el pipeline antes de llegar a `allow_fallback`). | `routes/api.py` | 🧹 Cleanup |
 | 36 | **CT2 18 pares CJK**: agregados ja|en, en|ja, ko|en, en|ko, zh|en, en|zh a `_CT2_MODELS`. Prueba ja→en con japonés real (kanji+kana): 10/10 traducciones exitosas en GPU (CUDA, int8). Modelos lazy-load: descarga+conversión automática en primer uso. Pipeline CT2 (busca `f"{source}|{target}"` en el dict) funciona sin cambios — `_detect_language_robust()` ya retorna ja, ko, zh. | `translator.py` | 🆕 CT2 CJK |
 
-#### Sesión 2026-07-25 — Aceleración GPU dual + profiling cProfile inline
+
+
+#### Sesión 2026-07-26-v2 — Refactor drawTextOnCanvas + glow + UI controles + tooltips (7 cambios)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 46 | **drawTextOnCanvas() compartida**: nueva función que unifica la lógica de dibujo de texto (sombra, contorno con `strokeWidth * 2`, centrado vertical, glow, fillOpacity) entre `renderBoxes()` y `drawProfessionalText()`. ~45 líneas menos de código duplicado. Un solo punto de cambio para modificar estilos visuales. | `app.js` | **-45 líneas**, +mantenibilidad |
+| 47 | **Glow exterior** (brillo neón): implementado con `shadowColor` + `fillStyle="transparent"` en posición real del texto (no off-screen). Se activa automáticamente para texto expresivo/impactante (mayúsculas, `!¡?¿`) fuera de burbujas. Color e intensidad configurables. Orden de dibujo por línea: relleno → glow → shadow → stroke → fill. | `app.js` | 🆕 Efecto visual |
+| 48 | **Relleno semitransparente** (`fillOpacity`): fondo semitransparente detrás de cada línea para texto flotante sin burbuja (default 0.35). Mejora legibilidad sobre fondos complejos sin ocultar el arte. | `app.js` | 🆕 Efecto visual |
+| 49 | **Panel UI 'Efectos de Texto'**: nuevo panel en sidebar con toggle glow, color picker, slider intensidad (0-30), slider fillOpacity (0-100%). Tooltips descriptivos en cada control y hint de teclado `G`. | `index.html`, `app.js`, `styles.css` | 🆕 Controles UI |
+| 50 | **Range sliders estilizados**: `input[type="range"]` con thumb gradiente verde, hover/focus states, y `.range-value` display numérico. Estilo `kbd.hint` para hints de teclado. Clases `.has-active-glow`/`.has-active-fill` para feedback visual del panel. | `styles.css` | 🆕 Estilos sliders |
+| 51 | **Preview hover glow + atajo G**: al pasar mouse sobre glowToggle, se muestra preview temporal del glow en el box seleccionado (mouseenter guarda estado, mouseleave restaura). Atajo de teclado **G** togglea glow con toast. Fix: `_hoverGlowPreview = null` en change handler evita que hover preview sobrescriba cambios permanentes. | `app.js` | 🆕 UX + Fix bug |
+| 52 | **JS modularizado**: `app.js` ahora es un módulo ES6 que importa de `js/config.js` (CLIENT_CONFIG, fetchClientConfig), `js/theme.js` (initTheme, toggleTheme), `js/toast.js` (showToast), `js/filters.js` (filterPageBlocks, MARGIN_NOISE_PATTERNS, GLOBAL_NOISE_PATTERNS), `js/utils.js` (formatDuration, canvasToBase64, etc.). CSP actualizado con CDNs adicionales. Console.log de depuración reducidos. | `app.js`, `index.html`, `js/*.js`, `config.py` | 🧹 Modularización |
+
+#### Sesiones anteriores (2026-07-25) — Aceleración GPU dual + profiling cProfile inline
 
 | # | Cambio | Archivo | Impacto |
 |---|--------|---------|---------|

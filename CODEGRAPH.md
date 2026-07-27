@@ -85,14 +85,24 @@
 │  OCR:   serverProcessPage (envia cleanBgCanvas->base64) │
 │  Editor: renderBoxes, fitTextLayout (CJK char/latin     │
 │          word), selectBox, draw/move/resize              │
+│  Text:  **drawTextOnCanvas()** compartida (unifica      │
+│          renderBoxes + drawProfessionalText)             │
+│          Orden dibujo: relleno → glow → shadow → stroke  │
+│          → fill                                          │
+│  Glow:  glowToggle (checkbox + atajo G), glowColor       │
+│         (color picker), glowBlur (range 0-30),           │
+│         preview hover (mouseenter/mouseleave),           │
+│         panel classes has-active-glow (ambar)            │
+│  FillOpacity: range slider 0-100% → 0-1,                 │
+│               panel class has-active-fill (cyan)         │
 |  Filters: MARGIN_NOISE_PATTERNS (sincronizado con       │
-│           config.py — sin capítulo/cómo criar/how to    │
-│           raise para no filtrar títulos legítimos)      │
-│           GLOBAL_NOISE_PATTERNS (sincronizado con       │
-│           config.py — solo zonaolympus.com + 1 C 2 E)  │
+│           config.py)                                     │
+│           GLOBAL_NOISE_PATTERNS (sincronizado con        │
+│           config.py)                                     │
 │           filterPageBlocks (8% margin)                  │
 │  Export: renderEditedCanvas -> PNG / jsPDF / PDF full   │
-│  Shortcuts: D/V modes, Ctrl+T/E/P/S, arrows, Del, N/I/B│
+│  Shortcuts: D/V modes, Ctrl+T/E/P/S, arrows, Del, N/I/B,│
+│             G (glow toggle)                              │
 ├─────────────────────────────────────────────────────────┤
 │                      index.html                          │
 │  43 IDs: fileInput, prevPage, pageNumber, pageTotal,    │
