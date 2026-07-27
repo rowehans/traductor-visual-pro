@@ -161,10 +161,12 @@ GLOSARIO_POST: Final[list[tuple[str, str]]] = [
 CSP_POLICY: Final[str] = (
     "default-src 'self' 'unsafe-inline' 'unsafe-eval' "
     "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com "
+    "https://docs.opencv.org "
     "https://fonts.googleapis.com https://fonts.gstatic.com "
     "data: blob:; "
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
-    "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; "
+    "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com "
+    "https://docs.opencv.org; "
     "worker-src 'self' blob: https://cdnjs.cloudflare.com; "
     "img-src 'self' data: blob:; "
     "connect-src 'self' http://127.0.0.1:5174 https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com data:;"
