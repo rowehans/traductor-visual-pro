@@ -22,7 +22,9 @@ def _cache_path(key: str) -> Path:
 
 def _make_key(text: str, src: str, tgt: str) -> str:
     raw = f"{text}||{src}||{tgt}"
-    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+    # MD5 usado SOLO para generar keys de cache, NO para seguridad.
+    # usedforsecurity=False evita bloqueos en entornos FIPS.
+    return hashlib.md5(raw.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def get(text: str, src: str, tgt: str) -> str | None:
@@ -36,10 +38,8 @@ def get(text: str, src: str, tgt: str) -> str | None:
         if time.time() - data["ts"] > CACHE_TTL_SECS:
             path.unlink(missing_ok=True)
             return None
-        # Actualizar timestamp de acceso
-        data["ts"] = time.time()
-        with _lock:
-            path.write_text(json.dumps(data), encoding="utf-8")
+        # No actualizamos el timestamp interno aquí (evita escritura I/O en cada get).
+        # La evicción LRU usa mtime del filesystem, que el OS actualiza automáticamente.
         return str(data["result"])
     except Exception:
         return None
@@ -59,8 +59,17 @@ def set(text: str, src: str, tgt: str, result: str) -> None:
 def _evict_if_needed() -> None:
     """Elimina entradas vencidas o sobrantes (LRU simple).
     Usa mtime del filesystem en vez de parsear JSON para el escaneo,
-    ~10x más rápido que la versión anterior."""
+    ~10x más rápido que la versión anterior.
+    Optimizado: solo escanea si el contador de archivos supera el umbral
+    (MAX_CACHE_ENTRIES * 1.2), evitando O(n log n) en cada escritura."""
     if not CACHE_DIR.exists():
+        return
+    # Umbral: solo evict cuando hay 20% más archivos que el máximo
+    try:
+        file_count = sum(1 for _ in CACHE_DIR.iterdir())
+        if file_count <= MAX_CACHE_ENTRIES * 1.2:
+            return
+    except OSError:
         return
     now = time.time()
     entries = []

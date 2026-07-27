@@ -19,9 +19,10 @@ env:
   PYTHONIOENCODING: utf-8
 
 jobs:
-  # ─── Job 1: Syntax + test_ci (rápido, ~30s) ──────────────────
+  # ─── Job 1: Syntax + 247 tests (rápido, ~30s) ────────────────
+  # Se ejecuta en CADA push a main/master y en cada PR.
   lint-test:
-    name: Lint + Test
+    name: Lint + 247 tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,11 +33,23 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install minimal dependencies
+      - name: Install system dependencies (OpenCV)
         run: |
-          pip install --quiet langdetect deep-translator
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 \
+            2>/dev/null || true
 
-      - name: Run CI (syntax + test_ci)
+      - name: Install Python dependencies
+        run: |
+          pip install --quiet \
+            pytest pytest-mock \
+            flask opencv-python-headless numpy pillow \
+            langdetect deep-translator \
+            flask-sqlalchemy \
+            requests
+
+      - name: Run CI (syntax + 247 tests, sin servidor)
         run: |
           python run_ci.py --skip-server
         env:
@@ -67,6 +80,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --quiet \
+            pytest pytest-mock \
             flask opencv-python-headless numpy pillow \
             langdetect deep-translator \
             flask-sqlalchemy \

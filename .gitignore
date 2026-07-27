@@ -67,6 +67,13 @@ reporte_final.html
 # ─── Freebuff Desktop ────────────────────────────
 .freebuff/
 
+# ─── Coverage / Reports ──────────────────────────
+.coverage
+bandit_*.json
+ci_results.json
+pytest_stderr.txt
+benchmark_*.json
+
 # ─── Test Archives ─────────────────────────────
 tests/archive/
 

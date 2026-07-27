@@ -8,7 +8,7 @@
 ; - Desinstalación limpia
 
 #define MyAppName "Traductor Visual Pro"
-#define MyAppVersion "20260725"
+#define MyAppVersion "20260727"
 #define MyAppPublisher "Traductor Visual"
 #define MyAppURL "http://127.0.0.1:5174"
 #define MyAppExeName "main.exe"

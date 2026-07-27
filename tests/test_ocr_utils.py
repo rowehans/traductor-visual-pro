@@ -1,0 +1,824 @@
+"""
+test_ocr_utils.py — Tests unitarios para ocr_utils.py.
+
+Cubre las funciones clave del pipeline OCR:
+- Conversión base64 ↔ OpenCV
+- Preprocesamiento: CLAHE, sharpen, gamma, bilateral, morfología, binarización
+- OCR: run_ocr_on_image, ocr_results_to_blocks, detect_and_ocr
+- Filtros post-OCR: watermark, group_and_merge_blocks
+- Inpainting: build_inpaint_mask, inpaint_image
+- Utilidades: is_inside_speech_bubble, build_glyph_mask, sample_bg_color
+
+Usa imágenes sintéticas numpy y mocks para EasyOCR.
+"""
+
+import sys
+import os
+import base64
+import numpy as np
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+# Para crear mocks sin cargar EasyOCR realmente
+from unittest.mock import MagicMock, patch, PropertyMock
+from typing import Any
+
+
+# ═══════════════════════════════════════════════════════════════
+# Fixtures compartidos
+# ═══════════════════════════════════════════════════════════════
+
+@pytest.fixture
+def small_bgr() -> np.ndarray:
+    """Imagen BGR sintética pequeña (200x150) con gradiente."""
+    img = np.zeros((150, 200, 3), dtype=np.uint8)
+    for y in range(150):
+        for c in range(3):
+            img[y, :, c] = y * 255 // 150
+    return img
+
+
+@pytest.fixture
+def gray_test_image() -> np.ndarray:
+    """Imagen en escala de grises con texto simulado."""
+    img = np.ones((100, 300, 3), dtype=np.uint8) * 200  # fondo claro
+    # Simular texto: rectángulos oscuros en posiciones de "texto"
+    cv2 = pytest.importorskip("cv2")
+    cv2.putText(img, "Hello World", (10, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (30, 30, 30), 2)
+    cv2.putText(img, "OCR Test", (10, 75),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (50, 50, 50), 1)
+    return img
+
+
+@pytest.fixture
+def dark_image() -> np.ndarray:
+    """Imagen oscura (simula escaneo subexpuesto)."""
+    img = np.ones((100, 200, 3), dtype=np.uint8) * 50  # fondo oscuro
+    return img
+
+
+@pytest.fixture
+def blocks_fixture() -> list[dict[str, Any]]:
+    """Lista típica de bloques de texto para pruebas de merge/filtro."""
+    return [
+        {"x": 10, "y": 20, "w": 80, "h": 15, "text": "Hello", "confidence": 0.85, "fontSize": 14, "textColor": "#000000"},
+        {"x": 95, "y": 21, "w": 90, "h": 16, "text": "World", "confidence": 0.90, "fontSize": 14, "textColor": "#000000"},
+        {"x": 10, "y": 50, "w": 60, "h": 12, "text": "OCR", "confidence": 0.70, "fontSize": 12, "textColor": "#000000"},
+        {"x": 75, "y": 52, "w": 110, "h": 13, "text": "testing", "confidence": 0.75, "fontSize": 12, "textColor": "#000000"},
+    ]
+
+
+# ═══════════════════════════════════════════════════════════════
+# _base64_to_cv2 / _cv2_to_base64
+# ═══════════════════════════════════════════════════════════════
+
+class TestBase64Conversion:
+    """Conversión bidireccional base64 ↔ OpenCV."""
+
+    def test_cv2_to_base64_returns_string(self, small_bgr):
+        from ocr_utils import _cv2_to_base64
+        b64 = _cv2_to_base64(small_bgr)
+        assert isinstance(b64, str)
+        assert b64.startswith("data:image/png;base64,")
+
+    def test_roundtrip_preserves_content(self, small_bgr):
+        from ocr_utils import _cv2_to_base64, _base64_to_cv2
+        b64 = _cv2_to_base64(small_bgr)
+        decoded = _base64_to_cv2(b64)
+        assert decoded is not None
+        assert decoded.shape == small_bgr.shape
+        np.testing.assert_array_equal(decoded, small_bgr)
+
+    def test_base64_to_cv2_with_data_uri_prefix(self):
+        from ocr_utils import _cv2_to_base64, _base64_to_cv2
+        img = np.ones((50, 50, 3), dtype=np.uint8) * 128
+        b64 = _cv2_to_base64(img)
+        decoded = _base64_to_cv2(b64)
+        assert decoded is not None
+        assert decoded.shape == (50, 50, 3)
+
+    def test_base64_to_cv2_strips_prefix(self, small_bgr):
+        from ocr_utils import _cv2_to_base64, _base64_to_cv2
+        b64 = _cv2_to_base64(small_bgr)
+        # Extraer solo la parte base64 (después de la coma)
+        raw = b64.split(",", 1)[1]
+        decoded = _base64_to_cv2(raw)
+        assert decoded is not None
+        assert decoded.shape == small_bgr.shape
+
+    def test_base64_to_cv2_invalid_returns_none(self):
+        from ocr_utils import _base64_to_cv2
+        result = _base64_to_cv2("not-a-valid-base64!!")
+        assert result is None
+
+    def test_cv2_to_base64_jpg_format(self, small_bgr):
+        from ocr_utils import _cv2_to_base64
+        b64 = _cv2_to_base64(small_bgr, fmt=".jpg")
+        assert isinstance(b64, str)
+        # NOTA: _cv2_to_base64 hardcodea "data:image/png;base64," como prefijo
+        # incluso cuando fmt=".jpg". La imagen codificada SÍ es JPG (/9j/), pero
+        # el prefijo siempre dice PNG. Bug conocido (TODO: corregir prefijo).
+        assert "/9j/" in b64, "El contenido debería ser JPG con fmt=.jpg"
+
+    def test_empty_base64_returns_none(self):
+        from ocr_utils import _base64_to_cv2
+        assert _base64_to_cv2("") is None
+
+
+# ═══════════════════════════════════════════════════════════════
+# _preprocess_enhanced
+# ═══════════════════════════════════════════════════════════════
+
+class TestPreprocessEnhanced:
+    """Preprocesamiento CLAHE + sharp + gamma + bilateral."""
+
+    def test_returns_same_dimensions(self, small_bgr):
+        from ocr_utils import _preprocess_enhanced
+        result = _preprocess_enhanced(small_bgr)
+        assert result.shape == small_bgr.shape
+        assert result.dtype == np.uint8
+
+    def test_enhances_dark_image(self, dark_image):
+        from ocr_utils import _preprocess_enhanced
+        result = _preprocess_enhanced(dark_image)
+        # La imagen mejorada debe cambiar (CLAHE + gamma modifican los valores)
+        orig_mean = float(dark_image.mean())
+        result_mean = float(result.mean())
+        assert result_mean != orig_mean, "El preprocesamiento debería alterar una imagen oscura"
+
+    def test_increases_local_contrast(self, small_bgr):
+        from ocr_utils import _preprocess_enhanced
+        result = _preprocess_enhanced(small_bgr)
+        # El CLAHE debe aumentar el contraste local
+        orig_std = float(small_bgr.std())
+        result_std = float(result.std())
+        assert result_std >= orig_std * 0.5  # No debe reducir drásticamente el contraste
+
+    def test_output_is_bgr(self):
+        from ocr_utils import _preprocess_enhanced
+        img = np.ones((60, 80, 3), dtype=np.uint8) * 100
+        result = _preprocess_enhanced(img)
+        assert result.shape[2] == 3
+
+    def test_extremely_small_image(self):
+        from ocr_utils import _preprocess_enhanced
+        img = np.ones((20, 30, 3), dtype=np.uint8) * 80
+        # No debe crashear con imágenes muy pequeñas
+        result = _preprocess_enhanced(img)
+        assert result is not None
+        assert result.shape == (20, 30, 3)
+
+    def test_uniform_image(self):
+        from ocr_utils import _preprocess_enhanced
+        # Imagen uniforme (todos los píxeles iguales)
+        img = np.ones((100, 100, 3), dtype=np.uint8) * 128
+        result = _preprocess_enhanced(img)
+        # Debe seguir siendo uniforme después del procesamiento
+        assert result.shape == (100, 100, 3)
+        assert result.dtype == np.uint8
+
+    def test_bright_image_no_gamma_change(self):
+        from ocr_utils import _preprocess_enhanced
+        # Imagen brillante: mean_brightness > 100, gamma no debe aplicarse
+        img = np.ones((80, 80, 3), dtype=np.uint8) * 180
+        result = _preprocess_enhanced(img)
+        assert result.shape == img.shape
+
+
+# ═══════════════════════════════════════════════════════════════
+# _pre_filter_image
+# ═══════════════════════════════════════════════════════════════
+
+class TestPreFilterImage:
+    """Limpieza morfológica pre-OCR."""
+
+    def test_returns_same_dimensions(self, small_bgr):
+        from ocr_utils import _pre_filter_image
+        result = _pre_filter_image(small_bgr)
+        assert result.shape == small_bgr.shape
+        assert result.dtype == np.uint8
+
+    def test_cleans_margin_artifacts(self):
+        from ocr_utils import _pre_filter_image
+        # Verificar que la función no crashea y retorna dimensiones correctas.
+        # NOTA: El speckle removal usa OTSU + MORPH_OPEN que puede alterar
+        # bordes de imágenes uniformes — es un comportamiento conocido.
+        img = np.ones((100, 200, 3), dtype=np.uint8) * 200
+        img[:6, :, :] = 30  # franja oscura arriba
+        result = _pre_filter_image(img)
+        assert result.shape == (100, 200, 3)
+        assert result.dtype == np.uint8
+        # El contenido central debe al menos tener valores > 0
+        center = result[30:80, :, :]
+        assert float(center.mean()) > 0
+
+    def test_removes_horizontal_lines(self):
+        from ocr_utils import _pre_filter_image
+        # Imagen con textura + línea horizontal para que OTSU funcione
+        img = np.ones((100, 200, 3), dtype=np.uint8) * 200
+        # Agregar "texto" oscuro en el centro (para histograma bimodal)
+        img[40:55, 30:170, :] = 40
+        # Agregar línea horizontal negra
+        img[50, :, :] = 0
+        result = _pre_filter_image(img)
+        # El área de la línea debe haber sido inpaintada (mean > 0)
+        line_area = result[48:52, :, :]
+        assert float(line_area.mean()) > 0
+
+    def test_preserves_content(self, gray_test_image):
+        from ocr_utils import _pre_filter_image
+        result = _pre_filter_image(gray_test_image)
+        # La imagen no debe quedar completamente alterada
+        assert float(result.mean()) > 0
+        assert float(result.std()) > 0
+
+    def test_small_image_no_crash(self):
+        from ocr_utils import _pre_filter_image
+        img = np.ones((30, 40, 3), dtype=np.uint8) * 150
+        result = _pre_filter_image(img)
+        assert result.shape == (30, 40, 3)
+
+    def test_no_line_mask_does_not_modify(self):
+        from ocr_utils import _pre_filter_image
+        # Imagen sin líneas horizontales
+        img = np.ones((80, 100, 3), dtype=np.uint8) * 180
+        result = _pre_filter_image(img)
+        # La estructura general debe conservarse
+        assert float(result.mean()) > 100
+
+
+# ═══════════════════════════════════════════════════════════════
+# _binarize_image ELIMINADO — tier 3 del pipeline OCR eliminado porque
+# el benchmark demostró 0 beneficios en páginas artísticas (2026-07-27).
+
+
+# ═══════════════════════════════════════════════════════════════
+# _ocr_results_to_blocks
+# ═══════════════════════════════════════════════════════════════
+
+class TestOcrResultsToBlocks:
+    """Conversión de resultados EasyOCR a formato interno."""
+
+    def test_empty_results(self, small_bgr):
+        from ocr_utils import _ocr_results_to_blocks
+        blocks = _ocr_results_to_blocks([], small_bgr)
+        assert blocks == []
+
+    def test_single_block_conversion(self, small_bgr):
+        from ocr_utils import _ocr_results_to_blocks
+        results = [
+            ([[10, 20], [90, 20], [90, 40], [10, 40]], "Hello", 0.85)
+        ]
+        blocks = _ocr_results_to_blocks(results, small_bgr)
+        assert len(blocks) >= 1
+        block = blocks[0]
+        assert block["text"] == "Hello"
+        assert abs(block["confidence"] - 0.85) < 0.01
+        assert block["w"] >= 80  # 90-10
+        assert block["h"] >= 20  # 40-20
+        assert "x" in block
+        assert "y" in block
+        assert "fontSize" in block
+        assert "textColor" in block
+
+    def test_multiple_blocks(self, small_bgr):
+        from ocr_utils import _ocr_results_to_blocks
+        results = [
+            ([[10, 20], [80, 20], [80, 35], [10, 35]], "Hello", 0.85),
+            ([[90, 21], [170, 21], [170, 36], [90, 36]], "World", 0.90),
+        ]
+        blocks = _ocr_results_to_blocks(results, small_bgr)
+        # Pueden mergearse en 1 bloque si están cerca
+        assert len(blocks) >= 1
+
+    def test_low_confidence_filtered(self, small_bgr):
+        from ocr_utils import _ocr_results_to_blocks
+        results = [
+            ([[10, 20], [50, 20], [50, 30], [10, 30]], "bad", 0.03),
+            ([[60, 20], [100, 20], [100, 30], [60, 30]], "good", 0.80),
+        ]
+        blocks = _ocr_results_to_blocks(results, small_bgr)
+        for b in blocks:
+            assert b["confidence"] >= 0.08
+
+    def test_empty_text_filtered(self, small_bgr):
+        from ocr_utils import _ocr_results_to_blocks
+        results = [
+            ([[10, 20], [50, 20], [50, 30], [10, 30]], "", 0.80),
+            ([[60, 20], [100, 20], [100, 30], [60, 30]], "OK", 0.80),
+        ]
+        blocks = _ocr_results_to_blocks(results, small_bgr)
+        assert len(blocks) >= 1
+        for b in blocks:
+            assert b["text"] != ""
+
+    def test_too_small_bbox_filtered(self, small_bgr):
+        from ocr_utils import _ocr_results_to_blocks
+        results = [
+            ([[10, 20], [11, 20], [11, 21], [10, 21]], "tiny", 0.80),  # w=1, h=1
+        ]
+        blocks = _ocr_results_to_blocks(results, small_bgr)
+        # Debe filtrarse por w<3 o h<3
+        assert len(blocks) == 0
+
+    def test_text_color_detection(self):
+        from ocr_utils import _ocr_results_to_blocks
+        # Fondo blanco → texto en zona oscura debe detectarse como #ffffff
+        img = np.ones((60, 100, 3), dtype=np.uint8) * 200
+        blocks = _ocr_results_to_blocks([
+            ([[5, 5], [40, 5], [40, 20], [5, 20]], "Dark", 0.80)
+        ], img)
+        # El ROI alrededor del centro del bloque tiene fondo claro (200) → brightness > 128 → #ffffff
+        if blocks:
+            assert blocks[0]["textColor"] == "#ffffff"
+
+
+# ═══════════════════════════════════════════════════════════════
+# _filter_watermarks_from_blocks
+# ═══════════════════════════════════════════════════════════════
+
+class TestFilterWatermarks:
+    """Filtro de marcas de agua."""
+
+    def test_passes_clean_blocks(self):
+        from ocr_utils import _filter_watermarks_from_blocks
+        blocks = [
+            {"x": 10, "y": 20, "w": 80, "h": 15, "text": "Hello World", "confidence": 0.85},
+            {"x": 10, "y": 50, "w": 100, "h": 15, "text": "Another line", "confidence": 0.90},
+        ]
+        result = _filter_watermarks_from_blocks(blocks)
+        assert len(result) == 2
+
+    def test_filters_watermark_pattern(self):
+        from ocr_utils import _filter_watermarks_from_blocks
+        blocks = [
+            {"x": 10, "y": 20, "w": 80, "h": 15, "text": "Hello World", "confidence": 0.85},
+            # Watermark que SÍ coincide con WATERMARK_PATTERNS de config.py
+            {"x": 10, "y": 50, "w": 100, "h": 15, "text": "1c2e", "confidence": 0.80},
+            # NOTA: WATERMARK_PATTERNS usa r'zonaolympus[\s-]?com' (espacio o guión,
+            # no punto). Usar "zonaolympus com" o "zonaolympuscom" para match.
+            {"x": 10, "y": 80, "w": 100, "h": 15, "text": "zonaolympus com", "confidence": 0.80},
+        ]
+        result = _filter_watermarks_from_blocks(blocks)
+        assert len(result) == 1
+        assert result[0]["text"] == "Hello World"
+
+    def test_empty_blocks(self):
+        from ocr_utils import _filter_watermarks_from_blocks
+        assert _filter_watermarks_from_blocks([]) == []
+
+    def test_all_watermarks_filtered(self):
+        from ocr_utils import _filter_watermarks_from_blocks
+        blocks = [
+            {"text": "1c2e", "confidence": 0.90},
+            {"text": "zonaolympus com", "confidence": 0.85},
+        ]
+        result = _filter_watermarks_from_blocks(blocks)
+        assert len(result) == 0
+
+    def test_none_blocks(self):
+        from ocr_utils import _filter_watermarks_from_blocks
+        assert _filter_watermarks_from_blocks(None) == []
+
+
+# ═══════════════════════════════════════════════════════════════
+# _group_and_merge_blocks
+# ═══════════════════════════════════════════════════════════════
+
+class TestGroupAndMergeBlocks:
+    """Agrupación y fusión de bloques OCR."""
+
+    def test_empty_blocks(self):
+        from ocr_utils import _group_and_merge_blocks
+        assert _group_and_merge_blocks([]) == []
+
+    def test_single_block_unchanged(self):
+        from ocr_utils import _group_and_merge_blocks
+        blocks = [
+            {"x": 10, "y": 20, "w": 80, "h": 15, "text": "Hello", "confidence": 0.85,
+             "fontSize": 14, "textColor": "#000000"},
+        ]
+        result = _group_and_merge_blocks(blocks)
+        assert len(result) == 1
+        assert result[0]["text"] == "Hello"
+
+    def test_horizontal_merge(self, blocks_fixture):
+        from ocr_utils import _group_and_merge_blocks
+        # "Hello" y "World" están cerca horizontalmente → deben mergearse
+        result = _group_and_merge_blocks(blocks_fixture, img_h=200)
+        assert len(result) <= len(blocks_fixture)
+        # "Hello World" debe aparecer en algún bloque merged
+        texts = [b["text"] for b in result]
+        combined = " ".join(texts)
+        assert "Hello" in combined or "Hello World" in combined.replace("  ", " ")
+
+    def test_vertical_merge(self):
+        from ocr_utils import _group_and_merge_blocks
+        # Dos bloques en misma columna (x overlap) cerca verticalmente
+        blocks = [
+            {"x": 10, "y": 20, "w": 80, "h": 15, "text": "Line 1", "confidence": 0.85, "fontSize": 14, "textColor": "#000000"},
+            {"x": 12, "y": 40, "w": 75, "h": 14, "text": "Line 2", "confidence": 0.80, "fontSize": 14, "textColor": "#000000"},
+        ]
+        result = _group_and_merge_blocks(blocks, img_h=200)
+        # x overlap: 75 over min_w=75*0.5 → deben mergearse verticalmente
+        if len(result) == 1:
+            assert "Line 1" in result[0]["text"]
+            assert "Line 2" in result[0]["text"]
+
+    def test_filters_number_only(self):
+        from ocr_utils import _group_and_merge_blocks
+        blocks = [
+            {"x": 10, "y": 20, "w": 30, "h": 15, "text": "1234", "confidence": 0.85, "fontSize": 14, "textColor": "#000000"},
+            {"x": 50, "y": 20, "w": 80, "h": 15, "text": "Real text", "confidence": 0.90, "fontSize": 14, "textColor": "#000000"},
+        ]
+        result = _group_and_merge_blocks(blocks, img_h=200)
+        assert len(result) >= 1
+        for b in result:
+            assert b["text"] != "1234"
+
+    def test_filters_narrow_aspect(self):
+        from ocr_utils import _group_and_merge_blocks
+        # Bloque muy estrecho (aspect < 0.4) con texto corto
+        blocks = [
+            {"x": 10, "y": 20, "w": 5, "h": 15, "text": "ab", "confidence": 0.80, "fontSize": 14, "textColor": "#000000"},
+        ]
+        result = _group_and_merge_blocks(blocks, img_h=200)
+        assert len(result) == 0
+
+    def test_margin_noise_filtered(self):
+        from ocr_utils import _group_and_merge_blocks
+        # Texto en margen superior con patrón de ruido (ej: fecha)
+        blocks = [
+            {"x": 10, "y": 2, "w": 60, "h": 10, "text": "13/7/26", "confidence": 0.80, "fontSize": 10, "textColor": "#000000"},
+        ]
+        result = _group_and_merge_blocks(blocks, img_h=200)
+        assert len(result) == 0
+
+    def test_count_digit_ratio_in_margin(self):
+        from ocr_utils import _group_and_merge_blocks
+        # Metadato numérico en margen (>35% dígitos, ≤4 palabras)
+        blocks = [
+            {"x": 10, "y": 5, "w": 60, "h": 10, "text": "Page 3/128", "confidence": 0.80, "fontSize": 10, "textColor": "#000000"},
+        ]
+        result = _group_and_merge_blocks(blocks, img_h=200)
+        assert len(result) == 0
+
+    def test_urls_filtered(self):
+        from ocr_utils import _group_and_merge_blocks
+        blocks = [
+            {"x": 10, "y": 50, "w": 100, "h": 15, "text": "https://example.com", "confidence": 0.85, "fontSize": 14, "textColor": "#000000"},
+        ]
+        result = _group_and_merge_blocks(blocks, img_h=200)
+        assert len(result) == 0
+
+    def test_clean_text_preserved(self):
+        from ocr_utils import _group_and_merge_blocks
+        blocks = [
+            {"x": 10, "y": 50, "w": 100, "h": 15, "text": "Hello beautiful world", "confidence": 0.90, "fontSize": 14, "textColor": "#000000"},
+        ]
+        result = _group_and_merge_blocks(blocks, img_h=200)
+        assert len(result) == 1
+        assert result[0]["text"] == "Hello beautiful world"
+
+    def test_punctuation_only_filtered(self):
+        from ocr_utils import _group_and_merge_blocks
+        blocks = [
+            {"x": 10, "y": 50, "w": 5, "h": 5, "text": "...", "confidence": 0.70, "fontSize": 10, "textColor": "#000000"},
+        ]
+        result = _group_and_merge_blocks(blocks, img_h=200)
+        assert len(result) == 0
+
+    def test_single_char_low_conf_filtered(self):
+        from ocr_utils import _group_and_merge_blocks
+        blocks = [
+            {"x": 10, "y": 50, "w": 10, "h": 15, "text": "I", "confidence": 0.20, "fontSize": 14, "textColor": "#000000"},
+        ]
+        result = _group_and_merge_blocks(blocks, img_h=200)
+        assert len(result) == 0
+
+    def test_glosario_applied(self):
+        from ocr_utils import _group_and_merge_blocks
+        # '@NCO' debe corregirse a 'CINCO' via _aplicar_glosario
+        blocks = [
+            {"x": 10, "y": 50, "w": 40, "h": 15, "text": "@NCO", "confidence": 0.85, "fontSize": 14, "textColor": "#000000"},
+        ]
+        result = _group_and_merge_blocks(blocks, img_h=200)
+        if result:
+            assert result[0]["text"] == "CINCO", f"Esperaba CINCO, obtuvo {result[0]['text']!r}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# _is_inside_speech_bubble
+# ═══════════════════════════════════════════════════════════════
+
+class TestIsInsideSpeechBubble:
+    """Detección de globos de diálogo."""
+
+    def test_bright_background_not_bubble(self):
+        from ocr_utils import _is_inside_speech_bubble
+        # Fondo blanco (brightness >> 80)
+        img = np.ones((100, 200, 3), dtype=np.uint8) * 200
+        block = {"x": 30, "y": 30, "w": 80, "h": 20}
+        assert _is_inside_speech_bubble(img, block) is False
+
+    def test_dark_background_candidate_bubble(self):
+        from ocr_utils import _is_inside_speech_bubble
+        # Fondo oscuro uniforme + borde oscuro
+        img = np.ones((100, 200, 3), dtype=np.uint8) * 60
+        block = {"x": 30, "y": 30, "w": 80, "h": 20}
+        # brightness=60 < 80, y std baja → puede ser burbuja
+        result = _is_inside_speech_bubble(img, block)
+        # Depende de std_per_channel (si todas las muestras son iguales, std≈0)
+        assert result is True
+
+    def test_non_uniform_background_not_bubble(self):
+        from ocr_utils import _is_inside_speech_bubble
+        # Fondo claro (brightness > 80) → no burbuja (early return)
+        img = np.ones((100, 200, 3), dtype=np.uint8) * 150
+        block = {"x": 30, "y": 30, "w": 80, "h": 20}
+        result = _is_inside_speech_bubble(img, block)
+        assert result is False
+
+    def test_bright_uniform_not_bubble(self):
+        from ocr_utils import _is_inside_speech_bubble
+        # Fondo muy claro (brightness >> 80) → early return False
+        img = np.ones((100, 200, 3), dtype=np.uint8) * 220
+        block = {"x": 30, "y": 30, "w": 80, "h": 20}
+        result = _is_inside_speech_bubble(img, block)
+        assert result is False
+
+
+# ═══════════════════════════════════════════════════════════════
+# _build_glyph_mask_for_bubble
+# ═══════════════════════════════════════════════════════════════
+
+class TestBuildGlyphMask:
+    """Máscara de glifos para globos de diálogo."""
+
+    def test_returns_correct_shape(self, small_bgr):
+        from ocr_utils import _build_glyph_mask_for_bubble
+        block = {"x": 30, "y": 30, "w": 80, "h": 30}
+        mask = _build_glyph_mask_for_bubble(small_bgr, block)
+        assert mask.shape[:2] == small_bgr.shape[:2]
+        assert mask.dtype == np.uint8
+
+    def test_non_overlapping_block(self):
+        from ocr_utils import _build_glyph_mask_for_bubble
+        # Bloque fuera de la imagen
+        img = np.ones((100, 100, 3), dtype=np.uint8) * 200
+        block = {"x": -10, "y": -10, "w": 5, "h": 5}
+        mask = _build_glyph_mask_for_bubble(img, block)
+        assert mask.shape == (100, 100)
+        assert mask.sum() == 0
+
+    def test_mask_contains_text_region(self, gray_test_image):
+        from ocr_utils import _build_glyph_mask_for_bubble
+        block = {"x": 5, "y": 5, "w": 100, "h": 40}
+        mask = _build_glyph_mask_for_bubble(gray_test_image, block)
+        # La región del bloque debe tener al menos algunos píxeles marcados
+        region = mask[block["y"]:block["y"] + block["h"], block["x"]:block["x"] + block["w"]]
+        assert region.size > 0
+
+    def test_empty_bg_pixels_uses_rect_fallback(self):
+        from ocr_utils import _build_glyph_mask_for_bubble
+        # Bloque con tamaño mínimo (no hay bg_pixels porque edge es 0)
+        img = np.ones((50, 50, 3), dtype=np.uint8) * 100
+        block = {"x": 10, "y": 10, "w": 5, "h": 5}  # edge = max(3, int(min(5,5)*0.15)) = 3
+        mask = _build_glyph_mask_for_bubble(img, block)
+        assert mask.shape == (50, 50)
+
+
+# ═══════════════════════════════════════════════════════════════
+# _build_inpaint_mask
+# ═══════════════════════════════════════════════════════════════
+
+class TestBuildInpaintMask:
+    """Construcción de máscara de inpainting."""
+
+    def test_empty_blocks_produces_zero_mask(self, small_bgr):
+        from ocr_utils import _build_inpaint_mask
+        mask = _build_inpaint_mask(small_bgr, [])
+        assert mask.shape[:2] == small_bgr.shape[:2]
+        assert int(mask.max()) == 0
+
+    def test_returns_binary_mask(self, small_bgr):
+        from ocr_utils import _build_inpaint_mask
+        blocks = [{"x": 10, "y": 20, "w": 80, "h": 30, "text": "test"}]
+        mask = _build_inpaint_mask(small_bgr, blocks)
+        assert mask.shape[:2] == small_bgr.shape[:2]
+        assert mask.dtype == np.uint8
+        # Valores únicos deben ser 0 y/o 255
+        unique = set(np.unique(mask).tolist())
+        assert unique.issubset({0, 255})
+
+    def test_text_region_marked(self):
+        from ocr_utils import _build_inpaint_mask
+        # Usar imagen clara (brightness > 80) para que el bloque se detecte
+        # como fuera de burbuja y use máscara rectangular (garantiza píxeles marcados)
+        img = np.ones((100, 200, 3), dtype=np.uint8) * 200
+        blocks = [{"x": 30, "y": 30, "w": 50, "h": 20, "text": "test"}]
+        mask = _build_inpaint_mask(img, blocks)
+        # La región del texto debe tener píxeles marcados (rectángulo)
+        region = mask[25:55, 25:90]  # área alrededor del bloque
+        assert int(region.max()) > 0
+
+
+# ═══════════════════════════════════════════════════════════════
+# _inpaint_image
+# ═══════════════════════════════════════════════════════════════
+
+class TestInpaintImage:
+    """Inpainting con OpenCV."""
+
+    def test_zero_mask_returns_copy(self, small_bgr):
+        from ocr_utils import _inpaint_image
+        mask = np.zeros(small_bgr.shape[:2], dtype=np.uint8)
+        result = _inpaint_image(small_bgr, mask)
+        assert result.shape == small_bgr.shape
+        np.testing.assert_array_equal(result, small_bgr)
+
+    def test_inpainting_with_mask(self, small_bgr):
+        from ocr_utils import _inpaint_image
+        mask = np.zeros(small_bgr.shape[:2], dtype=np.uint8)
+        mask[40:60, 50:150] = 255
+        result = _inpaint_image(small_bgr, mask, blocks=[{"h": 20}])
+        assert result.shape == small_bgr.shape
+        # La región inpaintada no debe ser idéntica a la original
+        region_orig = small_bgr[40:60, 50:150, :]
+        region_res = result[40:60, 50:150, :]
+        assert not np.array_equal(region_orig, region_res)
+
+    def test_radius_without_blocks(self, small_bgr):
+        from ocr_utils import _inpaint_image
+        mask = np.zeros(small_bgr.shape[:2], dtype=np.uint8)
+        mask[40:60, 50:150] = 255
+        # Sin blocks, calcula radio por cobertura
+        result = _inpaint_image(small_bgr, mask)
+        assert result.shape == small_bgr.shape
+
+
+# ═══════════════════════════════════════════════════════════════
+# _sample_bg_color
+# ═══════════════════════════════════════════════════════════════
+
+class TestSampleBgColor:
+    """Muestreo de color de fondo."""
+
+    def test_dark_bubble_returns_black(self):
+        from ocr_utils import _sample_bg_color
+        # Fondo oscuro uniforme → dentro de burbuja → debe muestrear borde
+        img = np.ones((100, 200, 3), dtype=np.uint8) * 40  # oscuro
+        block = {"x": 30, "y": 30, "w": 80, "h": 30}
+        color = _sample_bg_color(img, block)
+        assert isinstance(color, str)
+        assert color.startswith("#")
+        assert len(color) == 7  # #rrggbb
+
+    def test_bright_outside_bubble_returns_white(self):
+        from ocr_utils import _sample_bg_color
+        # Fondo claro uniforme → fuera de burbuja (brightness>80) → sampleo exterior
+        img = np.ones((100, 200, 3), dtype=np.uint8) * 200  # claro
+        block = {"x": 30, "y": 30, "w": 80, "h": 30}
+        color = _sample_bg_color(img, block)
+        assert isinstance(color, str)
+        assert color.startswith("#")
+        assert len(color) == 7
+
+    def test_outside_bubble_fallback(self):
+        from ocr_utils import _sample_bg_color
+        # Bloque en borde superior (fuera de burbuja por brightness>80)
+        img = np.ones((50, 100, 3), dtype=np.uint8) * 180
+        block = {"x": 5, "y": 2, "w": 80, "h": 15}
+        color = _sample_bg_color(img, block)
+        assert isinstance(color, str)
+        assert color.startswith("#")
+
+    def test_tiny_block(self):
+        from ocr_utils import _sample_bg_color
+        # Bloque muy pequeño
+        img = np.ones((50, 50, 3), dtype=np.uint8) * 100
+        block = {"x": 20, "y": 20, "w": 5, "h": 5}
+        color = _sample_bg_color(img, block)
+        assert isinstance(color, str)
+        assert color.startswith("#")
+
+
+# ═══════════════════════════════════════════════════════════════
+# _run_ocr_on_image (con mocks)
+# ═══════════════════════════════════════════════════════════════
+
+class TestRunOcrOnImage:
+    """Ejecución de EasyOCR con semáforo."""
+
+    def test_returns_empty_on_error(self, small_bgr):
+        from ocr_utils import _run_ocr_on_image, _ocr_semaphore
+        mock_reader = MagicMock()
+        mock_reader.readtext.side_effect = Exception("OCR error")
+        result = _run_ocr_on_image(mock_reader, small_bgr)
+        assert result == []
+
+    def test_calls_readtext_with_params(self, small_bgr):
+        from ocr_utils import _run_ocr_on_image
+        mock_reader = MagicMock()
+        mock_reader.readtext.return_value = [("result",)]
+        _run_ocr_on_image(mock_reader, small_bgr)
+        mock_reader.readtext.assert_called_once()
+        args, kwargs = mock_reader.readtext.call_args
+        assert "detail" in kwargs
+        assert "paragraph" in kwargs
+        assert "text_threshold" in kwargs
+        assert kwargs["paragraph"] is False
+
+    def test_releases_semaphore_on_error(self, small_bgr):
+        from ocr_utils import _run_ocr_on_image, _ocr_semaphore
+        mock_reader = MagicMock()
+        mock_reader.readtext.side_effect = Exception("error")
+        # Contar semáforo antes y después
+        before = _ocr_semaphore._value
+        result = _run_ocr_on_image(mock_reader, small_bgr)
+        assert result == []
+        # El semáforo debe haberse liberado
+        after = _ocr_semaphore._value
+        assert after == before
+
+
+# ═══════════════════════════════════════════════════════════════
+# _detect_and_ocr (con mocks)
+# ═══════════════════════════════════════════════════════════════
+
+class TestDetectAndOcr:
+    """Pipeline de 3 niveles de OCR."""
+
+    def test_returns_empty_when_no_reader(self, small_bgr):
+        with patch("ocr_utils._get_ocr_reader", return_value=None):
+            from ocr_utils import _detect_and_ocr
+            result = _detect_and_ocr(small_bgr)
+            assert result == []
+
+    def test_tier1_success_returns_blocks(self, small_bgr):
+        """Tier 1 (EasyOCR directo) encuentra bloques."""
+        mock_reader = MagicMock()
+        mock_reader.readtext.return_value = [
+            ([[10, 20], [80, 20], [80, 35], [10, 35]], "Hello", 0.85)
+        ]
+        with patch("ocr_utils._get_ocr_reader", return_value=mock_reader):
+            with patch("ocr_utils._ocr_semaphore.acquire", return_value=True):
+                with patch("ocr_utils._ocr_semaphore.release"):
+                    from ocr_utils import _detect_and_ocr
+                    result = _detect_and_ocr(small_bgr)
+                    # Debe encontrar al menos 1 bloque
+                    assert len(result) >= 1
+                    texts = [b["text"] for b in result]
+                    assert "Hello" in " ".join(texts)
+
+    def test_tier1_fallback_to_tier2_without_fallback(self, small_bgr):
+        """Con allow_fallback=False, si tier 1 da 0 bloques, retorna []."""
+        mock_reader = MagicMock()
+        mock_reader.readtext.return_value = []  # tier 1 vacío
+        with patch("ocr_utils._get_ocr_reader", return_value=mock_reader):
+            with patch("ocr_utils._ocr_semaphore.acquire", return_value=True):
+                with patch("ocr_utils._ocr_semaphore.release"):
+                    from ocr_utils import _detect_and_ocr
+                    result = _detect_and_ocr(small_bgr, allow_fallback=False)
+                    assert result == []
+
+    def test_tier1_empty_tier2_finds_blocks(self, small_bgr):
+        """Tier 1 vacío, Tier 2 (CLAHE) encuentra bloques."""
+        mock_reader = MagicMock()
+        # La primera llamada (tier 1) devuelve vacío
+        # La segunda llamada (tier 2) devuelve bloques
+        mock_reader.readtext.side_effect = [
+            [],  # tier 1
+            [([[10, 20], [80, 20], [80, 35], [10, 35]], "Enhanced", 0.80)],  # tier 2
+        ]
+        with patch("ocr_utils._get_ocr_reader", return_value=mock_reader):
+            with patch("ocr_utils._ocr_semaphore.acquire", return_value=True):
+                with patch("ocr_utils._ocr_semaphore.release"):
+                    from ocr_utils import _detect_and_ocr
+                    result = _detect_and_ocr(small_bgr)
+                    assert len(result) >= 1
+
+    def test_all_tiers_fail_returns_empty(self, small_bgr):
+        """Todos los tiers fallan → retorna []."""
+        mock_reader = MagicMock()
+        mock_reader.readtext.return_value = []  # todos los tiers vacíos
+        with patch("ocr_utils._get_ocr_reader", return_value=mock_reader):
+            with patch("ocr_utils._ocr_semaphore.acquire", return_value=True):
+                with patch("ocr_utils._ocr_semaphore.release"):
+                    from ocr_utils import _detect_and_ocr
+                    result = _detect_and_ocr(small_bgr)
+                    assert result == []
+
+    def test_print_called_on_zero_blocks(self, small_bgr, capsys):
+        """Se imprime mensaje cuando no hay bloques."""
+        mock_reader = MagicMock()
+        mock_reader.readtext.return_value = []
+        with patch("ocr_utils._get_ocr_reader", return_value=mock_reader):
+            with patch("ocr_utils._ocr_semaphore.acquire", return_value=True):
+                with patch("ocr_utils._ocr_semaphore.release"):
+                    from ocr_utils import _detect_and_ocr
+                    _detect_and_ocr(small_bgr)
+                    captured = capsys.readouterr()
+                    assert "0 bloques" in captured.out or "Todos los fallbacks" in captured.out

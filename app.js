@@ -1,18 +1,16 @@
+// ─── App entry point ─────────────────────────────────────────
+// Imports from modularized JS modules
+import { formatDuration, canvasToBase64, loadBase64IntoCanvas, getBlockText, mergeLinesIntoBlocks, isLightColor } from "./js/utils.js";
+import { CLIENT_CONFIG, fetchClientConfig } from "./js/config.js";
+import { showToast } from "./js/toast.js";
+import { initTheme, toggleTheme } from "./js/theme.js";
+import { filterPageBlocks, MARGIN_NOISE_PATTERNS, GLOBAL_NOISE_PATTERNS } from "./js/filters.js";
+
+// Make CLIENT_CONFIG available globally for inline scripts
+window.__CLIENT_CONFIG = CLIENT_CONFIG;
+
 // SELECTOR DE ELEMENTOS DOM
 // APP VERSION: 20260714-NO-TESSERACT
-// GLOBAL ERROR HANDLER - catch "Cannot read image.png" error
-window.addEventListener('error', function(e) {
-    if (e.message && e.message.includes('image.png')) {
-        console.error('=== IMAGE.PNG ERROR CAUGHT ===');
-        console.error('Message:', e.message);
-        console.error('Filename:', e.filename);
-        console.error('Line:', e.lineno, 'Col:', e.colno);
-        console.error('Stack:', e.error?.stack);
-        console.error('===============================');
-    }
-    return false;
-});
-
 // Intercept any Tesseract loading attempts
 if (window.Tesseract) {
     console.error('Tesseract.js found in window at startup! Source:', (document.currentScript?.src || 'inline'));
@@ -31,45 +29,8 @@ if (window.Tesseract) {
     });
 }
 
-// ─── CLIENT CONFIG (defaults, overridden by /api/config at runtime) ───
-window.__CLIENT_CONFIG = {
-  TIMEOUT_OPENCV_INIT_MS: 15000,
-  TIMEOUT_PDFJS_CDN_MS: 10000,
-  TIMEOUT_PDFJS_ES_MODULE_MS: 10000,
-  TIMEOUT_PDF_RENDER_MS: 60000,
-  TIMEOUT_TRANSLATE_MS: 30000,
-  TIMEOUT_TRANSLATE_BATCH_MS: 60000,
-  TIMEOUT_PROCESS_PAGE_MS: 120000,
-  TIMEOUT_INPAINTED_IMAGE_MS: 15000,
-  TIMEOUT_EXPORT_REVOKE_MS: 10000,
-  TIMEOUT_CDN_LOAD_MS: 8000,
-};
-
-// Fetch server config to override defaults
-(async function fetchClientConfig() {
-  try {
-    const resp = await fetch("/api/config");
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    if (data.timeouts_ms) {
-      Object.assign(window.__CLIENT_CONFIG, {
-        TIMEOUT_OPENCV_INIT_MS: data.timeouts_ms.opencv_init,
-        TIMEOUT_PDFJS_CDN_MS: data.timeouts_ms.pdfjs_cdn,
-        TIMEOUT_PDFJS_ES_MODULE_MS: data.timeouts_ms.pdfjs_es_module,
-        TIMEOUT_PDF_RENDER_MS: data.timeouts_ms.pdf_render,
-        TIMEOUT_TRANSLATE_MS: data.timeouts_ms.translate,
-        TIMEOUT_TRANSLATE_BATCH_MS: data.timeouts_ms.translate_batch,
-        TIMEOUT_PROCESS_PAGE_MS: data.timeouts_ms.process_page,
-        TIMEOUT_INPAINTED_IMAGE_MS: data.timeouts_ms.inpainted_image,
-        TIMEOUT_EXPORT_REVOKE_MS: data.timeouts_ms.export_revoke,
-        TIMEOUT_CDN_LOAD_MS: data.timeouts_ms.cdn_load,
-      });
-      console.log("[config] Timeouts actualizados desde el servidor");
-    }
-  } catch (e) {
-    console.warn("[config] Usando timeouts por defecto:", e.message);
-  }
-}());
+// ─── Fetch server config to override defaults ────────────────
+fetchClientConfig(); // async, non-blocking
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -143,6 +104,14 @@ const btnBold = $("#btnBold");
 const opencvBadge = $("#opencvBadge");
 const eraseMode = $("#eraseMode");
 const placeManualBtn = $("#placeManualBtn");
+
+// Controles de efectos de texto (glow y fillOpacity)
+const glowToggle = $("#glowToggle");
+const glowColor = $("#glowColor");
+const glowBlur = $("#glowBlur");
+const glowBlurValue = $("#glowBlurValue");
+const fillOpacity = $("#fillOpacity");
+const fillOpacityValue = $("#fillOpacityValue");
 
 // ESTADO GLOBAL DE LA APLICACIÓN
 const state = {
@@ -228,159 +197,14 @@ initOpenCv();
 // =============================================================================
 // TEMA OSCURO/CLARO - Toggle
 // =============================================================================
-function initTheme() {
-  // Cargar tema guardado
-  const savedTheme = localStorage.getItem("theme") || "dark";
-  state.theme = savedTheme;
-  document.documentElement.setAttribute("data-theme", savedTheme);
-  
-  // Crear botón de toggle de tema si no existe
-  if (!$("#themeToggle")) {
-    const toggleBtn = document.createElement("button");
-    toggleBtn.id = "themeToggle";
-    toggleBtn.className = "theme-toggle";
-    toggleBtn.setAttribute("aria-label", "Cambiar tema");
-    toggleBtn.title = "Cambiar tema (T)";
-    toggleBtn.innerHTML = `
-      <svg class="icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none;">
-        <circle cx="12" cy="12" r="5"/>
-        <line x1="12" y1="1" x2="12" y2="3"/>
-        <line x1="12" y1="21" x2="12" y2="23"/>
-        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
-        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-        <line x1="1" y1="12" x2="3" y2="12"/>
-        <line x1="21" y1="12" x2="23" y2="12"/>
-        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
-        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-      </svg>
-      <svg class="icon-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-      </svg>
-    `;
-    toggleBtn.addEventListener("click", toggleTheme);
-    
-    // Insertar en topbar-actions
-    const topbarActions = $(".topbar-actions");
-    if (topbarActions) {
-      topbarActions.insertBefore(toggleBtn, topbarActions.firstChild);
-    }
-  }
-  
-  updateThemeIcons();
-}
-
-function toggleTheme() {
-  state.theme = state.theme === "dark" ? "light" : "dark";
-  localStorage.setItem("theme", state.theme);
-  document.documentElement.setAttribute("data-theme", state.theme);
-  updateThemeIcons();
-  showToast(state.theme === "dark" ? "Tema oscuro activado" : "Tema claro activado", "info");
-}
-
-function updateThemeIcons() {
-  const toggleBtn = $("#themeToggle");
-  if (!toggleBtn) return;
-  
-  const sunIcon = toggleBtn.querySelector(".icon-sun");
-  const moonIcon = toggleBtn.querySelector(".icon-moon");
-  
-  if (state.theme === "dark") {
-    if (sunIcon) sunIcon.style.display = "none";
-    if (moonIcon) moonIcon.style.display = "block";
-  } else {
-    if (sunIcon) sunIcon.style.display = "block";
-    if (moonIcon) moonIcon.style.display = "none";
-  }
-}
-
-// Inicializar tema al cargar
-initTheme();
+initTheme(state, (theme) => {
+  showToast(theme === "dark" ? "Tema oscuro activado" : "Tema claro activado", "info");
+});
 
 // =============================================================================
-// TOAST NOTIFICATIONS SYSTEM
+// TOAST NOTIFICATIONS SYSTEM (imported from ./js/toast.js)
 // =============================================================================
-function initToastContainer() {
-  if ($("#toastContainer")) return;
-  
-  const container = document.createElement("div");
-  container.id = "toastContainer";
-  container.className = "toast-container";
-  container.style.cssText = `
-    position: fixed;
-    bottom: 24px;
-    right: 24px;
-    z-index: 600;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    pointer-events: none;
-  `;
-  document.body.appendChild(container);
-}
-
-function showToast(message, type = "info", duration = 4000) {
-  initToastContainer();
-  const container = $("#toastContainer");
-  
-  const toast = document.createElement("div");
-  toast.className = `toast toast-${type}`;
-  toast.style.cssText = `
-    pointer-events: auto;
-    background: var(--bg-panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    padding: 14px 18px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-width: 280px;
-    max-width: 400px;
-    box-shadow: var(--shadow-xl);
-    animation: slideInRight 0.4s var(--transition-bounce);
-    pointer-events: auto;
-  `;
-
-  const icons = {
-    success: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`,
-    error: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`,
-    warning: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L21.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
-    info: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--info)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`
-  };
-  
-  toast.innerHTML = `
-    <div class="toast-icon" style="flex-shrink:0; width:20px; height:20px;">${icons[type] || icons.info}</div>
-    <div class="toast-message" style="flex:1; font-size:13px; color:var(--text-primary); line-height:1.4;">${message}</div>
-    <button class="toast-close" style="color:var(--text-muted); cursor:pointer; padding:4px; transition:var(--transition-fast); flex-shrink:0;" aria-label="Cerrar">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-    </button>
-  `;
-  
-  container.appendChild(toast);
-  
-  // Animación de entrada
-  requestAnimationFrame(() => {
-    toast.style.animation = "slideInRight 0.4s var(--transition-bounce)";
-  });
-  
-  // Botón cerrar
-  const closeBtn = toast.querySelector(".toast-close");
-  closeBtn.addEventListener("click", () => {
-    toast.style.animation = "slideOutRight 0.3s ease-in forwards";
-    setTimeout(() => toast.remove(), 300);
-  });
-  
-  // Auto-cerrar
-  if (duration > 0) {
-    setTimeout(() => {
-      if (toast.parentNode) {
-        toast.style.animation = "slideOutRight 0.3s ease-in forwards";
-        setTimeout(() => toast.remove(), 300);
-      }
-    }, duration);
-  }
-  
-  return toast;
-}
+// showToast() is now imported from "./js/toast.js" at the top of this file
 
 // =============================================================================
 // KEYBOARD SHORTCUTS
@@ -526,6 +350,18 @@ function initKeyboardShortcuts() {
           btnBold.click();
         }
         break;
+
+      case "g":
+        if (!isCtrl && state.selectedId) {
+          e.preventDefault();
+          glowToggle.checked = !glowToggle.checked;
+          glowToggle.dispatchEvent(new Event("change"));
+          showToast(
+            glowToggle.checked ? "Glow activado" : "Glow desactivado",
+            "info", 1500
+          );
+        }
+        break;
         
       case "escape":
         if (state.selectedId) {
@@ -654,7 +490,7 @@ function getPageBoxes(page = state.page) {
 
 // 2. APERTURA Y CARGA DE ARCHIVOS
 async function openFile(file) {
-  console.log("[openFile] LLAMADO con archivo:", file?.name, file?.type, file?.size);
+  //console.log("[openFile] LLAMADO con archivo:", file?.name, file?.type, file?.size);
   document.title = "🔄 openFile: " + (file?.name || "none");
   if (!file) return;
   state.pdf = null;
@@ -675,7 +511,7 @@ async function openFile(file) {
 
   try {
     if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) {
-      console.log("[openFile] Detectado como PDF:", file.name, "type:", file.type, "size:", file.size);
+      //console.log("[openFile] Detectado como PDF:", file.name, "type:", file.type, "size:", file.size);
       setStatus("Cargando PDF...");
       showToast("Cargando PDF.js...", "info", 10000);
       const pdfjs = await loadPdfJs();
@@ -739,10 +575,10 @@ async function renderPage(page = state.page) {
   setStatus(`Renderizando página ${page}...`);
   
   try {
-    console.log("[renderPage] Obteniendo página", page, "pdf:", !!state.pdf);
+    //console.log("[renderPage] Obteniendo página", page, "pdf:", !!state.pdf);
     const pdfPage = await state.pdf.getPage(page);
     if (_renderToken !== myToken) return {aborted: true};
-    console.log("[renderPage] Página obtenida, viewport...");
+    //console.log("[renderPage] Página obtenida, viewport...");
     const viewport = pdfPage.getViewport({ scale: state.scale });
     
     resizeStage(viewport.width, viewport.height);
@@ -967,103 +803,8 @@ async function detectPdfTextLines(pageNo) {
   return mergeLinesIntoBlocks(lines);
 }
 
-function mergeLinesIntoBlocks(lines) {
-  const blocks = [];
-  for (const line of lines.sort((a,b) => a.y - b.y || a.x - b.x)) {
-    let b = blocks.find(x => line.y - x.y1 < Math.max(20, line.h * 1.3) && line.y - x.y1 > -line.h && Math.abs((line.x + line.w/2) - x.cx) < Math.max(line.w, x.w) * 0.6);
-    if (!b) {
-      blocks.push({
-        lines: [line],
-        x: line.x,
-        y: line.y,
-        x1: line.x + line.w,
-        y1: line.y + line.h,
-        cx: line.x + line.w / 2,
-        w: line.w
-      });
-    } else {
-      b.lines.push(line);
-      b.x = Math.min(b.x, line.x);
-      b.y = Math.min(b.y, line.y);
-      b.x1 = Math.max(b.x1, line.x + line.w);
-      b.y1 = Math.max(b.y1, line.y + line.h);
-      b.cx = (b.x + b.x1) / 2;
-      b.w = b.x1 - b.x;
-    }
-  }
-  return blocks.map(b => ({
-    x: b.x,
-    y: b.y,
-    w: b.w,
-    h: b.y1 - b.y,
-    text: b.lines.map(l => l.text).join(" ").replace(/\s+/g, " ").trim(),
-    size: Math.round(b.lines.reduce((s, l) => s + l.size, 0) / b.lines.length)
-  }));
-}
-
-// ─── FILTRO DE METADATOS DE IMPRESIÓN Y MARCAS DE AGUA DE ESCANEO ─────────────
-// Ruido que SOLO se descarta si el bloque está en el margen superior o inferior
-// (5% de la altura de página): fecha/hora del navegador, numeración de página.
-const MARGIN_NOISE_PATTERNS = [
-  // Fechas con formato estricto: 13/7/26, 13.07.2026, 13-7-26
-  /\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}/,
-  // Fechas con error de OCR: el segundo separador se lee como '1' (13/7126)
-  // o se pierde por completo (13/726, 13.726)
-  /\d{1,2}[/.\-]\d{1,2}1?\d{2}\b/,
-  // Horas con o sin puntos: 4:58 P.M. / 4:58 p.m. / 4:58 p. m. / 4:58 pm / 4:58
-  /\d{1,2}:\d{2}\s*([ap]\.?\s?m\.?)?/i,
-  // Numeración de página: 3/128, 3 / 128, "3 de 128", "Pág. 3"
-  /^\d{1,4}\s*\/\s*\d{1,4}$/,
-  /\b\d{1,4}\s+de\s+\d{1,4}\b/i,
-  /\bp[aá]g(?:ina)?\.?\s?\d{1,4}\b/i,
-  /\b(?:p[aá]g(?:ina)?|page)\s+\d+\s+(?:de|of)\s+\d+\b/i,
-  // NOTA: Ya no se incluyen patrones de títulos de capítulo ("capítulo",
-  // "cómo criar", "how to raise") porque filtran contenido legítimo.
-  // Los números de página y fechas se siguen filtrando con los patrones superiores.
-];
-
-// Ruido que se descarta en CUALQUIER parte de la página: sellos de grupos de escaneo.
-const GLOBAL_NOISE_PATTERNS = [
-  /https?:\/\/|www\.|\.(com|net|org|xyz|io)\b/i,
-  /\bzonaolympus[\s-]?com\b/i,
-  /\b1\s*[\s-]?c\s*[\s-]?2\s*[\s-]?e\b/i,           // sello "1 C 2 E"
-  // Broken "http://" — OCR mangles "https://" into "htps fo", "htp ://", "htpsjj" etc.
-  /\bhtps?\s*[:\s\/'"\\]/i,
-  // Domain with underscore/apostrophe instead of dot before TLD: "xyz_com", "site'com"
-  /[a-z]+[_'"\s]\s*(?:com|net|org|xyz|io)\b/i,
-];
-
-function getBlockText(b) {
-  return String((b && (b.text || b.source)) || "").trim();
-}
-
-// Filtra bloques de metadatos impresos (fecha/hora/URL/numeración) y marcas de
-// agua de grupos de escaneo. Se aplica a bloques nativos de PDF, bloques de OCR
-// local y bloques devueltos por el servidor (todos comparten x,y,w,h,text/source).
-function filterPageBlocks(blocks, pageHeight = pdfCanvas.height) {
-  if (!blocks || !blocks.length) return blocks || [];
-  const marginTop = pageHeight * 0.07;
-  const marginBottom = pageHeight * 0.96;
-
-  return blocks.filter(b => {
-    const text = getBlockText(b);
-    if (!text) return true;
-
-    if (GLOBAL_NOISE_PATTERNS.some(re => re.test(text))) {
-      console.log(`[filtro] Marca de agua/URL descartada: "${text}"`);
-      return false;
-    }
-
-    const cy = (b.y || 0) + (b.h || 0) / 2;
-    const inMargin = cy < marginTop || cy > marginBottom;
-    if (inMargin && MARGIN_NOISE_PATTERNS.some(re => re.test(text))) {
-      console.log(`[filtro] Metadato de margen descartado: "${text}" (y=${Math.round(cy)})`);
-      return false;
-    }
-
-    return true;
-  });
-}
+// mergeLinesIntoBlocks, filterPageBlocks, MARGIN_NOISE_PATTERNS, GLOBAL_NOISE_PATTERNS, getBlockText
+// are imported from ./js/utils.js and ./js/filters.js at the top of this file
 
 // Analizar la página actual: solo usa bloques nativos del PDF (sin OCR local)
 // El OCR real lo hace el servidor (EasyOCR) vía botón "Traducir Página Actual"
@@ -1199,16 +940,7 @@ function sampleTextColor(block) {
   }
 }
 
-function isLightColor(col) {
-  try {
-    const m = col.match(/\d+/g);
-    if (!m) return true;
-    const [r, g, b] = m.map(Number);
-    return (r * 0.299 + g * 0.587 + b * 0.114) > 128;
-  } catch (e) {
-    return true;
-  }
-}
+// isLightColor is imported from ./js/utils.js at the top of this file
 
 function makeAutoTextBox(block, translated = "", serverData = null) {
   // Si tenemos datos del servidor (inpainting + OCR profesional), usarlos directamente
@@ -1275,6 +1007,20 @@ function makeAutoTextBox(block, translated = "", serverData = null) {
     if (m) { const [r,g,b] = m.map(Number); return (r*0.299 + g*0.587 + b*0.114) < 80; }
     return false;
   })();
+  // Glow exterior (brillo tipo neón) — controlado por UI
+  // Lee el estado actual de los controles de efectos de texto
+  const useGlow = !isBubble || (isExpressive && hasAggressive);
+  glowToggle.checked = useGlow;
+  let glowColorResult = "transparent";
+  let glowBlurResult = 0;
+  let fillOpacityResult = 0;
+  
+  if (glowToggle.checked) {
+    glowColorResult = glowColor.value;
+    glowBlurResult = Math.max(1, Number(glowBlur.value) || 12);
+  }
+  fillOpacityResult = (!isBubble && bgCol !== "transparent") ? (Number(fillOpacity.value) / 100) || 0.35 : 0;
+
   const strokeC  = (isBubble || isServerBubble) ? "transparent" : (isLightColor(textCol) ? "#000000" : "#ffffff");
   const strokeW  = isBubble ? 0 : 2;
 
@@ -1290,6 +1036,9 @@ function makeAutoTextBox(block, translated = "", serverData = null) {
     color: textCol,
     strokeColor: strokeC,
     strokeWidth: strokeW,
+    glowColor: glowColorResult,
+    glowBlur: glowBlurResult,
+    fillOpacity: fillOpacityResult,
     fontSize: serverFontSize,
     fontFamily: finalFontFamily,
     fontStyle: finalFontStyle,
@@ -1347,33 +1096,7 @@ function showProgress(label, done, total, startedAt) {
   }
 }
 
-function formatDuration(ms) {
-  const sec = Math.ceil(ms / 1000);
-  const min = Math.floor(sec / 60);
-  const restSec = sec % 60;
-  return min > 0 ? `${min}m ${restSec}s` : `${restSec}s`;
-}
-
-// Traducir y rellenar página actual
-// Convierte el canvas a base64 para enviar al servidor
-function canvasToBase64(canvas) {
-  return canvas.toDataURL("image/png");
-}
-
-// Cargar imagen base64 en el erasedBgCanvas
-function loadBase64IntoCanvas(b64, targetCanvas) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      const ctx = targetCanvas.getContext("2d");
-      ctx.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
-      ctx.drawImage(img, 0, 0);
-      resolve();
-    };
-    img.onerror = reject;
-    img.src = b64;
-  });
-}
+// formatDuration, canvasToBase64, loadBase64IntoCanvas are imported from ./js/utils.js
 
 // Procesar página completa en el servidor (OCR + inpainting + traducción)
 async function serverProcessPage(pageNo = state.page) {
@@ -1389,11 +1112,11 @@ async function serverProcessPage(pageNo = state.page) {
     source: sourceLang.value || "auto",
   };
 
-  console.log("[serverProcessPage] Enviando a servidor:", { 
-    target: payload.target, 
-    source: payload.source, 
-    imgSize: imageB64.length 
-  });
+  //console.log("[serverProcessPage] Enviando a servidor:", { 
+  //  target: payload.target, 
+  //  source: payload.source, 
+  //  imgSize: imageB64.length 
+  //});
 
   // Fetch con timeout de 120 segundos
   const controller = new AbortController();  const timeoutId = setTimeout(() => controller.abort(), window.__CLIENT_CONFIG.TIMEOUT_PROCESS_PAGE_MS);
@@ -1407,7 +1130,7 @@ async function serverProcessPage(pageNo = state.page) {
   
   clearTimeout(timeoutId);
 
-  console.log("[serverProcessPage] Respuesta status:", resp.status);
+  //console.log("[serverProcessPage] Respuesta status:", resp.status);
 
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
@@ -1417,7 +1140,7 @@ async function serverProcessPage(pageNo = state.page) {
 
   let result;
   try { result = await resp.json(); } catch (e) { throw new Error("Respuesta inválida del servidor"); }
-  console.log("[serverProcessPage] Bloques recibidos:", result.blocks?.length || 0);
+  //console.log("[serverProcessPage] Bloques recibidos:", result.blocks?.length || 0);
   return result; // { inpainted_image, blocks }
 }
 
@@ -1505,7 +1228,7 @@ async function checkServerHealth() {
     if (resp.ok) {
       const data = await resp.json();
       if (data && data.ok) {
-        console.log('[health] Servidor OK:', data);
+        //console.log('[health] Servidor OK:', data);
         return true;
       }
     }
@@ -1713,6 +1436,91 @@ function truncate(str, max) {
   return String(str).length > max ? String(str).slice(0, max) + "…" : String(str);
 }
 
+// ─── Función compartida de dibujo de texto ────────────────────────
+// Unifica sombra, contorno, centrado y medidas entre renderBoxes()
+// (pantalla) y drawProfessionalText() (exportación PNG/PDF).
+// Cualquier cambio visual debe hacerse AQUÍ, no en las dos funciones.
+function drawTextOnCanvas(ctx, text, box, layout) {
+  ctx.save();
+
+  // Configurar fuente
+  ctx.font = `${box.fontStyle || "normal"} ${box.fontWeight || "400"} ${layout.fontSize}px ${box.fontFamily}`;
+  ctx.textBaseline = "top";
+  ctx.fillStyle = box.color;
+
+  // ── Sombra de legibilidad ─────────────────────────────────────
+  const col = box.color || "#000000";
+  const isLightText = (() => {
+    const m = col.match(/\d+/g);
+    if (!m) return false;
+    const [r, g, b] = m.map(Number);
+    return (r * 0.299 + g * 0.587 + b * 0.114) > 128;
+  })();
+
+  // ── Centrado vertical ─────────────────────────────────────────
+  const totalTextHeight = layout.lines.length * layout.lineHeight;
+  const startY = box.y + Math.max(0, (box.h - totalTextHeight) / 2);
+
+  // ── Relleno semitransparente de fondo (detrás de cada línea) ──
+  // Usa startY para alinearse con el centrado vertical del texto.
+  const hasBgFill = box.fillOpacity > 0 && box.bg && box.bg !== "transparent";
+  const hasGlow = box.glowColor && box.glowColor !== "transparent" && box.glowBlur > 0;
+
+  // ── Dibujar cada línea centrada horizontalmente ───────────────
+  for (let i = 0; i < layout.lines.length; i++) {
+    const line = layout.lines[i];
+    const textWidth = ctx.measureText(line).width;
+    const lineX = box.x + (box.w - textWidth) / 2;
+    const lineY = startY + i * layout.lineHeight;
+
+    // 1. Relleno semitransparente por línea (pill-shaped background)
+    if (hasBgFill) {
+      const pad = Math.max(2, layout.fontSize * 0.12);
+      ctx.globalAlpha = box.fillOpacity;
+      ctx.fillStyle = box.bg;
+      ctx.fillRect(lineX - pad, lineY - pad, textWidth + pad * 2, layout.lineHeight + pad * 2);
+      ctx.globalAlpha = 1.0;
+    }
+
+    // 2. Glow exterior: dibujar texto transparente con shadow para crear el halo
+    if (hasGlow) {
+      ctx.shadowColor = box.glowColor;
+      ctx.shadowBlur = box.glowBlur;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+      ctx.fillStyle = "transparent";
+      ctx.fillText(line, lineX, lineY);  // solo el shadow (glow) es visible
+      ctx.shadowColor = "transparent";  // reset para el texto principal
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = box.color;        // restaurar color original
+    }
+
+    // 3. Sombra de legibilidad (sombra normal del texto)
+    if (box.shadow !== false && !hasGlow) {
+      ctx.shadowColor = isLightText ? "rgba(0,0,0,0.85)" : "rgba(255,255,255,0.6)";
+      ctx.shadowBlur = Math.max(3, layout.fontSize * 0.18);
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+    } else {
+      ctx.shadowColor = "transparent";
+      ctx.shadowBlur = 0;
+    }
+
+    // 4. Contorno de texto
+    if (box.strokeColor && box.strokeWidth > 0 && box.strokeColor !== "transparent") {
+      ctx.strokeStyle = box.strokeColor;
+      ctx.lineWidth = box.strokeWidth * 2;
+      ctx.lineJoin = "round";
+      ctx.strokeText(line, lineX, lineY);
+    }
+
+    // 5. Texto principal
+    ctx.fillText(line, lineX, lineY);
+  }
+
+  ctx.restore();
+}
+
 // 5. EDITOR DE BURBUJAS DOM E INTERACCIONES EN EL OVERLAY
 function renderBoxes() {
   try {
@@ -1739,50 +1547,8 @@ function renderBoxes() {
         ctx.fillRect(box.x, box.y, box.w, box.h);
       }
 
-      // Configurar la fuente
-      ctx.font = `${box.fontStyle || "normal"} ${box.fontWeight || "400"} ${layout.fontSize}px ${box.fontFamily}`;
-      ctx.textBaseline = "top";
-      ctx.fillStyle = box.color;
-
-      // Sombra automática para legibilidad sobre cualquier fondo
-      const col = box.color || "#000000";
-      const isLightText = (() => {
-        const m = col.match(/\d+/g);
-        if (!m) return false;
-        const [r, g, b] = m.map(Number);
-        return (r * 0.299 + g * 0.587 + b * 0.114) > 128;
-      })();
-      if (box.shadow !== false) {
-        ctx.shadowColor = isLightText ? "rgba(0,0,0,0.85)" : "rgba(255,255,255,0.6)";
-        ctx.shadowBlur = Math.max(3, layout.fontSize * 0.18);
-        ctx.shadowOffsetX = 0;
-        ctx.shadowOffsetY = 0;
-      }
-
-      // Contorno de texto
-      if (box.strokeColor && box.strokeWidth > 0 && box.strokeColor !== "transparent") {
-        ctx.strokeStyle = box.strokeColor;
-        ctx.lineWidth = box.strokeWidth * 2;
-        ctx.lineJoin = "round";
-      }
-
-      // Dibujar cada línea de texto centrada horizontalmente
-      const totalTextHeight = layout.lines.length * layout.lineHeight;
-      const startY = box.y + Math.max(0, (box.h - totalTextHeight) / 2);
-
-      for (let i = 0; i < layout.lines.length; i++) {
-        const line = layout.lines[i];
-        const textWidth = ctx.measureText(line).width;
-        const lineX = box.x + (box.w - textWidth) / 2;
-        const lineY = startY + i * layout.lineHeight;
-
-        if (box.strokeColor && box.strokeWidth > 0 && box.strokeColor !== "transparent") {
-          ctx.strokeText(line, lineX, lineY);
-        }
-        ctx.fillText(line, lineX, lineY);
-      }
-
-      ctx.restore();
+      // Usar función compartida para sombra, contorno, centrado y dibujo
+      drawTextOnCanvas(ctx, box.text || box.source || "", box, layout);
 
       // --- Crear manejador interactivo invisible en el overlay ---
       const div = document.createElement("div");
@@ -1972,6 +1738,17 @@ function selectBox(id) {
     fontSize.value = String(box.fontSize || 18);
     fontFamily.value = box.fontFamily || "Comic Sans MS";
     eraseMode.value = box.eraseMode || "area";
+
+    // Sincronizar controles de glow y fillOpacity
+    const hasGlow = box.glowColor && box.glowColor !== "transparent" && box.glowBlur > 0;
+    glowToggle.checked = hasGlow;
+    if (hasGlow && box.glowColor !== "transparent") {
+      glowColor.value = toHexColor(box.glowColor, "#ffd700");
+    }
+    glowBlur.value = String(box.glowBlur || 0);
+    glowBlurValue.textContent = box.glowBlur || "0";
+    fillOpacity.value = String(Math.round((box.fillOpacity || 0) * 100));
+    fillOpacityValue.textContent = Math.round((box.fillOpacity || 0) * 100) + "%";
 
     // Actualizar botones Bold/Italic
     if (box.fontStyle === "italic") btnItalic.classList.add("active-style");
@@ -2280,45 +2057,7 @@ function sampleEraseColor(box, canvas = cleanBgCanvas) {
 // 7. RENDERIZADO Y DIBUJADO PROFESIONAL DE TEXTO EN EL CANVAS
 function drawProfessionalText(ctx, text, box) {
   const layout = fitTextLayout(text, box);
-  ctx.save();
-  ctx.textAlign = "center";
-  ctx.textBaseline = "top";  // Match renderBoxes
-  ctx.font = `${box.fontStyle || "normal"} ${box.fontWeight || "400"} ${layout.fontSize}px ${box.fontFamily}`;
-  ctx.lineJoin = "round";
-
-  // Sombra automática para legibilidad sobre fondos complejos
-  // Detectar si el texto es claro u oscuro para elegir sombra contrastante
-  const col = box.color || "#000000";
-  const isLightText = (() => {
-    const m = col.match(/\d+/g);
-    if (!m) return false;
-    const [r, g, b] = m.map(Number);
-    return (r * 0.299 + g * 0.587 + b * 0.114) > 128;
-  })();
-
-  if (box.shadow !== false) {
-    ctx.shadowColor = isLightText ? "rgba(0,0,0,0.85)" : "rgba(255,255,255,0.6)";  // Match renderBoxes
-    ctx.shadowBlur = Math.max(3, layout.fontSize * 0.18);
-    ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = 0;
-  }
-  
-  const cx = box.x + box.w / 2;
-  // Match renderBoxes vertical centering
-  const totalTextHeight = layout.lines.length * layout.lineHeight;
-  let y = box.y + Math.max(0, (box.h - totalTextHeight) / 2);
-  
-  for (const line of layout.lines) {
-    if (box.strokeColor && box.strokeWidth > 0 && box.strokeColor !== "transparent") {
-      ctx.strokeStyle = box.strokeColor;
-      ctx.lineWidth = box.strokeWidth * 2;  // Match renderBoxes
-      ctx.strokeText(line, cx, y);
-    }
-    ctx.fillStyle = box.color;
-    ctx.fillText(line, cx, y);
-    y += layout.lineHeight;
-  }
-  ctx.restore();
+  drawTextOnCanvas(ctx, text, box, layout);
 }
 
 // 8. RENDERIZADO DEL LIENZO FINAL EDITADO (COMBINA BORRADO Y TEXTOS NUEVOS)
@@ -2456,9 +2195,9 @@ async function exportFullPdf() {
 }
 
 // 10. BINDEO DE EVENTOS DEL DOM
-console.log("[init] fileInput element:", fileInput);
+//console.log("[init] fileInput element:", fileInput);
 fileInput.addEventListener("change", (e) => {
-  console.log("[fileInput.change] event fired, files:", e.target.files);
+  //console.log("[fileInput.change] event fired, files:", e.target.files);
   const files = e.target.files;
   if (!files || !files.length) return;
   const file = files[0];
@@ -2531,6 +2270,77 @@ translatedText.addEventListener("input", () => {
 coverOriginal.addEventListener("change", async () => {
   await updateErasedBg();
   refreshScreenCanvas();
+});
+
+// ── Helper: actualiza clase active en panel de efectos ──────
+function updateTextEffectsPanelState() {
+  const panel = document.getElementById('textEffectsPanel');
+  if (!panel) return;
+  panel.classList.toggle('has-active-glow', glowToggle.checked);
+  panel.classList.toggle('has-active-fill', Number(fillOpacity.value) > 0);
+}
+
+// ── Preview hover: muestra glow temporal al pasar mouse ─────
+let _hoverGlowPreview = null;
+
+glowToggle.addEventListener("mouseenter", () => {
+  if (!state.selectedId || glowToggle.checked) return;
+  const box = getPageBoxes().find(b => b.id === state.selectedId);
+  if (!box) return;
+  // Guardar estado original
+  _hoverGlowPreview = {
+    glowColor: box.glowColor,
+    glowBlur: box.glowBlur
+  };
+  // Mostrar preview con valores actuales de UI
+  Object.assign(box, {
+    glowColor: glowColor.value,
+    glowBlur: Math.max(1, Number(glowBlur.value) || 12)
+  });
+  renderBoxes();
+});
+
+glowToggle.addEventListener("mouseleave", () => {
+  if (!_hoverGlowPreview) return;
+  const box = getPageBoxes().find(b => b.id === state.selectedId);
+  if (box) {
+    Object.assign(box, _hoverGlowPreview);
+  }
+  _hoverGlowPreview = null;
+  renderBoxes();
+});
+
+// ── Controles de efectos de texto (glow y fillOpacity) ──────
+glowToggle.addEventListener("change", () => {
+  _hoverGlowPreview = null;  // Descartar preview pendiente, el usuario ya decidió
+  const enabled = glowToggle.checked;
+  const patch = {
+    glowColor: enabled ? glowColor.value : "transparent",
+    glowBlur: enabled ? Number(glowBlur.value) : 0
+  };
+  updateSelectedBox(patch);
+  updateTextEffectsPanelState();
+});
+
+glowColor.addEventListener("input", () => {
+  if (glowToggle.checked) {
+    updateSelectedBox({ glowColor: glowColor.value });
+  }
+});
+
+glowBlur.addEventListener("input", () => {
+  const val = Number(glowBlur.value);
+  glowBlurValue.textContent = val;
+  if (glowToggle.checked) {
+    updateSelectedBox({ glowBlur: val });
+  }
+});
+
+fillOpacity.addEventListener("input", () => {
+  const val = Number(fillOpacity.value) / 100;
+  fillOpacityValue.textContent = Math.round(val * 100) + "%";
+  updateSelectedBox({ fillOpacity: val });
+  updateTextEffectsPanelState();
 });
 
 // Cambios de estilos rápidos
@@ -2754,9 +2564,9 @@ fitPage.addEventListener("click", fitPageToStage);// Reset zoom on double-click 
 function bootApp() {
   overlay.className = "overlay drawing";
   setStatus("Listo para comenzar. Carga un archivo PDF o Imagen.");
-  console.log("[BOOT] Event listeners attached, fileInput:", !!fileInput);
+  //console.log("[BOOT] Event listeners attached, fileInput:", !!fileInput);
   if (fileInput) {
-    console.log("[BOOT] fileInput.accept:", fileInput.accept);
+    //console.log("[BOOT] fileInput.accept:", fileInput.accept);
   }
 }
 if (document.readyState !== "loading") {

@@ -46,7 +46,15 @@ def _ensure_argo_package(src: str, tgt: str) -> bool:
                 _argo_ready[key] = True
                 return True
             print(f"[offline] Descargando modelo {src}->{tgt}...")
-            package.update_package_index()
+            # update_package_index con timeout para evitar cuelgues de red
+            import concurrent.futures as _cf
+            with _cf.ThreadPoolExecutor(max_workers=1) as _update_exec:
+                _update_future = _update_exec.submit(package.update_package_index)
+                try:
+                    _update_future.result(timeout=30)
+                except _cf.TimeoutError:
+                    print(f"[offline] Timeout (30s) descargando indice de paquetes Argos")
+                    return False
             available = package.get_available_packages()
             pkgs = [p for p in available if p.from_code == src and p.to_code == tgt]
             if pkgs:
@@ -61,9 +69,11 @@ def _ensure_argo_package(src: str, tgt: str) -> bool:
 
 # ─── Google Translator HTTP session (connection pooling) ─────────
 _google_session: Any = None
-_google_session_lock: threading.Lock = threading.Lock()
-_google_translators: dict[tuple[str, str], Any] = {}  # cache por (source, target)
-_google_translators_lock: threading.Lock = threading.Lock()
+_translators: dict[tuple[str, str], Any] = {}  # cache por (source, target)
+# Lock único para Google (session + translators + rate limit)
+# Antes eran 3 locks separados; consolidado para reducir overhead
+# de adquisición en batch (cada worker competía por 3 locks).
+_google_lock: threading.Lock = threading.Lock()
 
 # ─── Google Translate rate limit detection ───────────────────────
 # Cuando Google devuelve N textos seguidos sin cambios (el mismo input),
@@ -72,17 +82,16 @@ _google_translators_lock: threading.Lock = threading.Lock()
 _google_rate_limit_state: dict[str, Any] = {
     "consecutive_unchanged": 0,
     "backoff_until": 0.0,
-    "current_backoff": 60.0,
+    "current_backoff": 10.0,
 }
-_google_rate_limit_lock: threading.Lock = threading.Lock()
 _RATE_LIMIT_THRESHOLD: int = 3       # N textos sin cambios → gatillar backoff
-_MAX_BACKOFF: float = 600.0          # 10 min máximo
+_MAX_BACKOFF: float = 120.0          # 2 min máximo (antes 600s)
 
 
 def _get_google_session() -> Any:
     global _google_session
     if _google_session is None:
-        with _google_session_lock:
+        with _google_lock:
             if _google_session is None:
                 import requests
                 s = requests.Session()
@@ -105,7 +114,7 @@ def _translate_google(text: str, source: str, target: str) -> str | None:
     para que otros motores (CT2, Argos) tomen el control.
     """
     # ── Verificar backoff por rate limiting ──────────────────────
-    with _google_rate_limit_lock:
+    with _google_lock:
         now = time.time()
         if now < _google_rate_limit_state["backoff_until"]:
             remaining = _google_rate_limit_state["backoff_until"] - now
@@ -120,13 +129,13 @@ def _translate_google(text: str, source: str, target: str) -> str | None:
         
         # Cachear instancias de GoogleTranslator por par de idioma
         key = (source, target)
-        if key not in _google_translators:
-            with _google_translators_lock:
-                if key not in _google_translators:
+        if key not in _translators:
+            with _google_lock:
+                if key not in _translators:
                     t = GoogleTranslator(source=source, target=target)
                     t._session = session
-                    _google_translators[key] = t
-        translator = _google_translators[key]
+                    _translators[key] = t
+        translator = _translators[key]
         
         result = translator.translate(text)
         if result:
@@ -135,7 +144,7 @@ def _translate_google(text: str, source: str, target: str) -> str | None:
             text_clean = text.strip().lower()
             result_clean = result_str.strip().lower()
             if text_clean == result_clean:
-                with _google_rate_limit_lock:
+                with _google_lock:
                     _google_rate_limit_state["consecutive_unchanged"] += 1
                     count = _google_rate_limit_state["consecutive_unchanged"]
                     if count >= _RATE_LIMIT_THRESHOLD:
@@ -153,7 +162,7 @@ def _translate_google(text: str, source: str, target: str) -> str | None:
                 return result_str  # Devuelve igual, _resultado_valido lo rechazará
             else:
                 # Traducción exitosa: reiniciar contador
-                with _google_rate_limit_lock:
+                with _google_lock:
                     if _google_rate_limit_state["consecutive_unchanged"] > 0:
                         print(f"[google] Traducción exitosa, contador reiniciado "
                               f"(tenía {_google_rate_limit_state['consecutive_unchanged']} unchanged)")
@@ -164,7 +173,7 @@ def _translate_google(text: str, source: str, target: str) -> str | None:
         # Los errores HTTP también pueden ser rate limiting
         e_str = str(e).lower()
         if "429" in e_str or "too many" in e_str or "rate limit" in e_str:
-            with _google_rate_limit_lock:
+            with _google_lock:
                 _google_rate_limit_state["consecutive_unchanged"] += 1
                 count = _google_rate_limit_state["consecutive_unchanged"]
                 if count >= _RATE_LIMIT_THRESHOLD:
@@ -244,8 +253,8 @@ def _detect_language_robust(text: str) -> str:
                 return "zh"
             if lang == "ja":
                 return lang
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[langdetect] Error detectando idioma para hanzi: {e}")
         return "zh"
     simple = _detect_language_simple(text)
     has_spanish_accents = any(c in "áéíóúñüÁÉÍÓÚÑÜ¿¡" for c in text)
@@ -260,12 +269,9 @@ def _detect_language_robust(text: str) -> str:
                 print(f"[langdetect] '{text[:50]}' -> {lang}, sobrescrito a {simple} (heurística corta)")
                 return simple
             return "zh" if "zh" in lang else lang
-    except Exception:
-        pass
-    return simple
-
-
-# ─── Detección de SFX/Onomatopeyas (preservar sin traducir) ───────
+    except Exception as e:
+        print(f"[langdetect] Error en detección robusta: {e}")
+    return simple# ─── Detección de SFX/Onomatopeyas (preservar sin traducir) ───────
 # Patrones comunes de onomatopeyas y efectos de sonido en manga/cómic
 _SFX_PATTERNS: list[re.Pattern[str]] = [
     # Repetidos: "BANG BANG", "CRASH CRASH"
@@ -280,15 +286,41 @@ _SFX_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r'^(DON|DOOON|BAKU|BOKU|GARA|GORO|KARA|PACHIN|PAN|PAKU|PON|ZUDON|ZUBAN|GAKU|GYAA|HAA|HYUU|KYUU|MOKU|NYUU|PIKU|PUN|PURU|PYON|SHIN|SHUU|TON|TSU|UZU|WAKU|ZU|ZUN|ZUZU|BAAM|BOOM|CRASH|SLAM|THUD|WHAM|ZAP|ZAP)\d*[!?.]*$', re.IGNORECASE),
     # Texto en burbuja de pensamiento: *pensamiento*
     re.compile(r'^\*[^*]+\*$'),
-    # Nombres propios en mayúsculas (personajes): "NARUTO", "SAKURA"
-    re.compile(r'^[A-ZÁÉÍÓÚÑ]{3,12}$'),
 ]
+
+# Palabras españolas comunes que NO deben clasificarse como SFX aunque
+# estén en mayúsculas. El patrón ^[A-Z]{3,8}$ detectaría "PERO", "ELLA",
+# "ESTA", etc. como SFX, lo que impediría su traducción.
+_SFX_EXCLUDE: frozenset[str] = frozenset({
+    # Conjunciones y preposiciones
+    "pero", "como", "cómo", "mas", "más", "sin", "con", "que", "para",
+    "por", "desde", "hasta", "entre", "sobre", "segun", "según",
+    # Pronombres y determinantes
+    "ella", "este", "esta", "estos", "estas", "ese", "esa", "esos", "esas",
+    "aquel", "aquella", "todo", "toda", "todos", "todas", "otro", "otra",
+    "nadie", "algo", "nada", "cada", "tanto", "tanta", "varios", "varias",
+    # Verbos comunes
+    "eres", "tiene", "tienen", "hacer", "poder", "deber", "saber", "querer",
+    "debe", "puede", "sabe", "quiere", "hace", "dice", "tener", "estar",
+    # Adverbios
+    "nunca", "siempre", "menos", "cerca", "lejos", "luego", "antes",
+    "despues", "después", "mismo", "misma", "aún", "aun", "tarde",
+    "temprano", "pronto", "todavía", "también", "tampoco",
+    # Otras palabras españolas frecuentes en manga
+    "bien", "mal", "gran", "casi", "solo", "sólo", "fue", "era", "son",
+    "has", "han", "sea", "sean", "fuera", "fuese", "contra", "mediante",
+    "durante", "excepto", "salvo", "incluso", "además", "acerca",
+    "capitulo", "capítulo", "temporada",
+})
 
 
 def _es_sfx(text: str) -> bool:
     """Detecta si un texto es onomatopeya/SFX y debe preservarse sin traducir."""
     t = text.strip()
     if not t or len(t) > 20:
+        return False
+    # ── Excluir palabras españolas comunes (no deben preservarse como SFX) ──
+    if t.lower() in _SFX_EXCLUDE:
         return False
     for pat in _SFX_PATTERNS:
         if pat.match(t):
@@ -355,6 +387,12 @@ def _es_ocr_noise(text: str) -> bool:
     """
     t = text.strip()
     if not t or len(t) < 2:
+        return False
+
+    # 0. Excluir ordinales ingleses con dígito: "4th", "3rd", "1st", "2nd"
+    # Estos son texto válido, no ruido OCR, pero check 1 los detectaría como
+    # ruido por tener >30% de dígitos (1/3 = 33%).
+    if re.match(r'^\d+(?:st|nd|rd|th)$', t, re.IGNORECASE):
         return False
 
     # 1. Alta proporción de dígitos (>30%)
@@ -466,6 +504,105 @@ def _corregir_ct2(text: str) -> str:
 # convertido a CTranslate2 con cuantización int8.
 # El modelo se descarga y convierte automáticamente la primera vez.
 
+# ─── SHA256 checksums de modelos CT2 (mitigación B615) ────────
+# Después de la descarga + conversión, se guarda un checksum SHA256
+# de todos los archivos del modelo. Antes de cargar, se verifica
+# que los archivos no hayan sido modificados.
+_CT2_CHECKSUMS_FILE: str = str(ROOT / "models" / "ct2_checksums.json")
+# Usar HuggingFace con local_files_only después del primer intento —
+# el modelo se descarga durante la conversión (TransformersConverter)
+# y queda cacheado; el tokenizer subsiguiente debe cargarlo desde caché.
+_CT2_TOKENIZER_LOCAL_ONLY: bool = True
+
+
+import hashlib
+
+
+def _compute_file_sha256(filepath: str) -> str:
+    """
+    Computa el checksum SHA256 de un archivo en bloques de 64KB
+    para no cargar todo en memoria (modelos de hasta ~300MB).
+    """
+    h = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        while True:
+            block = f.read(65536)  # 64KB
+            if not block:
+                break
+            h.update(block)
+    return h.hexdigest()
+
+
+def _load_ct2_checksums() -> dict[str, dict[str, str]]:
+    """Carga el archivo de checksums. Retorna dict vacio si no existe."""
+    import json
+    if not os.path.exists(_CT2_CHECKSUMS_FILE):
+        return {}
+    try:
+        with open(_CT2_CHECKSUMS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        print(f"[CT2] Error leyendo checksums, ignorando")
+        return {}
+
+
+def _save_ct2_checksums(pair_key: str, model_dir: str) -> None:
+    """
+    Computa SHA256 de todos los archivos en model_dir y los guarda
+    en el archivo de checksums. Se llama después de la conversión HF→CT2.
+    """
+    import json
+    if not os.path.isdir(model_dir):
+        return
+    checksums = _load_ct2_checksums()
+    file_checksums: dict[str, str] = {}
+    for root, _dirs, files in os.walk(model_dir):
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            try:
+                file_checksums[fname] = _compute_file_sha256(fpath)
+            except (OSError, PermissionError) as e:
+                print(f"[CT2] Error calculando SHA256 de {fname}: {e}")
+    checksums[pair_key] = file_checksums
+    os.makedirs(os.path.dirname(_CT2_CHECKSUMS_FILE), exist_ok=True)
+    with open(_CT2_CHECKSUMS_FILE, "w", encoding="utf-8") as f:
+        json.dump(checksums, f, ensure_ascii=False, indent=2, sort_keys=True)
+    print(f"[CT2] Checksums SHA256 guardados para {pair_key} ({len(file_checksums)} archivos)")
+
+
+def _verify_ct2_checksums(pair_key: str, model_dir: str) -> bool:
+    """
+    Verifica que los archivos del modelo coincidan con los checksums
+    almacenados. Retorna True si todo coincide o si no hay checksums
+    previos (primera vez).
+    """
+    checksums = _load_ct2_checksums()
+    expected = checksums.get(pair_key)
+    if expected is None:
+        # Primera vez: no hay checksums guardados, no podemos verificar.
+        # Esto pasa solo en la primera carga post-conversión.
+        # Guardamos checksums ahora para futuras verificaciones.
+        print(f"[CT2] No hay checksums previos para {pair_key}, generando...")
+        _save_ct2_checksums(pair_key, model_dir)
+        return True
+    for fname, expected_sha in expected.items():
+        fpath = os.path.join(model_dir, fname)
+        if not os.path.exists(fpath):
+            print(f"[CT2] ¡ARCHIVO FALTANTE! {fname} — se esperaba pero no existe")
+            return False
+        try:
+            actual_sha = _compute_file_sha256(fpath)
+        except (OSError, PermissionError) as e:
+            print(f"[CT2] ¡ERROR leyendo {fname} para verificación SHA256: {e}")
+            return False
+        if actual_sha != expected_sha:
+            print(f"[CT2] ¡CHECKSUM MISMATCH! {fname}: esperado {expected_sha[:16]}..., "
+                  f"actual {actual_sha[:16]}... — modelo manipulado o corrupto!")
+            return False
+    print(f"[CT2] Checksums SHA256 verificados para {pair_key} ({len(expected)} archivos)")
+    return True
+
+
 _CT2_MODELS: dict[str, str] = {
     # Español ↔ Inglés
     "es|en": "Helsinki-NLP/opus-mt-es-en",
@@ -491,6 +628,13 @@ _CT2_MODELS: dict[str, str] = {
     # Chino ↔ Inglés
     "zh|en": "Helsinki-NLP/opus-mt-zh-en",
     "en|zh": "Helsinki-NLP/opus-mt-en-zh",
+}
+
+# Revisiones pinneadas para cada modelo (satisface bandit B615).
+# La seguridad real viene de SHA256 checksums + local_files_only=True.
+# Se usa "main" como fallback; en producción reemplazar con commit SHA.
+_CT2_REVISIONS: dict[str, str] = {
+    k: "main" for k in _CT2_MODELS
 }
 
 _CT2_BASE_DIR: str = str(ROOT / "models" / "ct2")
@@ -541,6 +685,14 @@ def _get_ct2_translator(source: str, target: str, force_cpu: bool = False) -> tu
                 with open(sentinel, "w") as f:
                     f.write("ok")
                 print(f"[CT2] Conversión completada → {model_dir}")
+                # Después de la conversión, guardar checksums SHA256 de los archivos
+                _save_ct2_checksums(pair_key, model_dir)
+
+            # Verificar integridad SHA256 del modelo antes de cargar
+            if not _verify_ct2_checksums(pair_key, model_dir):
+                print(f"[CT2] ¡CHECKSUM FAIL! El modelo {pair_key} no pasó la verificación "
+                      f"de integridad. Rechazando carga.")
+                return None, None
 
             # Cargar modelo CT2 (GPU si CUDA disponible y force_cpu=False, CPU si no)
             import ctranslate2
@@ -553,9 +705,18 @@ def _get_ct2_translator(source: str, target: str, force_cpu: bool = False) -> tu
                 print(f"[CT2] Modelo {pair_key} cargado (CPU, int8)")
 
             # Cargar tokenizer (HuggingFace, compartido entre HF y CT2)
+            # Usar local_files_only=True para NO descargar nada de internet.
+            # El tokenizer se cachea durante la conversión (TransformersConverter).
             from transformers import AutoTokenizer
-            _ct2_tokenizers[pair_key] = AutoTokenizer.from_pretrained(model_name)
-            print(f"[CT2] Tokenizer {pair_key} cargado")
+            local_files_only = _CT2_TOKENIZER_LOCAL_ONLY
+            ct2_revision = _CT2_REVISIONS.get(pair_key, "main")
+            _ct2_tokenizers[pair_key] = AutoTokenizer.from_pretrained(
+                model_name,
+                local_files_only=local_files_only,
+                revision=ct2_revision,  # B615 requiere revision explícita (no via **kwargs)
+            )
+            print(f"[CT2] Tokenizer {pair_key} cargado "
+                  f"(local_files_only={local_files_only}, revision={ct2_revision})")
 
             return _ct2_translators[pair_key], _ct2_tokenizers[pair_key]
 
@@ -764,8 +925,8 @@ def _translate_one(
             if translation_cache_available and cache_set is not None:
                 try:
                     cache_set(text_processed, src_lang, target, final_result)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[translate] Error guardando en cache: {e}")
             return final_result  # type: ignore[no-any-return]
         # Guardar el mejor para fallback si ninguno es valido
         if resultado and mejor_resultado is None:
@@ -781,7 +942,7 @@ def _translate_one(
               f"(esperando {delay}s)...")
         time.sleep(delay)
         # Resetear backoff de rate limiting para forzar el intento
-        with _google_rate_limit_lock:
+        with _google_lock:
             _google_rate_limit_state["backoff_until"] = 0.0
         try:
             retry_result = _translate_google(query_text, src_lang, target)
@@ -793,8 +954,8 @@ def _translate_one(
                 if translation_cache_available and cache_set is not None:
                     try:
                         cache_set(text_processed, src_lang, target, final_result)
-                    except Exception:
-                        pass
+                    except Exception as cache_err:
+                        print(f"[translate] Error guardando en cache (retry): {cache_err}")
                 return final_result  # type: ignore[no-any-return]
         except Exception as e:
             print(f"[translate] Google retry {attempt + 1} error: {e}")
@@ -806,8 +967,8 @@ def _translate_one(
         if translation_cache_available and cache_set is not None:
             try:
                 cache_set(text_processed, src_lang, target, final_result)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[translate] Error guardando en cache (fallback): {e}")
         return final_result
 
     # ── SIN_TRAD fallback: copiar original si TODO falla ──

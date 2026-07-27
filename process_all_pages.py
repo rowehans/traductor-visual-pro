@@ -4,9 +4,11 @@ AHORA EN PARALELO: usa ThreadPoolExecutor para enviar múltiples páginas al
 servidor simultáneamente. El servidor serializa el OCR internamente con
 semáforo, pero el inpainting/translate puede overlapearse entre requests.
 
-Parametros:  --ocr-mode auto|easyocr    Modo OCR (default: easyocr — solo EasyOCR GPU)
-
+Parametros:
+  --ocr-mode auto|easyocr    Modo OCR (default: easyocr — solo EasyOCR GPU)
   --workers N                Workers paralelos (default: 3)
+  --prefilter                Limpieza morfologica pre-OCR en todas las paginas
+                             (lineas de escaneo, speckle, margenes). Agrega ~0.2s/pag
 
 Tiempo estimado real (128 páginas, 3 workers, benchmark Jul 2026):
   easyocr: ~15-20 min  ← DEFAULT (EasyOCR GPU ~0.88s/pág, sin fallback)
@@ -35,9 +37,18 @@ _parser.add_argument(
     default=3,
     help="Workers paralelos (default: 3). 4+ satura el semaforo OCR"
 )
+_parser.add_argument(
+    "--prefilter",
+    action="store_true",
+    default=False,
+    help="Aplica limpieza morfologica pre-OCR en TODAS las paginas "
+         "(elimina lineas de escaneo, speckle y artefactos de margen). "
+         "Agrega ~0.2s por pagina pero mejora deteccion en escaneos ruidosos"
+)
 _args, _ = _parser.parse_known_args()
 OCR_MODE: str = _args.ocr_mode
 MAX_WORKERS: int = _args.workers
+PREFILTER: bool = _args.prefilter
 
 PDF_PATH = "Capítulo 43 de Cómo criar villanos correctamente _ Olympus Scanlation_compressed.pdf"
 CHECKPOINT_FILE = "resultados_progreso.json"
@@ -150,7 +161,8 @@ except Exception as e:
 doc = fitz.open(PDF_PATH)
 _total_pages = len(doc)
 print(f"\nPDF: {os.path.basename(PDF_PATH)} ({_total_pages} páginas)")
-print(f"Idioma: {SOURCE} → {TARGET} | OCR: {OCR_MODE} | Workers: {MAX_WORKERS} | Inicio: {time.strftime('%H:%M:%S')}")
+pf_label = "+prefilter" if PREFILTER else ""
+print(f"Idioma: {SOURCE} → {TARGET} | OCR: {OCR_MODE}{pf_label} | Workers: {MAX_WORKERS} | Inicio: {time.strftime('%H:%M:%S')}")
 print("=" * 80)
 
 # ── estado (cargar checkpoint) ──────────────────────────────────
@@ -203,7 +215,8 @@ def procesar_pagina(page_num: int, b64: str | None, render_t: float):
     for attempt in range(1 + MAX_RETRIES):
         try:
             resp = _http_session.post(f"{API_URL}/api/process-page",
-                json={'image': b64, 'target': TARGET, 'source': SOURCE, 'ocr_mode': OCR_MODE},
+                json={'image': b64, 'target': TARGET, 'source': SOURCE,
+                      'ocr_mode': OCR_MODE, 'prefilter': PREFILTER},
                 timeout=TIMEOUT_PER_PAGE)
             elapsed = time.time() - t0
             break  # exito, salir del bucle de reintentos

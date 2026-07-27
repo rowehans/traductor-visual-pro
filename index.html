@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.5, maximum-scale=3, user-scalable=yes" />
   <!-- Opt out of Brave Leo AI and other browser AI processing -->
   <meta name="robots" content="noai, noimageai" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://fonts.googleapis.com https://fonts.gstatic.com data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; worker-src 'self' blob: https://cdnjs.cloudflare.com; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:5174 https://cdnjs.cloudflare.com https://cdn.jsdelivr.net data:; frame-ancestors 'none'; form-action 'self';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com https://fonts.googleapis.com https://fonts.gstatic.com data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; worker-src 'self' blob: https://cdnjs.cloudflare.com; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:5174 https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com data:; frame-ancestors 'none'; form-action 'self';">
   <title>Traductor Visual Pro - PDF, Manga y Manhwa</title>
   <!-- Fuentes modernas de Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -151,6 +151,33 @@
         </div>
       </section>
 
+      <!-- EFECTOS DE TEXTO (GLOW Y RELLENO) -->
+      <section class="panel" id="textEffectsPanel">
+        <h2>Efectos de Texto</h2>
+        <div class="control-grid">
+          <label class="check-row" style="grid-column: 1 / -1;" title="Activa un brillo neón exterior para dar impacto a gritos, pensamientos y texto expresivo. Pruébalo con mayúsculas o signos !¡?¿">
+            <input id="glowToggle" type="checkbox" />
+            <span>Brillo Exterior (Glow) <kbd class="hint">G</kbd></span>
+          </label>
+          <label title="Color del halo de brillo. Recomendado: dorado (#ffd700) para gritos, blanco (#ffffff) para pensamientos">
+            Color Glow
+            <input id="glowColor" type="color" value="#ffd700" />
+          </label>
+          <label title="Define la suavidad del halo. 0-10 = sutil, 10-20 = medio, 20-30 = intenso">
+            Intensidad
+            <input id="glowBlur" type="range" min="0" max="30" value="12" step="1" />
+            <span class="range-value" id="glowBlurValue">12</span>
+          </label>
+        </div>
+        <div class="control-grid">
+          <label style="grid-column: 1 / -1;" title="Agrega un fondo semitransparente detrás del texto para mejorar legibilidad sobre fondos complejos sin ocultar el arte">
+            Relleno Semitransparente
+            <input id="fillOpacity" type="range" min="0" max="100" value="35" step="1" />
+            <span class="range-value" id="fillOpacityValue">35%</span>
+          </label>
+        </div>
+      </section>
+
       <!-- EDITOR MANUAL -->
       <section class="panel editor">
         <h2>Editor de Burbuja</h2>
@@ -260,18 +287,20 @@
       console.warn('[jsPDF] No se pudo cargar desde ningún CDN.', e);
     });
 
-    // OpenCV.js (2 CDNs en paralelo)
+    // OpenCV.js (4 CDNs en paralelo — todas permitidas por CSP)
     __loadCdn([
+      'https://cdnjs.cloudflare.com/ajax/libs/opencv.js/4.5.4/opencv.js',
+      'https://cdn.jsdelivr.net/npm/opencv.js@1.2.1/opencv.js',
+      'https://unpkg.com/opencv.js@1.2.1/opencv.js',
       'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.5.4-release.1/dist/opencv.js',
-      'https://docs.opencv.org/4.5.4/opencv.js',
     ]).catch(function(e) {
       console.warn('[OpenCV] Todos los CDNs fallaron. Inpainting desactivado.', e);
       var badge = document.getElementById('opencvBadge');
       if (badge) { badge.textContent = 'OpenCV Inactivo'; badge.className = 'badge failed'; }
     });
   </script>
-  <!-- Lógica de la aplicación -->
-  <script src="app.js?v=20260715-7" defer></script>
+  <!-- Lógica de la aplicación (módulo ES6) -->
+  <script type="module" src="app.js?v=20260715-7"></script>
   
   <!-- Protección contra IA externa (Brave Leo, etc.) -->
   <script>

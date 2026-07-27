@@ -19,6 +19,7 @@ if sys.platform == "win32":
 from config import (
     ROOT, DIST, IS_PRODUCTION,
     MAX_WORKERS, APP_VERSION, LANGUAGES, CSP_POLICY,
+    MAX_IMAGE_BYTES,
     TIMEOUT_OPENCV_INIT_MS, TIMEOUT_PDFJS_CDN_MS,
     TIMEOUT_PDFJS_ES_MODULE_MS, TIMEOUT_PDF_RENDER_MS,
     TIMEOUT_TRANSLATE_MS, TIMEOUT_TRANSLATE_BATCH_MS,
@@ -32,7 +33,7 @@ app.config["DEBUG"] = not IS_PRODUCTION
 
 # ─── Security limits ────────────────────────────────────────────
 # Max request body: 50MB (para base64 de imagenes grandes)
-app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = MAX_IMAGE_BYTES
 # Prohibir framebusting via Flask-Talisman no disponible, usamos CSP + headers
 # Limitar tipos de contenido aceptados en POST
 app.config["MAX_FORM_MEMORY_SIZE"] = 1024 * 100  # 100KB form data
@@ -219,7 +220,7 @@ app.register_blueprint(api_bp)
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    host = "127.0.0.1" if sys.platform == "win32" else "0.0.0.0"
+    host = "127.0.0.1"  # Siempre localhost (evita CWE-605)
     port = 5174
     
     print(f"[server] Arrancando en http://{host}:{port}")

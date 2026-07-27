@@ -121,10 +121,24 @@ def _base64_to_cv2(b64: str) -> _Img | None:
 
 
 def _cv2_to_base64(img: _Img, fmt: str = ".png") -> str:
-    success, buf = cv2.imencode(fmt, img, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+    # Mapa de extension a MIME type
+    _MIME_MAP: dict[str, str] = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".tiff": "image/tiff",
+        ".tif": "image/tiff",
+    }
+    mime = _MIME_MAP.get(fmt, "image/png")
+    params = [cv2.IMWRITE_PNG_COMPRESSION, 3]
+    if fmt in (".jpg", ".jpeg"):
+        params = [cv2.IMWRITE_JPEG_QUALITY, 95]
+    success, buf = cv2.imencode(fmt, img, params)
     if not success:
-        raise ValueError("No se pudo codificar la imagen")
-    return "data:image/png;base64," + base64.b64encode(buf.tobytes()).decode("utf-8")
+        raise ValueError(f"No se pudo codificar la imagen en formato {fmt}")
+    return f"data:{mime};base64," + base64.b64encode(buf.tobytes()).decode("utf-8")
 
 
 # ─── Preprocesamiento mejorado (fallback para texto artístico) ──
@@ -132,37 +146,157 @@ def _cv2_to_base64(img: _Img, fmt: str = ".png") -> str:
 # probamos técnicas más agresivas de mejora de contraste:
 # 1. CLAHE en LAB: realza contraste local sin amplificar ruido
 # 2. Unsharp mask: afila trazos finos (típico de texto artístico manga)
+# 3. Gamma correction: ilumina sombras profundas sin quemar blancos
+# 4. Bilateral filter: reduce ruido preservando bordes
 
 def _preprocess_enhanced(img_bgr: _Img) -> _Img:
     """
     Preprocesamiento agresivo para texto artístico/decorativo que
     EasyOCR no detecta con el pipeline normal.
-    
-    Aplica CLAHE + Unsharp Mask y fusiona ambas para mejorar
-    contraste local y nitidez de trazos finos.
+
+    Aplica CLAHE + Unsharp Mask + Gamma + Bilateral y fusiona
+    para mejorar contraste local y nitidez de trazos finos.
     """
-    # ── 1. CLAHE en espacio LAB ────────────────────────────────
-    # CLAHE realza contraste local sin amplificar ruido de fondo.
-    # clip_limit=3.0, tile_grid_size=(8,8) son valores suaves que
-    # mejoran texto sin generar artefactos.
+    h, w = img_bgr.shape[:2]
+
+    # ── 1. CLAHE adaptativo en espacio LAB ───────────────────────
+    # clip_limit adaptativo: imágenes más grandes necesitan más
+    # contraste local. tile_grid_size proporcional al tamaño.
     lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    tile_size = max(4, min(16, min(w, h) // 100))
+    clip_limit = min(4.0, max(2.0, 3.0 * max(w, h) / 2500.0))
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile_size, tile_size))
     l_enhanced = clahe.apply(l)
     lab_enhanced = cv2.merge([l_enhanced, a, b])
     img_clahe = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
 
-    # ── 2. Unsharp mask ────────────────────────────────────────
-    # Afila bordes de texto. kernel_size impar, sigma define el
-    # radio de desenfoque. Para texto fino de manga: sigma pequeño.
-    blurred = cv2.GaussianBlur(img_bgr, (0, 0), sigmaX=1.5)
-    img_sharp = cv2.addWeighted(img_bgr, 1.8, blurred, -0.8, 0)
+    # ── 2. Gamma correction (ilumina sombras) ───────────────────
+    # Gamma < 1 ilumina zonas oscuras (útil para texto en sombras
+    # o escaneos subexpuestos). Aplicar solo si la imagen es oscura.
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    mean_brightness = float(gray.mean())
+    if mean_brightness < 100:
+        gamma = 0.6 + 0.4 * (mean_brightness / 100.0)
+        inv_gamma = 1.0 / gamma
+        table = np.array([(i / 255.0) ** inv_gamma * 255
+                          for i in range(256)], dtype=np.uint8)
+        img_gamma = cv2.LUT(img_bgr, table)
+    else:
+        img_gamma = img_bgr
 
-    # ── 3. Fusionar CLAHE + sharp ──────────────────────────────
-    # Promedio ponderado: CLAHE da contraste, sharp da nitidez.
-    enhanced = cv2.addWeighted(img_clahe, 0.6, img_sharp, 0.4, 0)
+    # ── 3. Bilateral filter (reduce ruido, preserva bordes) ─────
+    # A diferencia de GaussianBlur, bilateral preserva bordes
+    # de texto mientras suaviza ruido de fondo de escaneo.
+    # d=5, sigmaColor=50, sigmaSpace=50 son valores suaves.
+    img_denoised = cv2.bilateralFilter(img_gamma, d=5, sigmaColor=50, sigmaSpace=50)
+
+    # ── 4. Unsharp mask sobre la imagen denoised ────────────────
+    blurred = cv2.GaussianBlur(img_denoised, (0, 0), sigmaX=1.5)
+    img_sharp = cv2.addWeighted(img_denoised, 1.8, blurred, -0.8, 0)
+
+    # ── 5. Fusionar CLAHE + sharp ──────────────────────────────
+    # CLAHE da contraste, sharp da nitidez, gamma ilumina sombras.
+    enhanced = cv2.addWeighted(img_clahe, 0.5, img_sharp, 0.5, 0)
 
     return enhanced
+
+
+# ─── Preprocesamiento morfológico (limpieza de ruido de escaneo) ─
+# Elimina líneas horizontales finas, puntos de ruido aislados,
+# y limpia bordes de página (común en escaneos manga).
+
+def _pre_filter_image(img_bgr: _Img) -> _Img:
+    """
+    Limpieza morfológica pre-OCR.
+    - Elimina líneas horizontales finas (artefactos de escaneo).
+    - Remueve puntos de ruido aislados (speckle).
+    - Limpia franjas 4% superior/inferior (sombras de borde).
+    - Suaviza ruido de fondo de papel.
+    """
+    h, w = img_bgr.shape[:2]
+    result = img_bgr.copy()
+
+    # ── 1. Limpiar franjas 4% superior e inferior ───────────────
+    # Los escaneos de manga suelen tener sombras o texto basura
+    # en los bordes extremos de la página.
+    margin_height = max(1, int(h * 0.04))
+    # Superior: rellenar con el color promedio del borde
+    top_strip = img_bgr[margin_height:margin_height * 2, :, :]
+    if top_strip.size > 0:
+        top_fill = np.median(top_strip.reshape(-1, 3), axis=0).astype(np.uint8)
+        result[:margin_height, :, :] = top_fill
+    # Inferior
+    bot_strip = img_bgr[h - margin_height * 2:h - margin_height, :, :]
+    if bot_strip.size > 0:
+        bot_fill = np.median(bot_strip.reshape(-1, 3), axis=0).astype(np.uint8)
+        result[h - margin_height:, :, :] = bot_fill
+
+    # ── 2. Eliminar líneas horizontales finas (artefactos) ─────
+    gray = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
+    # Detectar bordes horizontales con kernel 1x15
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
+    detect_lines = cv2.morphologyEx(gray, cv2.MORPH_OPEN, horizontal_kernel)
+    # Umbral para identificar líneas
+    _, thresh_lines = cv2.threshold(detect_lines, 50, 255, cv2.THRESH_BINARY)
+    # Dilatar ligeramente para cubrir la línea completa
+    kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 1))
+    line_mask = cv2.dilate(thresh_lines, kernel_dilate, iterations=1)
+    # Inpainting de las líneas detectadas
+    if int(line_mask.max()) > 0:
+        result = cv2.inpaint(result, line_mask, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
+        # Re-calcular gray después del inpainting (modificó result)
+        gray = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
+
+    # ── 3. Eliminar puntos de ruido aislados (speckle) ─────────
+    # OTSU separa texto oscuro (0) de fondo claro (255)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    # MORPH_OPEN remueve pequeños puntos blancos aislados (p. ej. speckle de
+    # escaneo dentro de regiones oscuras). XOR entre binary y cleaned revela
+    # EXACTAMENTE qué píxeles cambiaron de 255→0 por MORPH_OPEN — el speckle
+    # real. En lugar de bitwise_and destructivo sobre el canal L completo,
+    # sólo inpaintamos esos píxeles específicos, preservando texto y líneas
+    # inpaintadas intactos.
+    speckle_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, speckle_kernel, iterations=1)
+    speckle_pixels = cv2.bitwise_xor(binary, cleaned)
+    # Umbral mínimo de área: evitar inpainting por ruido sub-pixel
+    # en páginas limpias (p.ej. bordes de imagen donde MORPH_OPEN
+    # elimina 1-2 píxeles fronterizos sin beneficio real).
+    if int(speckle_pixels.max()) > 0 and np.count_nonzero(speckle_pixels) > 50:
+        # Dilatar 1px con kernel 3x3 para cubrir bordes de speckle
+        speckle_mask = cv2.dilate(speckle_pixels, speckle_kernel, iterations=1)
+        result = cv2.inpaint(result, speckle_mask, inpaintRadius=2, flags=cv2.INPAINT_TELEA)
+
+    # ── 4. Suavizado ligero de fondo (bilateral) ───────────────
+    # Preserva bordes, reduce ruido de papel escaneado.
+    result = cv2.bilateralFilter(result, d=3, sigmaColor=30, sigmaSpace=30)
+
+    return result
+
+
+# ─── Binarización adaptativa (fallback final para texto tenue) ───
+# _binarize_image ELIMINADA — benchmark mostró 0 beneficios en páginas artísticas.
+# El tier 3 (binarización) nunca agregó bloques que EasyOCR + CLAHE no hubieran
+# detectado ya. Se ahorra ~0.8s por página.
+    # blockSize impar, C constante restada de la media.
+    # Valores típicos: blockSize=15-31, C=5-15
+    block_size = max(11, (min(img_bgr.shape[:2]) // 20) | 1)  # impar
+    binary = cv2.adaptiveThreshold(
+        blurred, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        block_size, C=10,
+    )
+
+    # ── 3. Invertir si el fondo es más claro que el texto ──────
+    white_pixels = float(np.sum(binary == 255))
+    total_pixels = float(binary.size)
+    if white_pixels / total_pixels < 0.3:
+        binary = cv2.bitwise_not(binary)
+
+    # ── 4. Convertir a 3 canales para EasyOCR ──────────────────
+    return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
 
 
 # ─── OCR principal ───────────────────────────────────────────────
@@ -248,22 +382,36 @@ def _detect_and_ocr(
     img_bgr: _Img,
     lang_hint: str = "auto",
     allow_fallback: bool = True,
+    prefilter: bool = False,
 ) -> list[dict[str, Any]]:
     """
     OCR con pipeline de 2 niveles:
-    1. EasyOCR directo (rápido, ~1s)
-    2. CLAHE+sharpen -> EasyOCR (texto de bajo contraste, solo si EasyOCR=0)
+    1. EasyOCR directo (rápido, ~1s). Si prefilter=True, aplica limpieza
+       morfológica (_pre_filter_image) ANTES del tier 1 para eliminar
+       líneas de escaneo, speckle y artefactos de margen en TODAS las
+       páginas, no solo como fallback.
+    2. CLAHE+sharpen -> EasyOCR (fallback para texto artístico/decorativo)
 
     Args:
-        allow_fallback: Si False, desactiva tier 2 (solo EasyOCR)
+        allow_fallback: Si False, desactiva tier 2 (solo EasyOCR directo)
+        prefilter: Si True, aplica _pre_filter_image antes del tier 1.
+                   Limpia ruido de escaneo en todas las páginas (~0.2s extra).
+    NOTA: El tier 3 (binarización adaptativa) fue eliminado en 2026-07-27
+    porque el benchmark demostró que nunca agregaba bloques que EasyOCR
+    directo o CLAHE no hubieran detectado ya. Se ahorra ~0.8s por página.
     """
     reader = _get_ocr_reader(lang_hint)
     if reader is None:
         return []
 
-    # ── Intento 1: EasyOCR directo ──────────────────────────────
-    results = _run_ocr_on_image(reader, img_bgr)
-    blocks_easy = _ocr_results_to_blocks(results, img_bgr)
+    # ── Pre-filter opcional (antes de tier 1) ────────────────────
+    # Limpia líneas de escaneo, speckle y márgenes en TODAS las páginas,
+    # no solo cuando EasyOCR falla. Agrega ~0.2s por página.
+    img_ocr = _pre_filter_image(img_bgr) if prefilter else img_bgr
+
+    # ── Intento 1: EasyOCR directo (sobre imagen pre-filtered o raw) ─
+    results = _run_ocr_on_image(reader, img_ocr)
+    blocks_easy = _ocr_results_to_blocks(results, img_ocr)
 
     if blocks_easy:
         avg_conf = float(np.mean([b.get("confidence", 0) for b in blocks_easy]))
@@ -273,17 +421,23 @@ def _detect_and_ocr(
     if not allow_fallback:
         return []
 
-    # ── Intento 2: CLAHE + sharpen ──────────────────────────────
-    print("[OCR] 0 bloques con EasyOCR. Probando CLAHE+sharpen...")
-    img_enhanced = _preprocess_enhanced(img_bgr)
+    # ── Intento 2: Pre-filter + CLAHE + sharpen (si no se hizo prefilter ya) ─
+    if not prefilter:
+        print("[OCR] 0 bloques con EasyOCR. Probando pre-filter + CLAHE+sharpen...")
+        img_filtered = _pre_filter_image(img_bgr)
+    else:
+        # Si ya se aplicó prefilter, no repetir el paso de filtro
+        print("[OCR] 0 bloques con EasyOCR (pre-filter ya aplicado). Probando CLAHE+sharpen...")
+        img_filtered = img_ocr
+    img_enhanced = _preprocess_enhanced(img_filtered)
     results2 = _run_ocr_on_image(reader, img_enhanced)
     blocks2 = _ocr_results_to_blocks(results2, img_enhanced)
 
     if blocks2:
-        print(f"[OCR] CLAHE+sharpen detecto {len(blocks2)} bloques!")
+        print(f"[OCR] Pre-filter+CLAHE detecto {len(blocks2)} bloques!")
         return blocks2
 
-    print("[OCR] Todos los fallbacks agotados")
+    print("[OCR] Todos los fallbacks agotados (tier 3 binarización eliminado)")
     return []
 
 
@@ -565,13 +719,35 @@ def _build_glyph_mask_for_bubble(img_bgr: _Img, block: dict[str, Any]) -> _Img:
     if roi.size == 0:
         return mask
 
-    diff = roi.astype(np.float32) - bg_mean.astype(np.float32)
+    # ── Enfoque híbrido: diferencia de color + Canny ────────────
+    # La diferencia de color funciona bien para texto sobre fondo
+    # liso (globos de diálogo). Canny captura bordes finos que la
+    # diferencia de color puede perder (glifos rotados o artísticos).
+
+    # 1. Diferencia de color (método original)
+    roi_float = roi.astype(np.float32)
+    diff = roi_float - bg_mean.astype(np.float32)
     color_dist = np.sqrt((diff ** 2).sum(axis=2))
-
     glyph_threshold = 60
-    glyph_pixels = (color_dist > glyph_threshold).astype(np.uint8) * 255
+    color_mask = (color_dist > glyph_threshold).astype(np.uint8) * 255
 
-    mask[ry1:ry2, rx1:rx2] = glyph_pixels
+    # 2. Canny edge detection en la región
+    roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    # Umbral adaptativo: sigma de la mediana de la imagen
+    median_val = float(np.median(roi_gray))
+    sigma = 0.33
+    lower = int(max(1, (1.0 - sigma) * median_val))  # Clamp min 1 (Canny con ambos thresholds=0 es indefinido)
+    upper = int(min(255, (1.0 + sigma) * median_val))
+    canny_edges = cv2.Canny(roi_gray, threshold1=lower, threshold2=upper)
+
+    # 3. Fusionar: color OR canny
+    combined = cv2.bitwise_or(color_mask, canny_edges)
+
+    # 4. Cerrar pequeños gaps en los bordes
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, close_kernel, iterations=1)
+
+    mask[ry1:ry2, rx1:rx2] = combined
 
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     mask = cv2.dilate(mask, kernel, iterations=1)

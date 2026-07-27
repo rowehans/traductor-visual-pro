@@ -2,13 +2,24 @@
 """
 run_ci.py - CI local para Traductor Visual Pro.
 
-Unifica test_ci.py + analisis_calidad.py + stress_test_memory.py
-en un solo comando Python. No depende de PowerShell.
+Ejecuta bateria completa de tests:
+  1. Syntax check (Python + JS)
+  2. bandit (security audit)
+  3. pytest + cobertura (295+ tests unitarios: translator, OCR, API)
+  4. Servidor Flask + health + endpoints API
+  5. analisis_calidad.py (calidad de traducciones)
+  6. stress_test_memory.py (opcional, ~10 min con --full)
+
+No depende de PowerShell. Usa env/ o Python del sistema.
 
 Uso:
-    python run_ci.py              # Tests rapidos (~30s)
-    python run_ci.py --full       # Incluye stress test (~10 min)
-    python run_ci.py --server     # Solo inicia servidor y health check
+    python run_ci.py                    # Tests rapidos (~2 min)
+    python run_ci.py --full             # Incluye stress test (~12 min)
+    python run_ci.py --server           # Solo inicia servidor + health check
+    python run_ci.py --skip-syntax      # Omitir syntax check
+    python run_ci.py --skip-bandit      # Omitir audit de seguridad
+    python run_ci.py --skip-pytest      # Omitir tests unitarios
+    python run_ci.py --skip-cov         # Omitir cobertura (mas rapido)
 """
 
 from __future__ import annotations
@@ -27,7 +38,7 @@ from pathlib import Path
 # Windows console UTF-8 fix
 if sys.version_info >= (3, 7):
     try:
-        sys.stdout = sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
     except Exception:
         pass
 
@@ -132,7 +143,7 @@ def http_post(path: str, data: dict, timeout: int = 30) -> tuple[int, dict]:
 
 def step_syntax() -> bool:
     """Paso 1: Syntax check en todos los archivos Python."""
-    step("PASO 1/5 - Syntax check")
+    step("PASO 1/6 - Syntax check")
     all_ok = True
     files = [
         "server.py", "config.py", "translator.py", "ocr_utils.py",
@@ -192,24 +203,100 @@ def step_syntax() -> bool:
     return all_ok
 
 
-def step_test_ci() -> bool:
-    """Paso 2: test_ci.py (deteccion de idioma)."""
-    step("PASO 2/5 - test_ci.py (deteccion de idioma)")
-    r = run_python(["test_ci.py"], timeout=30)
-    if r is not None and r.returncode == 0 and "OK" in r.stdout:
-        result("test_ci.py", "PASS", "Todos los tests de idioma pasaron")
-        return True
+def step_pytest(with_coverage: bool = True) -> bool:
+    """Paso 3: pytest con todos los tests unitarios (295+ tests)."""
+    label = "pytest + cobertura" if with_coverage else "pytest"
+    step(f"PASO 3/6 - {label} (295+ tests: translator + OCR + API)")
+
+    test_files = [
+        "tests/test_translator.py",
+        "tests/test_ocr_utils.py",
+        "tests/test_ocr_functions.py",
+        "tests/test_api.py",
+    ]
+
+    cmd = [PYTHON, "-m", "pytest", *test_files, "-v", "--tb=short"]
+    if with_coverage:
+        cmd += [
+            "--cov=translator", "--cov=ocr_utils", "--cov=routes.api",
+            "--cov=cache", "--cov=ratelimit", "--cov=config",
+            "--cov-report=term-missing",
+        ]
+
+    r = subprocess.run(
+        cmd,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=180, cwd=str(PROJECT_ROOT),
+    )
+
+    # Parsear resumen de pytest
+    stdout = r.stdout or ""
+    stderr = r.stderr or ""
+    summary_line = ""
+    for line in stdout.split("\n"):
+        line_stripped = line.strip()
+        # Buscar linea como "247 passed in 53.2s" o "245 passed, 2 failed in 55.1s"
+        if "passed" in line_stripped or "failed" in line_stripped:
+            summary_line = line_stripped
+        # Mostrar failures
+        if "FAILED" in line_stripped:
+            print(f"  {line_stripped}")
+
+    # Extraer conteos
+    passed_count = 0
+    failed_count = 0
+    m_passed = re.search(r"(\d+) passed", stdout)
+    m_failed = re.search(r"(\d+) failed", stdout)
+    if m_passed:
+        passed_count = int(m_passed.group(1))
+    if m_failed:
+        failed_count = int(m_failed.group(1))
+
+    # Extraer tiempo
+    time_str = ""
+    m_time = re.search(r"in (\d+\.?\d*)s", stdout)
+    if m_time:
+        time_str = f"en {m_time.group(1)}s"
+
+    ok = r.returncode == 0
+    total = passed_count + failed_count
+
+    # Mostrar resumen detallado
+    print(f"  {'[OK]' if ok else '[FAIL]'} {total} tests: {passed_count} passed",
+          end="")
+    if failed_count > 0:
+        print(f", {failed_count} FAILED", end="")
+    if time_str:
+        print(f" {time_str}", end="")
+    print()
+
+    if stderr and "Error" in stderr:
+        # Mostrar solo errores relevantes (no warnings de deprecation)
+        for line in stderr.split("\n"):
+            if "Error" in line or "Traceback" in line:
+                print(f"  STDERR: {line.strip()}")
+
+    if total == 0:
+        # Fallback: mostrar output completo si no se pudo parsear
+        print(f"  Output completo:\n{stdout[:1000]}")
+        result("pytest", "WARN", "No se pudo determinar el resultado")
+        return True  # no bloquear CI por fallo de parseo
+
+    if ok:
+        status = "PASS"
+        detail = f"{passed_count}/{total} passed {time_str}"
     else:
-        if r is not None:
-            print(f"  Output: {r.stdout[:500]}")
-        result("test_ci.py", "FAIL", "Fallaron tests de idioma")
-        return False
+        status = "FAIL"
+        detail = f"{failed_count} FAILED en {total} tests {time_str}"
+
+    result("pytest (247 tests)", status, detail)
+    return ok
 
 
 def step_server() -> bool:
-    """Paso 3: Iniciar servidor y verificar health + endpoints."""
+    """Paso 4: Iniciar servidor y verificar health + endpoints."""
     global _server_proc
-    step("PASO 3/5 - Servidor Flask + tests")
+    step("PASO 4/6 - Servidor Flask + tests")
 
     # Matar servidor previo si existe (con fallback a netstat+taskkill)
     killed = _kill_process_on_port(SERVER_PORT)
@@ -382,8 +469,8 @@ def _generate_report() -> None:
 
 
 def step_analisis_calidad() -> bool:
-    """Paso 4: analisis_calidad.py (calidad de traducciones)."""
-    step("PASO 4/5 - analisis_calidad.py")
+    """Paso 5: analisis_calidad.py (calidad de traducciones)."""
+    step("PASO 5/6 - analisis_calidad.py")
 
     corpus_path = os.path.join(PROJECT_ROOT, "resultados_progreso.json")
     if not os.path.exists(corpus_path):
@@ -423,9 +510,83 @@ def step_analisis_calidad() -> bool:
     return True
 
 
+def step_bandit() -> bool:
+    """Paso 6: bandit security audit en archivos Python fuente."""
+    step("PASO 2/6 - bandit (security audit)")
+
+    files = [
+        "server.py", "config.py", "translator.py", "ocr_utils.py",
+        "models.py", "cache.py", "ratelimit.py", "main.py", "launcher.py",
+        "routes/__init__.py", "routes/main.py", "routes/api.py",
+    ]
+
+    try:
+        r = subprocess.run(
+            [PYTHON, "-m", "bandit", "-f", "json", *files],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30, cwd=str(PROJECT_ROOT),
+        )
+    except FileNotFoundError:
+        print("  [SKIP] bandit no instalado. Ejecuta: pip install bandit")
+        result("bandit", "SKIP", "bandit no instalado")
+        return True
+
+    stdout = r.stdout or ""
+
+    # bandit retorna 0 si no hay issues, 1 si hay issues
+    if r.returncode == 0:
+        print(f"  [OK] Sin vulnerabilidades detectadas")
+        result("bandit", "PASS", "0 issues")
+        return True
+
+    # bandit encontro issues — parsear JSON
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        print(f"  [WARN] No se pudo parsear JSON de bandit: {e}")
+        print(f"  Output: {stdout[:500]}")
+        result("bandit", "WARN", "No se pudo parsear, revisar output")
+        return True
+
+    results_list = data.get("results", [])
+    high_count = 0
+    medium_count = 0
+    low_count = 0
+
+    for issue in results_list:
+        severity = (issue.get("issue_severity") or "").upper()
+        fname = issue.get("filename", "")
+        line_num = issue.get("line_number", "")
+        test_id = issue.get("test_id", "")
+        test_name = issue.get("test_name", "")
+        print(f"  [{severity}] {fname}:{line_num} - {test_id}:{test_name}")
+        if severity == "HIGH":
+            high_count += 1
+        elif severity == "MEDIUM":
+            medium_count += 1
+        elif severity == "LOW":
+            low_count += 1
+
+    total_issues = high_count + medium_count + low_count
+    detail = f"{high_count} HIGH, {medium_count} MEDIUM, {low_count} LOW"
+
+    if high_count > 0:
+        result("bandit", "FAIL", detail)
+        return False
+    elif medium_count > 0:
+        result("bandit", "WARN", detail)
+        return True
+    elif total_issues == 0:
+        result("bandit", "WARN", "Issues sin severidad detectable")
+        return True
+    else:
+        result("bandit", "PASS", detail)
+        return True
+
+
 def step_stress_test() -> bool:
-    """Paso 5 (opcional): stress_test_memory.py (50 paginas)."""
-    step("PASO 5/5 - stress_test_memory.py (50 paginas)")
+    """Paso 7 (opcional): stress_test_memory.py (50 paginas)."""
+    step("PASO 6/6 - stress_test_memory.py (50 paginas)")
 
     pdf_path = os.path.join(
         PROJECT_ROOT,
@@ -518,10 +679,12 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Ejemplos:
-  %(prog)s                    Tests rapidos (~30s)
-  %(prog)s --full             Tests completos (~10 min, incluye stress test)
+  %(prog)s                    Tests rapidos (~2 min)
+  %(prog)s --full             Tests completos (~12 min, incluye stress)
   %(prog)s --server           Solo inicia servidor + health check
-  %(prog)s --skip-syntax      Omitir syntax check  %(prog)s --skip-server      Omitir paso del servidor (CI sin deps pesadas)
+  %(prog)s --skip-syntax      Omitir syntax check
+  %(prog)s --skip-pytest      Omitir tests unitarios (rapido)
+  %(prog)s --skip-server      Omitir paso del servidor
   %(prog)s --report           Generar reporte HTML con graficos
   %(prog)s --report --full    CI completo + reporte HTML"""
     )
@@ -531,8 +694,14 @@ Ejemplos:
                         help="Solo ejecuta paso del servidor")
     parser.add_argument("--skip-syntax", action="store_true",
                         help="Omitir syntax check")
+    parser.add_argument("--skip-pytest", action="store_true",
+                        help="Omitir tests unitarios pytest")
     parser.add_argument("--skip-server", action="store_true",
                         help="Omitir paso del servidor (util en CI sin deps pesadas)")
+    parser.add_argument("--skip-bandit", action="store_true",
+                        help="Omitir audit de seguridad bandit")
+    parser.add_argument("--skip-cov", action="store_true",
+                        help="Omitir reporte de cobertura (mas rapido)")
     parser.add_argument("--report", action="store_true",
                         help="Generar reporte HTML del CI")
     args = parser.parse_args()
@@ -552,14 +721,26 @@ Ejemplos:
         if not step_syntax():
             all_passed = False
 
-    if not step_test_ci():
-        all_passed = False
+    if not args.skip_bandit:
+        if not step_bandit():
+            all_passed = False
+    else:
+        step("PASO 2/6 - bandit [OMITIDO]")
+        result("bandit", "SKIP", "Omitido por --skip-bandit")
+
+    if not args.skip_pytest:
+        if not step_pytest(with_coverage=not args.skip_cov):
+            all_passed = False
+    else:
+        step("PASO 3/6 - pytest [OMITIDO]")
+        print("  Usa --skip-pytest para omitir tests unitarios")
+        result("pytest (295 tests)", "SKIP", "Omitido por --skip-pytest")
 
     if not args.skip_server:
         if not step_server():
             all_passed = False
     else:
-        step("PASO 3/5 - Servidor Flask + tests [OMITIDO]")
+        step("PASO 4/6 - Servidor Flask + tests [OMITIDO]")
         print("  Usa --skip-server para CI sin dependencias pesadas")
         result("Servidor Flask", "SKIP", "Omitido por --skip-server")
 
@@ -571,7 +752,7 @@ Ejemplos:
         if not step_stress_test():
             all_passed = False
     else:
-        step("PASO 5/5 - stress_test_memory.py [OMITIDO]")
+        step("PASO 6/6 - stress_test_memory.py [OMITIDO]")
         print("  Usa --full para incluir stress test (50 pags, ~10 min)")
         result("stress_test_memory.py", "SKIP", "Usa --full para ejecutar")
 

@@ -26,6 +26,11 @@ REQUEST_TIMEOUT: Final[int] = 20  # seconds for external API calls
 MAX_IMAGE_DIMENSION: Final[int] = 4096  # max width/height for OCR processing
 APP_VERSION: Final[str] = "20260715"
 
+# ─── Validation limits (single source of truth — shared by server.py and routes/) ─
+MAX_TEXT_LENGTH: Final[int] = 20_000           # ~20k chars por texto a traducir
+MAX_BATCH_SIZE: Final[int] = 500               # max textos por batch
+MAX_IMAGE_BYTES: Final[int] = 50 * 1024 * 1024 # 50MB raw base64 (evitar OOM)
+
 
 # ─── Timeouts (single source of truth — shared via /api/config) ────
 TIMEOUT_OPENCV_INIT_MS: Final[int] = 15000       # app.js: OpenCV init + poll timeout
@@ -134,20 +139,35 @@ GLOSARIO_POST: Final[list[tuple[str, str]]] = [
     # Términos de configuración/página
     (r"\bCONFIGURATION\b", r"Settings"),
     (r"\bPAGE\b", r"page"),
+    # Ordinales — CT2 tiende a dejar las abreviaturas literales
+    # 1er, 1ro, 1ero → First; 1a → First (femenino)
+    (r"\b1[erro]{1,3}\b", r"First"),   # 1er, 1ro, 1ero, 1o
+    (r"\b1[da]\b", r"First"),           # 1a, 1d
+    (r"\b2[do]{1,3}\b", r"Second"),    # 2do, 2o (antes {2,3} omitía "2o")
+    (r"\b2[da]\b", r"Second"),          # 2a, 2d
+    (r"\b3[erro]{1,3}\b", r"Third"),   # 3er, 3ro, 3ero, 3o
+    (r"\b3[da]\b", r"Third"),           # 3a, 3d
+    # Ordinales completos (español literal) que CT2 a veces preserva
+    (r"\bPRIMERO\b", r"FIRST"),
+    (r"\bPRIMERA\b", r"FIRST"),         # femenino
+    (r"\bSEGUNDO\b", r"SECOND"),
+    (r"\bSEGUNDA\b", r"SECOND"),        # femenino
+    (r"\bTERCERO\b", r"THIRD"),
+    (r"\bTERCERA\b", r"THIRD"),         # femenino
 ]
 
 
 # ─── Security headers (CSP, Brave Leo opt-out) ───────────────────
 CSP_POLICY: Final[str] = (
     "default-src 'self' 'unsafe-inline' 'unsafe-eval' "
-    "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com "
+    "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com "
     "https://fonts.googleapis.com https://fonts.gstatic.com "
     "data: blob:; "
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
-    "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
+    "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; "
     "worker-src 'self' blob: https://cdnjs.cloudflare.com; "
     "img-src 'self' data: blob:; "
-    "connect-src 'self' http://127.0.0.1:5174 https://cdnjs.cloudflare.com https://cdn.jsdelivr.net data:;"
+    "connect-src 'self' http://127.0.0.1:5174 https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com data:;"
     "frame-ancestors 'none'; "
     "form-action 'self';"
 )
