@@ -421,7 +421,6 @@ function checkLanguageWarning() {
 
   // Parsear source: "eng+spa+fra+deu" → ["eng","spa","fra","deu"]
   const sourceCodes = src.split("+");
-  const targetCode = tgt;
 
   // Mapear códigos ISO a valores del selector
   // Los códigos del servidor (eng, spa, fra) no son iguales
