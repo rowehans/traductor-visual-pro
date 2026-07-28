@@ -6,6 +6,10 @@ import { showToast } from "./js/toast.js";
 import { initTheme, toggleTheme } from "./js/theme.js";
 import { filterPageBlocks, MARGIN_NOISE_PATTERNS, GLOBAL_NOISE_PATTERNS } from "./js/filters.js";
 
+// Signal to the IIFE (index.html) that this ES module executed successfully.
+// If any import fails (wrong MIME type, 404, etc.), this line NEVER runs.
+window.__appJsLoaded = true;
+
 // Make CLIENT_CONFIG available globally for inline scripts
 window.__CLIENT_CONFIG = CLIENT_CONFIG;
 
@@ -182,7 +186,15 @@ function initOpenCv() {
       if (window.cv.Mat) {
         onOpenCvReady();
       } else {
+        // ⚠️ Misma race condition que en Caso 2: onRuntimeInitialized
+        // pudo haberse disparado antes de que asignáramos el callback.
+        // Asignamos el callback Y hacemos un check diferido de 100ms.
         window.cv['onRuntimeInitialized'] = onOpenCvReady;
+        setTimeout(function cvReadyCheck3() {
+          if (window.cv && window.cv.Mat && !state.cvLoaded) {
+            onOpenCvReady();
+          }
+        }, 100);
       }
     }
   }, 200);

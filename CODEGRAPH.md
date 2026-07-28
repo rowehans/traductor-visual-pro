@@ -78,7 +78,8 @@
 │         boxesByPage:Map, selectedId, cvLoaded,          │
 │         inpaintedBgByPage:Map, abortTranslation         │
 │  Boot:  loadPdfJs (Promise.any 4 CDNs en paralelo)      │
-│         initOpenCv (callback onRuntimeInitialized)       │
+│         initOpenCv (callback onRuntimeInitialized +      │
+│          deferred 100ms check para race condition)       │
 │         initTheme, initKeyboardShortcuts, initToast      │
 │  PDF:   renderPage -> pdf.js @scale -> cleanBgCanvas     │
 │         -> updateErasedBg -> renderBoxes                  │
@@ -118,11 +119,14 @@
 │          emptyState, dismiss-leo-warning                │
 │  Scripts: __loadCdn() generico con Promise.any()        │
 │           jsPDF (jsDelivr + cdnjs fallback),            │
-│           OpenCV.js (jsDelivr @techstark + docs.opencv),│
+│           OpenCV.js (carga SECUENCIAL con IIFE:         │
+│            tryCdn + tryNextCdn, evita doble carga WASM, │
+│            jsDelivr @techstark + unpkg fallback),       │
 │           app.js (defer, local)                         │
 │  CSP: connect-src 'self' http://127.0.0.1:5174          │
 │       https://cdnjs.cloudflare.com https://cdn.jsdelivr │
 │       default-src/script-src incluyen docs.opencv.org   │
+│       frame-ancestors solo via HTTP header (config.py)  │
 ├─────────────────────────────────────────────────────────┤
 │              styles.css (~1318 lineas)                   │
 │  Tokens: --bg-app #040406, --accent #10b981,            │
@@ -338,5 +342,5 @@ Errores:      0
 
 - `env/` (venv completo con EasyOCR, OpenCV, Flask, ArgosTranslate, deep-translator, langdetect, torch, ctranslate2, transformers, sentencepiece)
 - `requirements.txt` (dependencias pineadas)
-- CDNs: jsPDF (jsDelivr + cdnjs fallback), OpenCV.js (jsDelivr @techstark + docs.opencv.org fallback), PDF.js (Promise.any: cdnjs ESM v4 / cdnjs UMD v3 / jsDelivr / unpkg)
-- Carga paralela con `Promise.any()` via `__loadCdn()` generico en index.html
+- CDNs: jsPDF (jsDelivr + cdnjs fallback), OpenCV.js (jsDelivr @techstark + unpkg fallback secuencial — **no** Promise.any: evita doble ejecución WASM), PDF.js (Promise.any: cdnjs ESM v4 / cdnjs UMD v3 / jsDelivr / unpkg)
+- Carga paralela con `Promise.any()` via `__loadCdn()` generico en index.html (solo jsPDF; OpenCV.js usa carga secuencial con IIFE para evitar BindingError por doble inicialización de bindings WASM)

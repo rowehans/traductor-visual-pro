@@ -76,7 +76,7 @@ Errores:      0
 | `wrapTextLines(ctx, text, maxWidth)` | ~1880 | **Bug histórico crítico**: si la condición `containsCJK()` cambia, palabras occidentales vuelven a separarse letra por letra. Solo separa carácter a carácter si el texto contiene CJK. |
 | `MARGIN_NOISE_PATTERNS` / `GLOBAL_NOISE_PATTERNS` | ~1007–1025 | Deben estar sincronizados con `_MARGIN_NOISE_PATTERNS`/`_WATERMARK_PATTERNS` en `config.py`. Divergencia causa textos basura o diálogos eliminados. |
 | `state` (incl. `inpaintedBgByPage` Map) | ~148 | Caché global de estado. `inpaintedBgByPage` guarda imágenes inpaintadas por página. Si no se escribe aquí tras `serverProcessPage()`, el texto original reaparece. |
-| `initOpenCv()` | ~168 | Reemplazó el polling por `cv['onRuntimeInitialized']` callback. 3 casos: cv ya cargado, cv existe sin Mat, cv no existe (con timeout 15s). |
+| `initOpenCv()` | ~168 | **Race condition fix (Jul 2026)**: check diferido de 100ms tras asignar `onRuntimeInitialized` en Caso 2. Cubre el escenario donde el WASM de OpenCV.js ya se inicializó antes de que se asignara el callback. Guard `state.cvLoaded` evita doble llamada. 3 casos: cv ya cargado con Mat, cv existe sin Mat (con callback + deferred check), cv no existe (polling 200ms + timeout 15s). |
 | `autoTranslateCurrentPage(pageNo, ...)` | ~1419 | Camino único: servidor. `serverProcessPage()` → guarda `inpaintedBgByPage` → carga `erasedBgCanvas` → filtra bloques → `makeAutoTextBox` → render. |
 | `renderPage()` | ~744 | Usa `_renderToken` para cancelación, `_renderTempCanvas` global reutilizado, `renderTask.cancel()` en timeout. Retorna `{aborted: bool}`. |
 | `filterPageBlocks(blocks, pageHeight)` | ~1038 | Único punto que filtra bloques antes de crear cajas. `marginTop` = 8% de altura. |
@@ -140,7 +140,7 @@ Errores:      0
 
 ## 4. Estado Actual
 
-**Última actualización**: 2026-07-26
+**Última actualización**: 2026-07-27
 
 ### Cambios acumulados (Julio 2026)
 
@@ -177,6 +177,16 @@ Tres optimizaciones que reducen el tiempo por página de ~35-50s a ~10-18s.
 | 36 | **CT2 18 pares CJK**: agregados ja|en, en|ja, ko|en, en|ko, zh|en, en|zh a `_CT2_MODELS`. Prueba ja→en con japonés real (kanji+kana): 10/10 traducciones exitosas en GPU (CUDA, int8). Modelos lazy-load: descarga+conversión automática en primer uso. Pipeline CT2 (busca `f"{source}|{target}"` en el dict) funciona sin cambios — `_detect_language_robust()` ya retorna ja, ko, zh. | `translator.py` | 🆕 CT2 CJK |
 
 
+
+#### Sesión 2026-07-27 — Race condition OpenCV + BindingError doble carga + CSP warning (3 fixes + commit + build)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 53 | **Race condition OpenCV.js** (`initOpenCv()` Caso 2): check diferido `setTimeout(cvReadyCheck, 100)` tras asignar `onRuntimeInitialized`. Si el WASM ya se inicializó antes de asignar el callback, el check lo detecta en 100ms en vez de esperar el timeout de 15s. Guard `state.cvLoaded` en `onOpenCvReady()` evita doble llamada. | `app.js` | 🐛 **Fix: "Cargando OpenCV..." infinito** |
+| 54 | **BindingError "IntVector twice"**: `Promise.any()` con 2 URLs de CDN causaba que AMBOS scripts se ejecutaran (las promesas perdedoras NO se cancelan). Reemplazado por carga secuencial con IIFE (`tryCdn` + `tryNextCdn`), timeout de 10s por CDN, y fallback a unpkg solo si jsDelivr falla. Variable `loaded` evita doble disparo entre onerror y timeout. | `index.html` | 🐛 **Fix: doble carga WASM** |
+| 55 | **CSP warning: `frame-ancestors` ignorado en `<meta>`**: la directiva solo funciona como HTTP header. Eliminada del meta tag en `index.html`. Se mantiene en `config.py` (`CSP_POLICY`) donde se envía como HTTP header vía `add_security_headers()`. Sin pérdida de protección anti-clickjacking. | `index.html`, `config.py` (sin cambios) | ⚠️ **Fix: warning eliminado** |
+
+**Commit `bdeb46e`** + push a `origin/main` (`d72a1ae..bdeb46e main -> main`). **Build PyInstaller** exitoso: `dist/main/main.exe` (144MB, exit code 0). Logs del navegador limpios: `[OpenCV] Cargado exitosamente`, sin BindingError, sin CSP warnings.
 
 #### Sesión 2026-07-26-v2 — Refactor drawTextOnCanvas + glow + UI controles + tooltips (7 cambios)
 
