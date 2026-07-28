@@ -162,6 +162,14 @@ function initOpenCv() {
   // Caso 2: cv existe pero aún no inicializó runtime
   if (window.cv) {
     window.cv['onRuntimeInitialized'] = onOpenCvReady;
+    // ⚠️ Race condition: onRuntimeInitialized ya pudo haberse disparado
+    // antes de que asignáramos el callback. Hacemos un check diferido
+    // para cubrir ese caso sin esperar el timeout de 15s.
+    setTimeout(function cvReadyCheck() {
+      if (window.cv && window.cv.Mat && !state.cvLoaded) {
+        onOpenCvReady();
+      }
+    }, 100);
     setTimeout(onOpenCvTimeout, window.__CLIENT_CONFIG.TIMEOUT_OPENCV_INIT_MS);
     return;
   }

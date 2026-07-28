@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.5, maximum-scale=3, user-scalable=yes" />
   <!-- Opt out of Brave Leo AI and other browser AI processing -->
   <meta name="robots" content="noai, noimageai" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com https://docs.opencv.org https://fonts.googleapis.com https://fonts.gstatic.com data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com https://docs.opencv.org; worker-src 'self' blob: https://cdnjs.cloudflare.com; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:5174 https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com data:; frame-ancestors 'none'; form-action 'self';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com https://docs.opencv.org https://fonts.googleapis.com https://fonts.gstatic.com data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com https://docs.opencv.org; worker-src 'self' blob: https://cdnjs.cloudflare.com; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:5174 https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com data:; form-action 'self';">
+  <!-- frame-ancestors se envía como HTTP header desde el servidor (config.py), no funciona en <meta> -->
   <title>Traductor Visual Pro - PDF, Manga y Manhwa</title>
   <!-- Fuentes modernas de Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -287,17 +288,59 @@
       console.warn('[jsPDF] No se pudo cargar desde ningún CDN.', e);
     });
 
-    // OpenCV.js (4 CDNs en paralelo — todas permitidas por CSP)
-    __loadCdn([
-      'https://cdnjs.cloudflare.com/ajax/libs/opencv.js/4.5.4/opencv.js',
-      'https://cdn.jsdelivr.net/npm/opencv.js@1.2.1/opencv.js',
-      'https://unpkg.com/opencv.js@1.2.1/opencv.js',
-      'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.5.4-release.1/dist/opencv.js',
-    ]).catch(function(e) {
-      console.warn('[OpenCV] Todos los CDNs fallaron. Inpainting desactivado.', e);
-      var badge = document.getElementById('opencvBadge');
-      if (badge) { badge.textContent = 'OpenCV Inactivo'; badge.className = 'badge failed'; }
-    });
+    // OpenCV.js — SOLO UNA URL ACTIVA A LA VEZ (evita doble carga WASM)
+    // ⚠️ Promise.any() NO sirve aquí: aunque la primera URL gane, las
+    // promesas perdedoras NO se cancelan y el script se ejecuta igual,
+    // causando "BindingError: Cannot register public name 'IntVector' twice".
+    // Solución: carga secuencial con IIFE + timeouts.
+    // 1. Intenta jsDelivr (confirmado funciona)
+    // 2. Si falla o timeout → intenta unpkg como fallback secuencial
+    (function(){
+      var FALLBACK_TIMEOUT = 10000; // 10s para cada CDN
+      var loaded = false;
+
+      function tryCdn(url) {
+        var s = document.createElement('script');
+        s.src = url;
+        s.async = true;
+        s.crossOrigin = 'anonymous';
+
+        var timer = setTimeout(function() {
+          if (!loaded) {
+            console.warn('[OpenCV] Timeout: ' + url);
+            tryNextCdn(url);
+          }
+        }, FALLBACK_TIMEOUT);
+
+        s.onload = function() {
+          loaded = true;
+          clearTimeout(timer);
+        };
+        s.onerror = function() {
+          clearTimeout(timer);
+          if (!loaded) {
+            console.warn('[OpenCV] Error: ' + url);
+            tryNextCdn(url);
+          }
+        };
+        document.head.appendChild(s);
+      }
+
+      function tryNextCdn(failedUrl) {
+        if (failedUrl.indexOf('jsdelivr') > -1) {
+          console.warn('[OpenCV] jsDelivr falló. Intentando unpkg...');
+          tryCdn('https://unpkg.com/@techstark/opencv-js@4.5.4-release.1/dist/opencv.js');
+        } else {
+          // Último CDN falló también
+          console.warn('[OpenCV] Todos los CDNs fallaron. Inpainting desactivado.');
+          var badge = document.getElementById('opencvBadge');
+          if (badge) { badge.textContent = 'OpenCV Inactivo'; badge.className = 'badge failed'; }
+        }
+      }
+
+      // Iniciar con jsDelivr
+      tryCdn('https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.5.4-release.1/dist/opencv.js');
+    })();
   </script>
   <!-- Lógica de la aplicación (módulo ES6) -->
   <script type="module" src="app.js?v=20260715-7"></script>
