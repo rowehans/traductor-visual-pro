@@ -877,6 +877,64 @@ button svg { flex-shrink: 0; }
 /* =============================================================================
    BARRA DE PROGRESO MEJORADA
    ============================================================================= */
+.progress-pause {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.15s;
+  margin-right: 4px;
+}
+.progress-pause:hover {
+  filter: brightness(1.15);
+  transform: scale(1.05);
+}.progress-pause:active {
+  transform: scale(0.95);
+}
+
+/* ─── AVISO DE IDIOMA (ORIGEN == DESTINO) ─────────────── */
+.lang-warning {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin-top: 6px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: var(--radius, 6px);
+  font-size: 11px;
+  color: #f59e0b;
+  line-height: 1.4;
+  transition: opacity 0.3s ease, max-height 0.3s ease;
+  overflow: hidden;
+  max-height: 100px;
+}
+.lang-warning.hidden {
+  max-height: 0;
+  padding: 0 8px;
+  opacity: 0;
+  border-width: 0;
+  margin-top: 0;
+  pointer-events: none;
+}
+.lang-warning.visible {
+  max-height: 100px;
+  padding: 6px 8px;
+  opacity: 1;
+  border-width: 1px;
+  margin-top: 6px;
+}
+.lang-warning svg {
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+.lang-warning strong {
+  font-weight: 600;
+}
+
 .progress-bar-container {
   background: var(--bg-input);
   border: 1px solid var(--border);

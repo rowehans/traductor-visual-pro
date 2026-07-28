@@ -34,7 +34,8 @@ DATAS = [
     # Paquete routes/ (blueprints Flask)
     (str(PROJECT_ROOT / "routes"), "routes"),
 
-
+    # Icono del ejecutable
+    (str(PROJECT_ROOT / "icon.ico"), "."),
 ]
 
 # ─── Hidden imports (módulos que PyInstaller no detecta) ─
@@ -126,6 +127,7 @@ exe = EXE(
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,          # GUI mode — sin ventana CMD
+    icon=str(PROJECT_ROOT / "icon.ico"),
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

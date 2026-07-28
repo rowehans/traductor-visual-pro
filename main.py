@@ -22,6 +22,67 @@ except Exception:
 
 PORT = 5174
 HOST = "127.0.0.1"
+SHORTCUT_NAME = "Traductor Visual Pro.lnk"
+
+
+def _create_desktop_shortcut() -> None:
+    """
+    Crea un acceso directo en el escritorio si no existe ya.
+    Usa PowerShell (disponible en todo Windows 7+).
+    Solo se ejecuta en modo frozen (.exe).
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    if sys.platform != "win32":
+        return
+
+    try:
+        import ctypes.wintypes
+        # Obtener ruta del escritorio
+        CSIDL_DESKTOP = 0x0000
+        buf = ctypes.create_unicode_buffer(260)
+        ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_DESKTOP, None, 0, buf)
+        desktop = buf.value
+    except Exception:
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+
+    shortcut_path = os.path.join(desktop, SHORTCUT_NAME)
+
+    # Si ya existe, no sobrescribir
+    if os.path.exists(shortcut_path):
+        return
+
+    exe_path = sys.executable
+    if not os.path.exists(exe_path):
+        return
+
+    # PowerShell script para crear .lnk con WScript.Shell COM
+    ps_script = f'''
+    $ws = New-Object -ComObject WScript.Shell
+    $sc = $ws.CreateShortcut("{shortcut_path}")
+    $sc.TargetPath = "{exe_path}"
+    $sc.WorkingDirectory = "{os.path.dirname(exe_path)}"
+    $sc.Description = "Traductor Visual Pro - Traducción de manga y cómics"
+    $sc.WindowStyle = 1
+    try {{
+        $sc.IconLocation = "{exe_path}, 0"
+    }} catch {{}}
+    $sc.Save()
+    Write-Output "OK"
+    '''
+
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True, text=True, timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
+        )
+        if result.returncode == 0 and result.stdout.strip() == "OK":
+            print(f"[shortcut] Acceso directo creado en: {shortcut_path}")
+        else:
+            print(f"[shortcut] Error: {result.stderr.strip()}")
+    except Exception as e:
+        print(f"[shortcut] No se pudo crear acceso directo: {e}")
 
 
 def _fix_cwd() -> None:
@@ -116,6 +177,9 @@ def run_launcher() -> None:
     """
     _fix_cwd()
     _hide_console()
+
+    # Crear acceso directo en el escritorio (solo primera vez)
+    _create_desktop_shortcut()
 
     # Abrir navegador en background mientras el servidor arranca
     def open_browser_delayed() -> None:

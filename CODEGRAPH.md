@@ -76,7 +76,8 @@
 │                      app.js (~2533 lineas)               │
 │  State: kind/pdf|image, pdf, page/pageCount, scale=1.8  │
 │         boxesByPage:Map, selectedId, cvLoaded,          │
-│         inpaintedBgByPage:Map, abortTranslation         │
+│         inpaintedBgByPage:Map, abortTranslation,        │
+│         translationPaused (Pausa/Reanudar toggle)       │
 │  Boot:  loadPdfJs (Promise.any 4 CDNs en paralelo)      │
 │         initOpenCv (callback onRuntimeInitialized +      │
 │          deferred 100ms check para race condition)       │
@@ -101,6 +102,12 @@
 │           GLOBAL_NOISE_PATTERNS (sincronizado con        │
 │           config.py)                                     │
 │           filterPageBlocks (8% margin)                  │
+│  Progress: showProgress() — barra [⏸ Pausar] [🛑 Cancelar]│
+│           state.translationPaused toggle                 │
+│           autoTranslateAllPages: while loop 500ms        │
+│  LangWarn: checkLanguageWarning() — aviso origen==destino│
+│           isoToSelector ("es"→"spa", "en"→"eng", etc.)   │
+│           source="auto" → aviso condicional              │
 │  Export: renderEditedCanvas -> PNG / jsPDF / PDF full   │
 │  Shortcuts: D/V modes, Ctrl+T/E/P/S, arrows, Del, N/I/B,│
 │             G (glow toggle)                              │

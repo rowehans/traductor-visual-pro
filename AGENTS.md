@@ -10,7 +10,7 @@
 
 | Archivo | Rol | Tamaño |
 |---|---|---|
-| `app.js` | Frontend completo (~2533 líneas, -230 líneas netas): renderizado PDF/imagen vía pdf.js, editor de burbujas (draw/move/resize), OCR delegado al servidor EasyOCR, filtros de bloques, **drawTextOnCanvas() compartida** (unifica renderBoxes + drawProfessionalText), **glow exterior** neón configurable, **relleno semitransparente** (fillOpacity), layout de texto en canvas (wrap+fit), comunicación con API Flask (ES6 modules), exportación PNG/PDF, tema oscuro/claro, atajos de teclado (incl. G para glow), toasts, carga asíncrona de OpenCV.js vía callback. **JS modularizado**: `import` desde js/config.js, js/theme.js, js/toast.js, js/filters.js, js/utils.js. | 99KB |
+| `app.js` | Frontend completo (~2560 líneas): renderizado PDF/imagen vía pdf.js, editor de burbujas (draw/move/resize), OCR delegado al servidor EasyOCR, filtros de bloques, **drawTextOnCanvas() compartida** (unifica renderBoxes + drawProfessionalText), **glow exterior** neón configurable, **relleno semitransparente** (fillOpacity), layout de texto en canvas (wrap+fit), comunicación con API Flask (ES6 modules), exportación PNG/PDF, tema oscuro/claro, atajos de teclado (incl. G para glow), toasts, carga asíncrona de OpenCV.js vía callback. **Botón ⏸️ Pausar/▶️ Reanudar** en barra de progreso (toggle `state.translationPaused`). **Aviso ⚠️ origen==destino** (función `checkLanguageWarning()` con mapa `isoToSelector`). **JS modularizado**: `import` desde js/config.js, js/theme.js, js/toast.js, js/filters.js, js/utils.js. | 99KB |
 | `server.py` | Entry point Flask (~217 líneas). Importa de config.py/translator.py, envuelve _translate_one() con caché, **precarga EasyOCR + CT2 en background** (orden crítico: EasyOCR primero para inicializar CUDA, luego CT2 auto-detecta GPU). Puerto 5174. | 8KB |
 | `config.py` | Constantes globales: paths, `LANGUAGES`, `CSP_POLICY`, patrones de ruido (`MARGIN_NOISE_PATTERNS`, `WATERMARK_PATTERNS`), glosario pre-OCR (`GLOSARIO_PRE`). | 6KB |
 | `translator.py` | Lógica de traducción: detección de idioma (`_detect_language_robust`), 3 motores en **paralelo** vía **executor compartido** (4 threads, evita crear/destruir threads por llamada), validación de traducción (6 validaciones anti-basura), glosarios PRE/POST, filtro pre-Argos para OCR noise. **Google retry con backoff** (5s, 15s, 30s) cuando todos los motores fallan (fix SIN_TRAD). Cache injectado desde server.py. | 28KB |
@@ -140,11 +140,18 @@ Errores:      0
 
 ## 4. Estado Actual
 
-**Última actualización**: 2026-07-27
+**Última actualización**: 2026-07-28
 
 ### Cambios acumulados (Julio 2026)
 
-#### Sesión 2026-07-22 — Optimizaciones de velocidad + CTD + fix SIN_TRAD + calidad real (10 cambios)
+#### Sesión 2026-07-28-v2 — Botón Pausa/Reanudar + Aviso origen==destino (2 features)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 59 | **Botón ⏸️ Pausar / ▶️ Reanudar**: nuevo botón en la barra de progreso de `showProgress()` junto a Cancelar. Togglea `state.translationPaused` (flag agregado al estado global). En `autoTranslateAllPages()`, while loop con `await new Promise(r => setTimeout(r, 500))` espera sin bloquear hasta que se reanude. Al reanudar, continúa desde la página exacta donde se pausó. Al cancelar, resetea `translationPaused`. Se resetea al iniciar nueva traducción. Estilos CSS `.progress-pause` con hover/active. **Bug corregido**: flag no se reseteaba al reiniciar traducción. | `app.js`, `styles.css` | 🆕 Control de flujo |
+| 60 | **Aviso visual cuando origen == destino**: nuevo elemento `<div id="langWarning">` debajo de los selectores de idioma. Función `checkLanguageWarning()` compara `sourceLang.value` vs `targetLang.value` usando mapa `isoToSelector` ("es"→"spa", "en"→"eng", etc.). Si source=="auto", muestra aviso condicional: "si el texto está en [idioma], no se traducirá". Si source incluye destino explícitamente, muestra aviso exacto. Clases CSS `.lang-warning` con transiciones suaves (hidden→visible). **Bug corregido en code review**: `const targetCode = tgt;` estaba en temporal dead zone (referencia antes de declaración). Movido al inicio de la función. | `app.js`, `index.html`, `styles.css` | 🆕 UX preventivo |
+
+#### Sesión 2026-07-28 — Safety timeout OpenCV + módulo signal + race condition Case 3 (3 fixes + commit + build)
 
 Tres optimizaciones que reducen el tiempo por página de ~35-50s a ~10-18s.
 
@@ -187,6 +194,16 @@ Tres optimizaciones que reducen el tiempo por página de ~35-50s a ~10-18s.
 | 55 | **CSP warning: `frame-ancestors` ignorado en `<meta>`**: la directiva solo funciona como HTTP header. Eliminada del meta tag en `index.html`. Se mantiene en `config.py` (`CSP_POLICY`) donde se envía como HTTP header vía `add_security_headers()`. Sin pérdida de protección anti-clickjacking. | `index.html`, `config.py` (sin cambios) | ⚠️ **Fix: warning eliminado** |
 
 **Commit `bdeb46e`** + push a `origin/main` (`d72a1ae..bdeb46e main -> main`). **Build PyInstaller** exitoso: `dist/main/main.exe` (144MB, exit code 0). Logs del navegador limpios: `[OpenCV] Cargado exitosamente`, sin BindingError, sin CSP warnings.
+
+#### Sesión 2026-07-28 — Safety timeout OpenCV + módulo signal + race condition Case 3 (3 fixes + commit + build)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 56 | **Safety timeout 25s en IIFE de OpenCV**: si el badge sigue en "loading" tras 25s, se actualiza automáticamente. Diagnóstico diferencial: si `window.__appJsLoaded` no está definido → "OpenCV Inactivo (Error Módulo)" con mensaje en consola (`app.js` nunca ejecutó por error de import). Si sí está definido → "OpenCV Inactivo" normal. Solo actúa si badge sigue en estado "loading". | `index.html` | 🛡️ **Fix: badge nunca se quedaba "Cargando..." para siempre** |
+| 57 | **`window.__appJsLoaded = true` al inicio del módulo ES**: señal para que el IIFE detecte si `app.js` (ES module) ejecutó o si los imports fallaron (MIME type incorrecto, 404, etc.). Se setea sincrónicamente antes de cualquier async call. Si algún import falla, esta línea nunca se ejecuta. | `app.js` | 🛡️ **Diagnóstico: módulo vs CDN** |
+| 58 | **Deferred 100ms check en `initOpenCv()` Caso 3**: mismo patrón que Caso 2. Cuando el polling encuentra `window.cv` sin `Mat`, asigna callback `onRuntimeInitialized` + check diferido `setTimeout(cvReadyCheck3, 100)`. Cubre race condition donde el WASM ya se inicializó antes de asignar el callback. Guard `!state.cvLoaded` evita doble llamada. | `app.js` | 🐛 **Fix: race condition en Caso 3** |
+
+**Commit `3ed0924`** + push a `origin/main` (`bdeb46e..3ed0924 main -> main`). **Build PyInstaller** exitoso: `dist/main/main.exe` (138MB, exit code 0). Logs del navegador limpios: `[BOOT] app.js cargado`, `[OpenCV] Cargado exitosamente`, badge "OPENCV ACTIVO".
 
 #### Sesión 2026-07-26-v2 — Refactor drawTextOnCanvas + glow + UI controles + tooltips (7 cambios)
 

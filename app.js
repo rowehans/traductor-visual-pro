@@ -134,6 +134,7 @@ const state = {
   bold: true,            // Estilo de fuente negrita por defecto
   inpaintedBgByPage: new Map(), // Caché de imágenes de fondo limpias por página
   abortTranslation: false, // Bandera para cancelar traducción automática
+  translationPaused: false, // Bandera para pausar/reanudar traducción
   theme: "dark",         // Tema actual: 'dark' o 'light'
 };
 
@@ -398,6 +399,64 @@ function initKeyboardShortcuts() {
 
 // Inicializar atajos de teclado
 initKeyboardShortcuts();
+
+// ─── AVISO CUANDO ORIGEN == DESTINO ──────────────────────
+function checkLanguageWarning() {
+  const warnEl = document.getElementById("langWarning");
+  const warnText = document.getElementById("langWarningText");
+  if (!warnEl || !warnText) return;
+
+  const src = sourceLang.value;
+  const tgt = targetLang.value;
+  const targetCode = tgt; // mover aquí para evitar temporal dead zone
+
+  // Si source es auto-detect: aviso suave (no sabemos el idioma real)
+  if (src === "auto") {
+    const targetName = targetLang.options[targetLang.selectedIndex]?.textContent || targetCode;
+    warnText.innerHTML = `⚠️ <strong>Origen: Detección Automática</strong> — si el texto está en <strong>${targetName}</strong>, <strong>no se traducirá</strong>. Cambia Origen a otro idioma o elige otro Destino.`;
+    warnEl.classList.remove("hidden");
+    warnEl.classList.add("visible");
+    return;
+  }
+
+  // Parsear source: "eng+spa+fra+deu" → ["eng","spa","fra","deu"]
+  const sourceCodes = src.split("+");
+  const targetCode = tgt;
+
+  // Mapear códigos ISO a valores del selector
+  // Los códigos del servidor (eng, spa, fra) no son iguales
+  // a los valores del selector destino (en, es, fr)
+  const isoToSelector = {
+    "en": "eng",
+    "es": "spa",
+    "fr": "fra",
+    "de": "deu",
+    "it": "ita",
+    "pt": "por",
+    "ja": "ja",
+    "ko": "ko",
+    "zh": "zh",
+  };
+
+  const sourceIso = isoToSelector[targetCode] || targetCode;
+  const isSame = sourceCodes.includes(sourceIso);
+
+  if (isSame) {
+    const targetName = targetLang.options[targetLang.selectedIndex]?.textContent || targetCode;
+    warnText.innerHTML = `⚠️ El idioma de origen incluye <strong>${targetName}</strong> — si el texto está en ese idioma, <strong>no se traducirá</strong>. Cambia el destino a otro idioma.`;
+    warnEl.classList.remove("hidden");
+    warnEl.classList.add("visible");
+  } else {
+    warnEl.classList.add("hidden");
+    warnEl.classList.remove("visible");
+  }
+}
+
+// Llamar al cargar y cuando cambien los selectores
+sourceLang.addEventListener("change", checkLanguageWarning);
+targetLang.addEventListener("change", checkLanguageWarning);
+// Llamar inmediatamente — los selectores ya tienen valores del HTML
+checkLanguageWarning();
 // Configuración de pdf.js worker
 let pdfjsPromise = null;
 
@@ -1080,19 +1139,33 @@ function showProgress(label, done, total, startedAt) {
       <div style="font-size:11px; margin-bottom:4px; display:flex; justify-content:space-between; align-items:center;">
         <span class="progress-lbl"></span>
         <span class="progress-pct">0%</span>
+        <button class="progress-pause" style="font-size:10px; padding:2px 6px; background:var(--accent); color:white; border:none; border-radius:3px; cursor:pointer; margin-right:4px;">⏸ Pausar</button>
         <button class="progress-cancel" style="font-size:10px; padding:2px 6px; background:var(--danger); color:white; border:none; border-radius:3px; cursor:pointer;">Cancelar</button>
       </div>
       <div class="progress-bar-container"><div class="progress-bar-fill"></div></div>
       <div class="progress-eta" style="font-size:10px; color:var(--text-secondary); margin-top:4px;"></div>
     `;
     $(".auto-controls").appendChild(progressContainer);
+    
+    // Botón Cancelar: aborta y limpia
     progressContainer.querySelector(".progress-cancel").addEventListener("click", () => {
       state.abortTranslation = true;
+      state.translationPaused = false;
       if (progressContainer) {
         progressContainer.remove();
         progressContainer = null;
       }
       setStatus("Cancelando traducción...");
+    });
+    
+    // Botón Pausar/Reanudar: toggle sin perder progreso
+    progressContainer.querySelector(".progress-pause").addEventListener("click", function() {
+      state.translationPaused = !state.translationPaused;
+      this.textContent = state.translationPaused ? "▶ Reanudar" : "⏸ Pausar";
+      this.style.background = state.translationPaused ? "var(--success, #27ae60)" : "var(--accent)";
+      setStatus(state.translationPaused ? "⏸ Traducción pausada. Haz clic en Reanudar para continuar." : "▶ Reanudando traducción...");
+      if (!state.translationPaused) showToast("Reanudando traducción...", "info", 2000);
+      else showToast("⏸ Traducción en pausa", "warning", 2000);
     });
   }
   
@@ -1274,6 +1347,7 @@ async function autoTranslateAllPages() {
   }
   
   state.abortTranslation = false;
+  state.translationPaused = false;
   const startedAt = Date.now();
   const originalPage = state.page;
   const total = state.kind === "pdf" ? state.pageCount : 1;
@@ -1284,6 +1358,15 @@ async function autoTranslateAllPages() {
   let successPages = 0;
   
   for (let p = 1; p <= total; p++) {
+    // Check abort first
+    if (state.abortTranslation) {
+      setStatus("Traducción cancelada por el usuario.");
+      break;
+    }
+    // Check pause: esperar activamente hasta reanudar o cancelar
+    while (state.translationPaused && !state.abortTranslation) {
+      await new Promise(r => setTimeout(r, 500)); // espera 500ms y vuelve a checkear
+    }
     if (state.abortTranslation) {
       setStatus("Traducción cancelada por el usuario.");
       break;
