@@ -4,8 +4,8 @@
   <a href="https://github.com/rowehans/traductor-visual-pro/releases/latest">
     <img src="https://img.shields.io/badge/versi%C3%B3n%20%E2%86%92%20Releases-brightgreen?logo=github" alt="Latest release">
   </a>
-  <a href="https://github.com/rowehans/traductor-visual-pro/releases/tag/v0.1.37">
-    <img src="https://img.shields.io/badge/descargar%20instalador%20(373MB)-blue?logo=windows" alt="Download">
+  <a href="https://github.com/rowehans/traductor-visual-pro/releases/tag/v0.1.44">
+    <img src="https://img.shields.io/badge/descargar%20.exe%20(360MB)-blue?logo=windows" alt="Download">
   </a>
   <a href="https://github.com/rowehans/traductor-visual-pro/releases">
     <img src="https://img.shields.io/badge/descargas%20%E2%86%92%20Releases-success?logo=download" alt="Downloads">
@@ -26,15 +26,16 @@ App local para traducir manga, cómics y documentos en PDF e imagen. Backend Pyt
 
 **Opción recomendada — Instalador profesional:**
 
-[![Download Installer](https://img.shields.io/badge/Descargar_TraductorVisual_Setup_20260725.exe-373MB-blue?style=for-the-badge&logo=windows)](https://github.com/rowehans/traductor-visual-pro/releases/download/v0.1.37/TraductorVisual_Setup_20260725.exe)
+[![Download .exe](https://img.shields.io/badge/Descargar_main.exe-360MB-blue?style=for-the-badge&logo=windows)](https://github.com/rowehans/traductor-visual-pro/releases/download/v0.1.44/main.exe)
 
-El instalador incluye:
-- Ejecutable `main.exe` (200 MB)
-- Modelo CTD (ComicTextDetector) para detección de texto artístico
+El ejecutable incluye:
+- Ejecutable `main.exe` (360 MB) con EasyOCR GPU + RapidOCR (ONNX)
+- Pipeline híbrido EasyOCR+RapidOCR: 128 páginas en 11.7 min
+- Clasificación OCR_GARBAGE mejorada con 8 filtros (16.8% de detección)
 - Script `setup.ps1` para configuración automatizada del entorno
 - Descarga bajo demanda de modelos OCR y CT2 durante la instalación
 
-**Requisitos:** Windows 10/11 (64-bit), Python 3.8+, 8 GB RAM, GPU NVIDIA con CUDA (opcional)
+**Requisitos:** Windows 10/11 (64-bit), Python 3.8+, 8 GB RAM, GPU NVIDIA con CUDA (opcional, acelera EasyOCR ~5.7x)
 
 ---
 
