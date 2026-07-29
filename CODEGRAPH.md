@@ -165,6 +165,8 @@
 
 **Traducción**: 351/400 bloques (87.8%). El 12.2% restante son fragmentos OCR ruidosos que ningún motor pudo descifrar.
 
+**Nota CPU vs GPU**: `onnxruntime-gpu` instalado y probado en GTX 1050 Ti. **GPU NO acelera RapidOCR** (~1.0x speedup) porque los modelos PP-OCRv4 son pequeños (~6.5MB total). El overhead de transferencia PCIe anula cualquier ganancia. `onnxruntime` (CPU) es suficiente y se recomienda como dependencia.
+
 ## Flujo de datos: /api/process-page
 
 ```
