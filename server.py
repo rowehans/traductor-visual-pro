@@ -12,7 +12,7 @@ from flask import Flask, jsonify, send_from_directory, abort
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:  # nosec B110: fallback silencioso si stdout no soporta reconfigure (Windows 7/Server)
+    except Exception:  # nosec
         pass
 
 # Config import (paths, constants, CSP, etc.)
