@@ -46,21 +46,72 @@ def is_ocr_garbage(t):
     """Check if OCR output is clearly garbage (not valid text)."""
     stripped = t.strip()
     if not stripped: return False
-    # All digits
+
+    # ── Filtro 1: Solo digitos, puntuacion y simbolos ────────────
     if re.match(r'^[\d\s.,;:\'\"\-_~]+$', stripped):
         return True
-    # Mixed number-letter-noise patterns
+
+    # ── Filtro 2: Patrones mixtos numero+letra ruidosos ───────────
     garbage_pats = [r'\d{4,}', r'\d[A-Z]{5,}', r'[A-Z]{6,}\d', r'\d{2,}[A-Z]{2,}\d{2,}']
     if any(re.search(p, t) for p in garbage_pats):
         return True
-    # More than 40% digits
+
+    # ── Filtro 3: Mas de 40% digitos ─────────────────────────────
     digits = sum(1 for c in t if c.isdigit())
     if digits > 0 and digits / max(len(t), 1) > 0.4:
         return True
-    # Special char noise: @#$%^&*+= in the middle
+
+    # ── Filtro 4: 3+ caracteres especiales (@#$%^&*+=) ────────────
     special = re.findall(r'[@#$%^&*+=<>\[\]{}|\\/]', t)
     if len(special) >= 3:
         return True
+
+    # ── Filtro 5: Texto de 1-2 caracteres sin vocales ────────────
+    # "N", "kc", "rt" son OCR noise, no texto real
+    letters_only = re.sub(r'[^a-zA-Z]', '', stripped)
+    if len(letters_only) <= 2 and not re.search(r'[aeiouAEIOU]', letters_only):
+        return True
+
+    # ── Filtro 6: Case inconsistency patologica ──────────────────
+    # "sRESPONDERMFR" (empieza minuscula, TODO lo demas mayuscula)
+    # "ADelAntE." (alterna mayuscula/minuscula como AaaAaaA)
+    letters = re.findall(r'[a-zA-Z]', stripped)
+    if len(letters) >= 4:
+        has_lower = any(c.islower() for c in letters)
+        has_upper = any(c.isupper() for c in letters)
+        if has_lower and has_upper:
+            # Caso A: "sRESPONDERMFR" - empieza minuscula, resto mayuscula
+            if letters[0].islower():
+                rest = stripped[1:]
+                rest_let = re.findall(r'[a-zA-Z]', rest)
+                if rest_let and all(c.isupper() for c in rest_let):
+                    return True
+            # Caso B: "ADelAntE" - patron (1-2 mayus)(2+ minus)(mayus)(2+ minus)(mayus)
+            # Permite 1-2 mayusculas al inicio para cubrir "ADelAntE" (A-D-el-A-nt-E)
+            # pero NO "McDonald" (Mc = mayus+minus, solo 1 mayus)
+            if re.match(r'^[A-Z]{1,2}[a-z]{2,}[A-Z][a-z]{2,}[A-Z]', stripped):
+                return True
+            # Caso C: "saaaAALIR!" - empieza minuscula, termina con 3+ mayusculas
+            if re.match(r'^[a-z]+[A-Z]{3,}', stripped):
+                return True
+
+    # ── Filtro 7: Texto muy corto con espacios internos ──────────
+    # "M 4", "9 2" son fragmentos con digitos sueltos y espacios
+    if len(stripped) <= 4 and ' ' in stripped:
+        # Verificar que no sea una frase real tipo "a 2" o "en 3"
+        parts = stripped.split()
+        # Si todas las partes son de 1-2 chars y hay al menos un digito
+        if all(len(p) <= 2 for p in parts) and any(p.isdigit() for p in parts):
+            return True
+
+    # ── Filtro 8: Caracteres especiales al inicio/fin ────────────
+    # "~YSILA acePtaba _" tiene tilde/underscore en bordes
+    if stripped.startswith(('~', '_', '-', '=')) or stripped.endswith(('~', '_', '-', '=')):
+        # Si ademas tiene otros indicios de ruido
+        letters_only = re.sub(r'[^a-zA-Z]', '', stripped)
+        if len(letters_only) <= 3 or (len(stripped) - len(letters_only)) >= 2:
+            return True
+
     return False
 
 def is_onomatopoeia(t):

@@ -14,6 +14,22 @@ pytest-mock==3.15.1
 easyocr==1.7.2
 torch==2.6.0+cu124
 
+# RapidOCR (ONNX) — pipeline híbrido EasyOCR+RapidOCR
+# Usa los mismos modelos PP-OCRv4 que PaddleOCR pero via ONNX Runtime,
+# sin conflictos de PaddlePaddle con PyTorch.
+#
+# IMPORTANTE: onnxruntime (CPU) es SUFICIENTE para RapidOCR.
+# El benchmark en GTX 1050 Ti demostró que GPU no acelera porque los
+# modelos son pequeños (~1.5MB detector + ~5MB recognizer) y el overhead
+# de transferencia PCIe anula cualquier ganancia.
+#
+# Para instalar versión GPU (opcional, SIN mejora real):
+#   pip install onnxruntime-gpu
+#
+# pip resuelve onnxruntime (CPU) automaticamente como dependencia de rapidocr-onnxruntime
+# CPU es suficiente — ver nota IMPORTANTE arriba
+rapidocr-onnxruntime==1.3.8
+
 # Translation
 argostranslate==1.11.0
 deep-translator==1.11.4
