@@ -100,12 +100,21 @@ ratelimit.py      → Rate limiting
 
 ## Tests
 
+Los tests unitarios (290+) se ejecutan automáticamente en cada commit vía pre-commit hook.
+
 ```powershell
-.\env\Scripts\python.exe test_ci.py
+# Tests rápidos (recomendado)
+.\env\Scripts\python.exe run_ci.py
+
+# Tests completos con reporte HTML
+.\env\Scripts\python.exe run_ci.py --full --report
+
+# Solo tests unitarios (pytest)
+.\env\Scripts\python.exe -m pytest tests/ -q --tb=short
 ```
 
 ## CI
 
-- **Pre-commit hook**: Syntax check + test_ci.py en archivos modificados
-- **GitHub Actions**: Syntax check + tests en push/PR con cambios en server.py o routes/
-- **CI local completa**: `.\run_ci.ps1` (rápido) o `.\run_ci.ps1 -Full` (con stress test)
+- **Pre-commit hook**: Syntax check + bandit (seguridad) + pytest en archivos modificados
+- **GitHub Actions**: Syntax check + tests en push/PR con cambios en server.py, routes/ o core
+- **CI local completa**: `python run_ci.py` (~30s) o `python run_ci.py --full` (~10 min, incluye stress test)
