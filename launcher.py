@@ -5,7 +5,7 @@ Sin necesidad de .bat, doble click y funciona.
 """
 import os
 import socket
-import subprocess
+import subprocess  # nosec B404
 import sys
 import time
 import webbrowser
@@ -40,7 +40,8 @@ def main() -> int:
     print(f"Iniciando servidor en http://{HOST}:{PORT}")
     print("Espera unos segundos...")
 
-    proc = subprocess.Popen(
+    # B603: seguro — sin shell=True, usa lista de argumentos, path absoluto
+    proc = subprocess.Popen(  # nosec
         [str(PYTHON), "-u", str(SERVER)],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

@@ -9,7 +9,7 @@ NO usa waitress — waitress tiene problemas con catch-all + blueprints en Flask
 """
 import os
 import socket
-import subprocess
+import subprocess  # nosec B404: necesario para crear acceso directo y abrir navegador
 import sys
 import threading
 import time
@@ -17,7 +17,7 @@ import time
 try:
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
-except Exception:
+except Exception:  # nosec B110: fallback silencioso si stdout no soporta reconfigure (Windows 7/Server)
     pass
 
 PORT = 5174
@@ -43,7 +43,7 @@ def _create_desktop_shortcut() -> None:
         buf = ctypes.create_unicode_buffer(260)
         ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_DESKTOP, None, 0, buf)
         desktop = buf.value
-    except Exception:
+    except Exception:  # nosec B110: fallback al escritorio por defecto si SHGetFolderPathW falla
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
 
     shortcut_path = os.path.join(desktop, SHORTCUT_NAME)
@@ -71,9 +71,15 @@ def _create_desktop_shortcut() -> None:
     Write-Output "OK"
     '''
 
+    # Ruta absoluta para PowerShell (mitiga B607: partial path)
+    _powershell = os.path.join(
+        os.environ.get('SystemRoot', 'C:\\Windows'),
+        'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'
+    )
+    # B603: seguro — sin shell=True, usa lista de argumentos
     try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps_script],
+        result = subprocess.run(  # nosec
+            [_powershell, "-NoProfile", "-Command", ps_script],
             capture_output=True, text=True, timeout=15,
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
         )
@@ -82,7 +88,7 @@ def _create_desktop_shortcut() -> None:
         else:
             print(f"[shortcut] Error: {result.stderr.strip()}")
     except Exception as e:
-        print(f"[shortcut] No se pudo crear acceso directo: {e}")
+        print(f"[shortcut] No se pudo crear acceso directo: {e}")  # nosec B110: error no crítico
 
 
 def _fix_cwd() -> None:
@@ -121,7 +127,7 @@ def _hide_console() -> None:
             hwnd = ctypes.windll.kernel32.GetConsoleWindow()
             if hwnd:
                 ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
-        except Exception:
+        except Exception:  # nosec B110: fallo al ocultar consola no es crítico
             pass
 
 
@@ -149,9 +155,12 @@ def open_browser() -> None:
     browser = next((p for p in chrome_paths if os.path.exists(p)), None)
     if browser:
         try:
-            subprocess.Popen([browser, f"--app={url}", "--window-size=1400,900"])
+            # B603: seguro — sin shell=True, path absoluto verificado con os.path.exists()
+            subprocess.Popen(  # nosec
+                [browser, f"--app={url}", "--window-size=1400,900"]
+            )
             return
-        except Exception:
+        except Exception:  # nosec B110: fallback al navegador por defecto si Chrome/Edge falla
             pass
     import webbrowser
     webbrowser.open(url)
