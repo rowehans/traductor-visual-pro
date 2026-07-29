@@ -3,12 +3,14 @@
 ; Descarga Inno Setup: https://jrsoftware.org/isdl.php
 ;
 ; Características:
-; - Instalación básica: ~200MB (solo .exe + scripts)
-; - Modelos descargados bajo demanda en primer uso (ahorra ~400MB)
+; - Instalación básica: ~1GB (ejecutable + runtime Python completo)
+; - Modelos CT2 y OCR descargados bajo demanda en primer uso (ahorra ~500MB)
+; - RapidOCR (ONNX) incluido vía pip, sin modelos adicionales
+; - CTD eliminado (dependencia externa frágil, reemplazado por EasyOCR GPU + RapidOCR)
 ; - Desinstalación limpia
 
 #define MyAppName "Traductor Visual Pro"
-#define MyAppVersion "0.1.41"
+#define MyAppVersion "0.1.44"
 #define MyAppPublisher "Traductor Visual"
 #define MyAppURL "http://127.0.0.1:5174"
 #define MyAppExeName "main.exe"
@@ -27,9 +29,9 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=admin
-; Tamaño mínimo: .exe 200MB + Python base ~50MB
-; Modelos se descargan bajo demanda (~400MB extra)
-ExtraDiskSpaceRequired=300000000
+; Tamaño mínimo: ~1GB (main.exe 360MB + _internal/ runtime 607MB)
+; Modelos CT2 y OCR se descargan bajo demanda (~500MB extra)
+ExtraDiskSpaceRequired=1000000000
 
 [Languages]
 Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
@@ -47,13 +49,14 @@ Source: "dist\main\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversio
 ; Script de instalación
 Source: "setup.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
-; Solo modelos CTD (necesarios para OCR, ~76MB)
-Source: "models\ctd\*"; DestDir: "{app}\models\ctd"; Flags: ignoreversion recursesubdirs createallsubdirs
+; RapidOCR y EasyOCR se instalan vía pip (no requieren modelos adicionales en bundle)
+; CTD eliminado en Julio 2026 — reemplazado por EasyOCR GPU + RapidOCR (ONNX)
 
 [Dirs]
 Name: "{app}\env"; Permissions: users-modify
 Name: "{app}\models\ct2"; Permissions: users-modify
 Name: "{app}\ocr_models"; Permissions: users-modify
+; RapidOCR usa modelos ONNX desde site-packages (pip), no requiere directorio propio
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -89,9 +92,10 @@ begin
   if DownloadModels then
   begin
     // Descargar modelos CT2 y OCR bajo demanda
+    // RapidOCR no requiere descarga — modelos ONNX se incluyen en el paquete pip
     Exec('powershell.exe', 
          '-ExecutionPolicy Bypass -Command "& { ' +
-         'Write-Host \"Descargando modelos CT2...\"; ' +
+         'Write-Host \"Descargando modelos CT2 y EasyOCR...\"; ' +
          '& \"' + ExpandConstant('{app}') + '\env\Scripts\python.exe\" -c \"' +
          'import sys; sys.path.insert(0, ''' + ExpandConstant('{app}') + '''); ' +
          'from translator import _get_ct2_translator; ' +
@@ -99,6 +103,7 @@ begin
          'print(f\"CT2 es→en listo: {t is not None}\"); ' +
          't2, tk2 = _get_ct2_translator(''en'', ''es''); ' +
          'print(f\"CT2 en→es listo: {t2 is not None}\"); ' +
+         'print(f\"RapidOCR se carga bajo demanda (no requiere pre-descarga)\"); ' +
          '}\" }"',
          '', SW_SHOW, ewWaitUntilTerminated, ResultCode);
   end;
