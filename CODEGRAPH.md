@@ -49,6 +49,12 @@
 │  │    ├─ allow_fallback=False: desactiva tier 2         │
 │  │    │   (modo easyocr, default)                       │
 │  ├─ _group_and_merge_blocks (9 filtros post-merge)      │
+│  ├─ _run_rapidocr (RapidOCR ONNX, lazy-load con        │
+│  │                  semáforo + timeout guard)            │
+│  ├─ _fusionar_blocks (merge EasyOCR+RapidOCR por        │
+│  │                  texto normalizado)                   │
+│  ├─ _get_rapid_engine (RapidOCR lazy, CPU ~1.1-1.5s)   │
+│  ├─ _preprocess_rapid (pre_filter + enhance para Rapid) │
 │  ├─ _is_inside_speech_bubble (deteccion de globos)      │
 │  ├─ _build_glyph_mask_for_bubble (mascara solo-glifos)  │
 │  ├─ _build_inpaint_mask (rectangular o por glifos)     │
@@ -148,6 +154,16 @@
 │  ratelimit.py: Flask-Limiter (200/dia, 50/hora)         │
 └─────────────────────────────────────────────────────────┘
 ```
+
+### Benchmarks del pipeline híbrido (Julio 2026)
+
+| Pipeline | Tiempo 128 págs | Promedio/pág | Cobertura | Sin traducir |
+|:---------|:---------------:|:------------:|:---------:|:------------:|
+| EasyOCR GPU solo | ~15-20 min | 3.3s | 100% | 0 págs |
+| EasyOCR + CLAHE | ~37 min | 17.5s | 100% | 0 págs |
+| **EasyOCR + RapidOCR** | **11.7 min** | **5.5s** | **100%** | **0 págs** |
+
+**Traducción**: 351/400 bloques (87.8%). El 12.2% restante son fragmentos OCR ruidosos que ningún motor pudo descifrar.
 
 ## Flujo de datos: /api/process-page
 

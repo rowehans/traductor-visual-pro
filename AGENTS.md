@@ -140,9 +140,16 @@ Errores:      0
 
 ## 4. Estado Actual
 
-**Última actualización**: 2026-07-29
+**Última actualización**: 2026-07-30
 
 ### Cambios acumulados (Julio 2026)
+
+#### Sesión 2026-07-30 — is_ocr_garbage() mejorado: 8 filtros para OCR fragments + pipeline híbrido EasyOCR+RapidOCR (2 cambios)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 62 | **`is_ocr_garbage()` mejorado con 8 filtros**: detección de OCR fragments que antes caían como UNTRANSLATED. Nuevos filtros: (5) texto 1-2 chars sin vocales → "N", "kc"; (6A) empieza minúscula + resto mayúscula → "sRESPONDERMFR"; (6B) patrón AaaAaaA con 1-2 mayús + 2+ minús → "ADelAntE."; (6C) minúsculas + 3+ mayúsculas → "saaaAALIR!"; (7) texto ≤4 chars con espacios y dígitos → "M 4"; (8) caracteres especiales (~_ - =) en bordes → "~YSILA acePtaba _". **Resultado**: OCR_GARBAGE 1.8% → **16.8%** (60 fragmentos reclasificados correctamente), UNTRANSLATED 22.8% → **17.5%** (solo texto real sin traducir). | `analisis_calidad.py` | 📊 **Clasificación más precisa** |
+| 63 | **Pipeline híbrido EasyOCR+RapidOCR** en `ocr_utils.py`: nuevo motor RapidOCR (ONNX, CPU ~1.1-1.5s/pág) como tier 3. Lazy loading con `_get_rapid_engine()` + `threading.Lock()`. `_run_rapidocr()` con semáforo thread-safe. `_fusionar_blocks()` merge por texto normalizado. `_detect_and_ocr()` modificado: si confianza EasyOCR < 0.3 → RapidOCR + fusión; si 0 bloques → RapidOCR directo. **Benchmark**: 128 págs en **11.7 min** (699s), 0 páginas sin traducir. **12.2%** de bloques sin traducir (49/400) — todos fragmentos OCR ruidosos que ningún motor pudo descifrar. `requirements.txt` actualizado con `rapidocr-onnxruntime`. | `ocr_utils.py`, `requirements.txt` | 🚀 **Pipeline híbrido** |
 
 #### Sesión 2026-07-29 — Fix bundle PyInstaller: carpeta js/ faltante (1 fix)
 
