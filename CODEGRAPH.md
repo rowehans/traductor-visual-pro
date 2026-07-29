@@ -195,6 +195,13 @@ main.spec -> PyInstaller -> dist/main/main.exe
                                │
                                ├─ server.py + módulos Python (empaquetados)
                                ├─ index.html, app.js, styles.css (empaquetados)
+                               ├─ **js/** → 5 módulos ES (empaquetados)
+                               │    ├─ config.js, utils.js, toast.js,
+                               │    ├─ theme.js, filters.js
+                               │    ⚠️ CRÍTICO: Si falta js/ en el bundle,
+                               │       app.js (ES module) no importa,
+                               │       initOpenCv() nunca se ejecuta,
+                               │       badge queda "Cargando OpenCV...".
                                └─ env/ → Dependencias en tiempo de ejecución
                                     ├─ easyocr, torch, cv2, numpy
                                     ├─ Flask, SQLAlchemy

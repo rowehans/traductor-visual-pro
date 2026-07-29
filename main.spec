@@ -22,6 +22,11 @@ DATAS = [
     (str(PROJECT_ROOT / "index.html"), "."),
     (str(PROJECT_ROOT / "app.js"), "."),
     (str(PROJECT_ROOT / "styles.css"), "."),
+    # Módulos JS (ES module imports desde app.js: ./js/config.js, utils.js, etc.)
+    # ⚠️ CRÍTICO: Sin esta línea, los imports del módulo ES fallan con 404,
+    # app.js nunca ejecuta, initOpenCv() nunca se llama, y el badge se queda
+    # en "Cargando OpenCV..." para siempre.
+    (str(PROJECT_ROOT / "js"), "js"),
 
     # Módulos Python (desde la raíz)
     (str(PROJECT_ROOT / "server.py"), "."),

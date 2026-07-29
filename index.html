@@ -346,9 +346,10 @@
       tryCdn('https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.5.4-release.1/dist/opencv.js');
 
       // ── Safety timeout: si app.js (ES module) nunca ejecutó initOpenCv(),
-      // actualizar badge después de 25s para no quedar "Cargando OpenCV..."
-      // para siempre. Esto cubre el caso donde los imports del módulo fallan
-      // (MIME type incorrecto, 404, etc.) y app.js nunca se ejecuta.
+      // actualizar badge después de 15s para no quedar "Cargando OpenCV..."
+      // para siempre. Misma duración que el timeout de initOpenCv() en app.js
+      // (TIMEOUT_OPENCV_INIT_MS = 15000). Esto cubre el caso donde los imports
+      // del módulo fallan (MIME type incorrecto, 404, etc.) y app.js nunca se ejecuta.
       setTimeout(function() {
         var badge = document.getElementById('opencvBadge');
         if (!badge) return;
@@ -357,7 +358,7 @@
         if (cls.indexOf('active') === -1 && cls.indexOf('failed') === -1) {
           if (window.__appJsLoaded) {
             // app.js sí ejecutó → initOpenCv() no detectó cv
-            console.warn('[OpenCV] Safety timeout (25s): initOpenCv() no detectó cv.');
+            console.warn('[OpenCV] Safety timeout (15s): initOpenCv() no detectó cv.');
             badge.textContent = 'OpenCV Inactivo';
           } else {
             // app.js NUNCA ejecutó → probable error de módulo/import
@@ -368,7 +369,7 @@
           }
           badge.className = 'badge failed';
         }
-      }, 25000);
+      }, 15000);
     })();
   </script>
   <!-- Lógica de la aplicación (módulo ES6) -->

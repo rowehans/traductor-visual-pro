@@ -26,7 +26,7 @@
 | `run_ci.py` | **CI unificado** — ejecuta syntax check + test_ci.py + servidor + analisis_calidad + stress test en un solo comando Python. No depende de PowerShell. `python run_ci.py --full` para test completo (~10 min). | 20KB |
 | `requirements.txt` | Dependencias Python pineadas. | 1KB |
 | `main.py` | Entry point del ejecutable (.exe). Modo launcher: oculta consola, inicia Flask, abre Chrome. Modo `--server`: solo servidor. | 4KB |
-| `main.spec` | PyInstaller spec para compilar `main.exe` con `console=False` (sin ventana CMD). CTD eliminado del bundle. **Excluye módulos pesados** (torch, transformers, ct2, easyocr) — se cargan desde `env/` en runtime. **UPX deshabilitado**. .exe resultante: **200MB** (antes 2.6GB). | 3KB |
+| `main.spec` | PyInstaller spec para compilar `main.exe` con `console=False` (sin ventana CMD). **Incluye carpeta `js/`** (5 módulos ES importados por `app.js`: config.js, utils.js, toast.js, theme.js, filters.js). CTD eliminado del bundle. **Excluye módulos pesados** (torch, transformers, ct2, easyocr) — se cargan desde `env/` en runtime. **UPX deshabilitado**. .exe resultante: **200MB** (antes 2.6GB). | 3KB |
 | `launcher.py` | Launcher alternativo (subprocess). Usa `env\Scripts\python.exe server.py` como proceso hijo. | 1KB |
 | `env/` | Entorno virtual Python con **todas** las dependencias (EasyOCR, OpenCV, Flask, ArgosTranslate, deep-translator, langdetect, torch). | — |
 
@@ -140,9 +140,15 @@ Errores:      0
 
 ## 4. Estado Actual
 
-**Última actualización**: 2026-07-28
+**Última actualización**: 2026-07-29
 
 ### Cambios acumulados (Julio 2026)
+
+#### Sesión 2026-07-29 — Fix bundle PyInstaller: carpeta js/ faltante (1 fix)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 61 | **Fix bundle PyInstaller: carpeta `js/` faltante**. `app.js` (módulo ES6) importa 5 archivos de `./js/` (config.js, utils.js, toast.js, theme.js, filters.js). `main.spec` no incluía `js/` en DATAS → al ejecutar el .exe, los imports fallaban con 404 → `window.__appJsLoaded` nunca se establecía → `initOpenCv()` nunca se ejecutaba → el badge se quedaba en "Cargando OpenCV..." para **siempre** (ni el safety timeout de 25s podía cambiar el badge porque el módulo nunca cargaba). **Solución**: agregar `(str(PROJECT_ROOT / "js"), "js"),` a DATAS. .exe recompilado: `dist/main.exe` (138MB), `dist/main/_internal/js/` contiene los 5 archivos. Verificado con test_client de Flask: los 5 endpoints `/js/*.js` devuelven 200 OK con Content-Type correcto. Además, se redujo el safety timeout de OpenCV en `index.html` de 25s a **15s** (coincide con `TIMEOUT_OPENCV_INIT_MS` de app.js) para que el badge cambie más rápido si hay un error de carga. | `main.spec`, `index.html` | 🐛 **Fix crítico: "Cargando OpenCV..." infinito en .exe** |
 
 #### Sesión 2026-07-28-v2 — Botón Pausa/Reanudar + Aviso origen==destino (2 features)
 
