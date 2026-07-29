@@ -34,6 +34,9 @@ Desktop.ini
 
 # ─── Debug / Test Output ─────────────────────────
 # Temporary debug files
+build_log.txt
+build_stderr.txt
+build_stdout.txt
 ct2_output.txt
 ct2_result.json
 debug_*.json

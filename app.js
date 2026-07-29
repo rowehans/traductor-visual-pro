@@ -167,7 +167,7 @@ function initOpenCv() {
   // Caso 2: cv existe pero aún no inicializó runtime
   if (window.cv) {
     window.cv['onRuntimeInitialized'] = onOpenCvReady;
-    // ⚠️ Race condition: onRuntimeInitialized ya pudo haberse disparado
+    // Race condition: onRuntimeInitialized ya pudo haberse disparado
     // antes de que asignáramos el callback. Hacemos un check diferido
     // para cubrir ese caso sin esperar el timeout de 15s.
     setTimeout(function cvReadyCheck() {
@@ -187,7 +187,7 @@ function initOpenCv() {
       if (window.cv.Mat) {
         onOpenCvReady();
       } else {
-        // ⚠️ Misma race condition que en Caso 2: onRuntimeInitialized
+        // Misma race condition que en Caso 2: onRuntimeInitialized
         // pudo haberse disparado antes de que asignáramos el callback.
         // Asignamos el callback Y hacemos un check diferido de 100ms.
         window.cv['onRuntimeInitialized'] = onOpenCvReady;
@@ -413,7 +413,7 @@ function checkLanguageWarning() {
   // Si source es auto-detect: aviso suave (no sabemos el idioma real)
   if (src === "auto") {
     const targetName = targetLang.options[targetLang.selectedIndex]?.textContent || targetCode;
-    warnText.innerHTML = `⚠️ <strong>Origen: Detección Automática</strong> — si el texto está en <strong>${targetName}</strong>, <strong>no se traducirá</strong>. Cambia Origen a otro idioma o elige otro Destino.`;
+    warnText.innerHTML = `<strong>Origen: Detección Automática</strong> — si el texto está en <strong>${targetName}</strong>, <strong>no se traducirá</strong>. Cambia Origen a otro idioma o elige otro Destino.`;
     warnEl.classList.remove("hidden");
     warnEl.classList.add("visible");
     return;
@@ -442,7 +442,7 @@ function checkLanguageWarning() {
 
   if (isSame) {
     const targetName = targetLang.options[targetLang.selectedIndex]?.textContent || targetCode;
-    warnText.innerHTML = `⚠️ El idioma de origen incluye <strong>${targetName}</strong> — si el texto está en ese idioma, <strong>no se traducirá</strong>. Cambia el destino a otro idioma.`;
+    warnText.innerHTML = ` El idioma de origen incluye <strong>${targetName}</strong> — si el texto está en ese idioma, <strong>no se traducirá</strong>. Cambia el destino a otro idioma.`;
     warnEl.classList.remove("hidden");
     warnEl.classList.add("visible");
   } else {
@@ -569,7 +569,7 @@ function getPageBoxes(page = state.page) {
 // 2. APERTURA Y CARGA DE ARCHIVOS
 async function openFile(file) {
   //console.log("[openFile] LLAMADO con archivo:", file?.name, file?.type, file?.size);
-  document.title = "🔄 openFile: " + (file?.name || "none");
+  document.title = "openFile: " + (file?.name || "none");
   if (!file) return;
   state.pdf = null;
   state.image = null;
@@ -603,7 +603,7 @@ async function openFile(file) {
       pageNumber.value = "1";
       await renderPage(1);
       showToast(`PDF cargado: ${state.pageCount} páginas`, "success", 3000);
-      document.title = "✅ PDF: " + file.name;
+      document.title = "PDF: " + file.name;
       
       // Auto traducción opcional al cargar - esperar a que renderPage termine
       if ($("#autoTranslateOnLoad")?.checked) {
@@ -623,7 +623,7 @@ async function openFile(file) {
       pageNumber.value = "1";
       await renderImage();
       showToast("Imagen cargada", "success", 3000);
-      document.title = "✅ Imagen: " + file.name;
+      document.title = "Imagen: " + file.name;
       
       // Auto traducción opcional al cargar - esperar a que renderImage termine
       if ($("#autoTranslateOnLoad")?.checked) {
@@ -637,7 +637,7 @@ async function openFile(file) {
     console.error("[openFile] Error stack:", error?.stack);
     showToast(`Error: ${error?.message || error || "Desconocido"}`, "error", 8000);
     setStatus(`Error al abrir archivo: ${error?.message || error || "Desconocido"}`);
-    document.title = "❌ Error: " + (error?.message || error);
+    document.title = "Error: " + (error?.message || error);
   }
 }
 
@@ -1138,7 +1138,7 @@ function showProgress(label, done, total, startedAt) {
       <div style="font-size:11px; margin-bottom:4px; display:flex; justify-content:space-between; align-items:center;">
         <span class="progress-lbl"></span>
         <span class="progress-pct">0%</span>
-        <button class="progress-pause" style="font-size:10px; padding:2px 6px; background:var(--accent); color:white; border:none; border-radius:3px; cursor:pointer; margin-right:4px;">⏸ Pausar</button>
+        <button class="progress-pause" style="font-size:10px; padding:2px 6px; background:var(--accent); color:white; border:none; border-radius:3px; cursor:pointer; margin-right:4px;"> Pausar</button>
         <button class="progress-cancel" style="font-size:10px; padding:2px 6px; background:var(--danger); color:white; border:none; border-radius:3px; cursor:pointer;">Cancelar</button>
       </div>
       <div class="progress-bar-container"><div class="progress-bar-fill"></div></div>
@@ -1160,11 +1160,11 @@ function showProgress(label, done, total, startedAt) {
     // Botón Pausar/Reanudar: toggle sin perder progreso
     progressContainer.querySelector(".progress-pause").addEventListener("click", function() {
       state.translationPaused = !state.translationPaused;
-      this.textContent = state.translationPaused ? "▶ Reanudar" : "⏸ Pausar";
+      this.textContent = state.translationPaused ? "Reanudar" : "Pausar";
       this.style.background = state.translationPaused ? "var(--success, #27ae60)" : "var(--accent)";
-      setStatus(state.translationPaused ? "⏸ Traducción pausada. Haz clic en Reanudar para continuar." : "▶ Reanudando traducción...");
+      setStatus(state.translationPaused ? "Traducción pausada. Haz clic en Reanudar para continuar." : " Reanudando traducción...");
       if (!state.translationPaused) showToast("Reanudando traducción...", "info", 2000);
-      else showToast("⏸ Traducción en pausa", "warning", 2000);
+      else showToast("Traducción en pausa", "warning", 2000);
     });
   }
   
@@ -1205,9 +1205,9 @@ async function serverProcessPage(pageNo = state.page) {
   };
 
   //console.log("[serverProcessPage] Enviando a servidor:", { 
-  //  target: payload.target, 
-  //  source: payload.source, 
-  //  imgSize: imageB64.length 
+  // target: payload.target, 
+  // source: payload.source, 
+  // imgSize: imageB64.length 
   //});
 
   // Fetch con timeout de 120 segundos
@@ -1438,8 +1438,8 @@ function renderBlockList() {
       <div class="block-ocr" title="${escHtml(box.source || '')}">${escHtml(truncate(box.source || '(sin OCR)', 60))}</div>
       <div class="block-translated" title="${escHtml(box.text || '')}">${escHtml(truncate(box.text || '(sin traducción)', 60))}</div>
       <div class="block-actions">
-        <button class="block-edit-btn" data-action="edit">✎ Editar OCR</button>
-        <button class="block-retranslate-btn" data-action="retranslate">⟳ Retraducir</button>
+        <button class="block-edit-btn" data-action="edit">Editar OCR</button>
+        <button class="block-retranslate-btn" data-action="retranslate"> Retraducir</button>
       </div>
       <div class="block-editor">
         <div class="editor-label">Corregir OCR:</div>
@@ -1507,7 +1507,7 @@ function renderBlockList() {
         showToast(`Error: ${err.message}`, "error", 3000);
       } finally {
         btn.disabled = false;
-        btn.textContent = "⟳ Retraducir";
+        btn.textContent = " Retraducir";
       }
     });
 
@@ -1975,10 +1975,10 @@ function pointerUp() {
     // Si se acaba de DIBUJAR una burbuja nueva: NO hacer auto-OCR local (usa Tesseract.js que falla)
     // El flujo correcto es: dibuja burbujas -> "Traducir Página Actual" (servidor)
     // if (wasDrawing && window.Tesseract) {
-    //   const box = getPageBoxes().find(b => b.id === drawnId);
-    //   if (box && box.w > 20 && box.h > 14) {
-    //     setTimeout(() => autoOcrAndTranslateBox(box), 50);
-    //   }
+    // const box = getPageBoxes().find(b => b.id === drawnId);
+    // if (box && box.w > 20 && box.h > 14) {
+    // setTimeout(() => autoOcrAndTranslateBox(box), 50);
+    // }
     // }
     window.removeEventListener("pointermove", pointerMove);
     window.removeEventListener("pointerup", pointerUp);

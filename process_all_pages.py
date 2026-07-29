@@ -5,14 +5,14 @@ servidor simultáneamente. El servidor serializa el OCR internamente con
 semáforo, pero el inpainting/translate puede overlapearse entre requests.
 
 Parametros:
-  --ocr-mode auto|easyocr    Modo OCR (default: easyocr — solo EasyOCR GPU)
-  --workers N                Workers paralelos (default: 3)
-  --prefilter                Limpieza morfologica pre-OCR en todas las paginas
-                             (lineas de escaneo, speckle, margenes). Agrega ~0.2s/pag
+    --ocr-mode auto|easyocr    Modo OCR (default: easyocr — solo EasyOCR GPU)
+    --workers N                Workers paralelos (default: 3)
+    --prefilter                Limpieza morfologica pre-OCR en todas las paginas
+                                (lineas de escaneo, speckle, margenes). Agrega ~0.2s/pag
 
 Tiempo estimado real (128 páginas, 3 workers, benchmark Jul 2026):
-  easyocr: ~15-20 min  ← DEFAULT (EasyOCR GPU ~0.88s/pág, sin fallback)
-  auto:    ~60-75 min  (con fallback CLAHE, mejor cobertura pero mas lento)
+    easyocr: ~15-20 min  ← DEFAULT (EasyOCR GPU ~0.88s/pág, sin fallback)
+    auto:    ~60-75 min  (con fallback CLAHE, mejor cobertura pero mas lento)
 
 Recomendacion: usar --ocr-mode easyocr (default) para velocidad. Usar auto
 solo si hay páginas donde EasyOCR no detecta texto.
@@ -42,8 +42,8 @@ _parser.add_argument(
     action="store_true",
     default=False,
     help="Aplica limpieza morfologica pre-OCR en TODAS las paginas "
-         "(elimina lineas de escaneo, speckle y artefactos de margen). "
-         "Agrega ~0.2s por pagina pero mejora deteccion en escaneos ruidosos"
+            "(elimina lineas de escaneo, speckle y artefactos de margen). "
+            "Agrega ~0.2s por pagina pero mejora deteccion en escaneos ruidosos"
 )
 _args, _ = _parser.parse_known_args()
 OCR_MODE: str = _args.ocr_mode
@@ -146,7 +146,6 @@ def get_next_page(timeout=5):
         _rendered_event.clear()
     return (None, None, 0)
 
-
 # ─── init ────────────────────────────────────────────────────────
 # Verificar servidor (usando sesión HTTP compartida)
 try:
@@ -216,7 +215,7 @@ def procesar_pagina(page_num: int, b64: str | None, render_t: float):
         try:
             resp = _http_session.post(f"{API_URL}/api/process-page",
                 json={'image': b64, 'target': TARGET, 'source': SOURCE,
-                      'ocr_mode': OCR_MODE, 'prefilter': PREFILTER},
+                        'ocr_mode': OCR_MODE, 'prefilter': PREFILTER},
                 timeout=TIMEOUT_PER_PAGE)
             elapsed = time.time() - t0
             break  # exito, salir del bucle de reintentos
@@ -277,8 +276,8 @@ def procesar_pagina(page_num: int, b64: str | None, render_t: float):
             stats["pages_empty"] += 1
 
         status = ("OK" if n_translated == n_blocks and n_blocks > 0 else
-                  "PARCIAL" if n_translated > 0 else
-                  "SIN_TRAD" if n_blocks > 0 else "VACIO")
+                    "PARCIAL" if n_translated > 0 else
+                    "SIN_TRAD" if n_blocks > 0 else "VACIO")
         if attempt > 0:
             status += f"_R{attempt}"
 
@@ -293,8 +292,8 @@ def procesar_pagina(page_num: int, b64: str | None, render_t: float):
         print(line)
 
         results.append({"page": page_num, "status": status, "blocks": n_blocks,
-                         "translated": n_translated, "time": elapsed,
-                         "texts": [{"src": b.get("source",""), "tgt": b.get("translated","")} for b in blocks]})
+                            "translated": n_translated, "time": elapsed,
+                            "texts": [{"src": b.get("source",""), "tgt": b.get("translated","")} for b in blocks]})
         pages_done.add(page_num)
         page_times.append(elapsed)
         _pages_processed_since_checkpoint += 1
@@ -302,7 +301,6 @@ def procesar_pagina(page_num: int, b64: str | None, render_t: float):
         if _pages_processed_since_checkpoint >= CHECKPOINT_EVERY:
             save_checkpoint(build_checkpoint())
             _pages_processed_since_checkpoint = 0
-
 
 # ─── Lanzar render worker + N API workers ───────────────────────
 render_thread = threading.Thread(
@@ -358,13 +356,13 @@ print()
 
 # Resumen visual
 if s['pages_translated'] > 0:
-    print(f"✅ {s['pages_translated']} páginas traducidas correctamente")
+    print(f" {s['pages_translated']} páginas traducidas correctamente")
 if s['pages_with_text'] - s['pages_translated'] > 0:
-    print(f"⚠️  {s['pages_with_text'] - s['pages_translated']} páginas con texto sin traducir")
+    print(f"  {s['pages_with_text'] - s['pages_translated']} páginas con texto sin traducir")
 if s['pages_empty'] > 0:
-    print(f"ℹ️  {s['pages_empty']} páginas sin texto (viñetas/arte)")
+    print(f"ℹ  {s['pages_empty']} páginas sin texto (viñetas/arte)")
 if s['pages_error'] > 0:
-    print(f"❌ {s['pages_error']} páginas con error")
+    print(f" {s['pages_error']} páginas con error")
     failed = [r["page"] for r in results if r["status"] in ("timeout","render_error","conn_error") or str(r["status"]).startswith("http_")]
     if failed:
         print(f"   Páginas con error: {failed}")

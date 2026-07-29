@@ -38,11 +38,9 @@ _lock_progreso = threading.Lock()
 _lock_print = threading.Lock()
 _documento = None  # fitz document compartido (PyMuPDF es thread-safe en get_pixmap)
 
-
 def mostrar(texto):
     marca = datetime.now().strftime("%H:%M:%S")
     print(f"[{marca}] {texto}", flush=True)
-
 
 def esperar_servidor(segundo_tope=60):
     import urllib.request
@@ -59,7 +57,6 @@ def esperar_servidor(segundo_tope=60):
     mostrar("[X] No se pudo conectar al servidor.")
     return False
 
-
 def arrancar_servidor():
     mostrar("[..] Arrancando servidor Flask...")
     entorno = os.environ.copy()
@@ -73,7 +70,6 @@ def arrancar_servidor():
         stderr=subprocess.DEVNULL,
     )
     return proc
-
 
 PALABRAS_INGLES = {
     "the","and","for","are","but","not","you","all","can","had","her","was","one","our","out",
@@ -131,7 +127,6 @@ PALABRAS_INGLES = {
     "scale","shell","web","nest","den","lair","cave","tunnel","mine","shaft","pit","trench",
 }
 
-
 def analizar_bloque(origen, destino, confianza=1.0):
     """Revisa si un bloque traducido tiene problemas.
     confianza: valor 0-1 del OCR (si esta disponible).
@@ -183,7 +178,6 @@ def analizar_bloque(origen, destino, confianza=1.0):
 
     return alertas
 
-
 def _normalizar_palabras(texto):
     """Normaliza contracciones inglesas y signos para comparacion con diccionario."""
     t = texto.lower()
@@ -203,7 +197,6 @@ def _normalizar_palabras(texto):
         t = t.replace(k, v)
     return [p.strip(".,;:!?\"'()[]{}*") for p in t.split() if p.strip(".,;:!?\"'()[]{}*")]
 
-
 def _es_ingles(texto):
     """Verifica si un texto parece ingles real (umbral ajustado + contracciones)."""
     if not texto or len(texto) < 4:
@@ -216,7 +209,6 @@ def _es_ingles(texto):
     if len(palabras) <= 3:
         return encontradas >= 1
     return encontradas >= len(palabras) * 0.25
-
 
 def _es_ocr_basura(texto):
     """Detecta si el texto original es basura generada por OCR."""
@@ -232,20 +224,17 @@ def _es_ocr_basura(texto):
         minus = sum(1 for c in texto if c.islower())
         if mayus > 0 and minus > 0:
             cambios = sum(1 for i in range(1, len(texto))
-                         if texto[i].isalpha() and texto[i-1].isalpha()
-                         and texto[i].isupper() != texto[i-1].isupper())
+                            if texto[i].isalpha() and texto[i-1].isalpha()
+                            and texto[i].isupper() != texto[i-1].isupper())
             if cambios > len(texto) * 0.35:
                 return True
     return False
 
-
 def al_menos_3(texto):
     return texto and len(texto.strip()) >= 3
 
-
 def contar_letras(texto):
     return sum(1 for c in texto if c.isalpha())
-
 
 def pagina_tiene_error(resultado):
     """Determina si una pagina necesita reintento. Solo errores criticos."""
@@ -258,7 +247,6 @@ def pagina_tiene_error(resultado):
         if resultado["cantidad_bloques"] == 0:
             return True
     return False
-
 
 def procesar_pagina(numero_pagina, documento, dpi=DPI_POR_DEFECTO, intento=1):
     """Envía una página al servidor. Si falla, reintenta con mayor dpi."""
@@ -351,7 +339,6 @@ def procesar_pagina(numero_pagina, documento, dpi=DPI_POR_DEFECTO, intento=1):
                 }
             mostrar(f"  -> Reintento {insistir}/{REINTENTOS_POR_FALLO} pag {numero_pagina}")
 
-
 def guardar_progreso(resultados):
     completados = [r for r in resultados if r is not None]
     datos = {
@@ -367,7 +354,6 @@ def guardar_progreso(resultados):
     }
     with open(RUTA_PROGRESO, "w", encoding="utf-8") as f:
         json.dump(datos, f, ensure_ascii=False, indent=2)
-
 
 def generar_reporte(resultados, nombre_pdf):
     completados = [r for r in resultados if r is not None]
@@ -436,7 +422,7 @@ tr:nth-child(even) {{ background:#0f3460; }}
 .tarjeta h2 {{ margin:0; font-size:36px; }}
 .verde {{ color:#28a745; }} .amarillo {{ color:#ffc107; }} .gris {{ color:#6c757d; }} .rojo {{ color:#dc3545; }}
 </style></head><body>
-<h1>📊 Reporte de Traducción</h1>
+<h1> Reporte de Traducción</h1>
 <p>{nombre_pdf} | {len(resultados)} páginas | {IDIOMA_ORIGEN.upper()} → {IDIOMA_DESTINO.upper()}</p>
 <div class="resumen">
     <div class="tarjeta"><h2 class="verde">{total_ok}</h2><p>Correctas</p></div>
@@ -450,7 +436,6 @@ tr:nth-child(even) {{ background:#0f3460; }}
     with open(RUTA_REPORTE, "w", encoding="utf-8") as f:
         f.write(html)
     mostrar(f"[HTML] Reporte: {RUTA_REPORTE}")
-
 
 def ejecutar():
     mostrar("=" * 70)
@@ -536,7 +521,6 @@ def ejecutar():
             mostrar(f"  [X] Pag {r['pagina']:3d} (intento {r.get('intento', 1)}/{len(DPI_REINTENTO)+1}): {resumen}")
     else:
         mostrar("  [OK] Todas las paginas traducidas correctamente.")
-
 
 if __name__ == "__main__":
     ejecutar()

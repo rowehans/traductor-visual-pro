@@ -3,20 +3,20 @@ reprocess_failed.py — Reintenta lo que falló en el batch original.
 
 Cubre DOS tipos de fallo distintos:
 
-  1. FALLOS DE PÁGINA (visibles): status timeout / render_error /
-     conn_error / http_*. Se reprocesa la página completa contra
-     /api/process-page (igual que antes).
+    1. FALLOS DE PÁGINA (visibles): status timeout / render_error /
+        conn_error / http_*. Se reprocesa la página completa contra
+        /api/process-page (igual que antes).
 
-  2. FALLOS DE BLOQUE (silenciosos): bloques donde source == translated
-     dentro de una página que SÍ se marcó como procesada con éxito.
-     Causa raíz: en translator.py, is_lenient permite que frases de
-     <=3 palabras pasen la validación aunque la "traducción" sea
-     idéntica al original — esos bloques nunca se marcan como error
-     y por eso nunca se reintentaban antes de este parche.
-     Se reparan SIN reabrir el PDF: se llama directo a /api/translate
-     con el texto ya extraído, después de purgar la entrada de caché
-     correspondiente (si no se purga, /api/translate devolvería el
-     mismo resultado fallido cacheado).
+    2. FALLOS DE BLOQUE (silenciosos): bloques donde source == translated
+        dentro de una página que SÍ se marcó como procesada con éxito.
+        Causa raíz: en translator.py, is_lenient permite que frases de
+        <=3 palabras pasen la validación aunque la "traducción" sea
+        idéntica al original — esos bloques nunca se marcan como error
+        y por eso nunca se reintentaban antes de este parche.
+        Se reparan SIN reabrir el PDF: se llama directo a /api/translate
+        con el texto ya extraído, después de purgar la entrada de caché
+        correspondiente (si no se purga, /api/translate devolvería el
+        mismo resultado fallido cacheado).
 
 Actualiza resultados_progreso.json al final con ambos tipos de fix.
 """
@@ -83,8 +83,8 @@ def borrar_cache(text: str, src: str, tgt: str) -> bool:
 def pedir_traduccion(text: str) -> str | None:
     try:
         r = requests.post(f"{API_URL}/api/translate",
-                           json={"text": text, "source": SOURCE, "target": TARGET},
-                           timeout=30)
+                            json={"text": text, "source": SOURCE, "target": TARGET},
+                            timeout=30)
         if r.status_code == 200:
             return r.json().get("translatedText")
     except Exception as e:
@@ -94,7 +94,7 @@ def pedir_traduccion(text: str) -> str | None:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--solo-bloques", action="store_true",
-                     help="Omite el reprocesamiento de páginas completas (no requiere el PDF ni fitz/cv2)")
+                        help="Omite el reprocesamiento de páginas completas (no requiere el PDF ni fitz/cv2)")
     args = ap.parse_args()
 
     # ── Load checkpoint ──────────────────────────────────────────
@@ -135,7 +135,7 @@ def main():
     print()
 
     if not failed_pages and not bloques_fallidos:
-        print("No hay nada que reprocesar. ✅")
+        print("No hay nada que reprocesar. ")
         sys.exit(0)
 
     # ── Verify server ────────────────────────────────────────────
@@ -194,10 +194,10 @@ def main():
                         n_blocks = len(blocks)
                         n_translated = sum(1 for b in blocks if b.get("source","") != b.get("translated",""))
                         status = ("OK" if n_translated == n_blocks > 0 else
-                                  "PARCIAL" if n_translated > 0 else
-                                  "SIN_TRAD" if n_blocks > 0 else "VACIO")
+                                    "PARCIAL" if n_translated > 0 else
+                                    "SIN_TRAD" if n_blocks > 0 else "VACIO")
 
-                        print(f"✅ {status} ({elapsed:.1f}s, {n_blocks} bloques, {n_translated} trad)")
+                        print(f" {status} ({elapsed:.1f}s, {n_blocks} bloques, {n_translated} trad)")
 
                         new_entry = {
                             "page": page_num,
@@ -217,12 +217,12 @@ def main():
                             err_msg = err_data.get("error", str(resp.status_code))
                         except Exception:
                             err_msg = f"HTTP {resp.status_code}"
-                        print(f"❌ {err_msg} ({elapsed:.1f}s)")
+                        print(f" {err_msg} ({elapsed:.1f}s)")
 
                 except requests.Timeout:
                     print(f"⏰ Timeout (>{TIMEOUT}s)")
                 except Exception as e:
-                    print(f"💥 Error: {str(e)[:60]}")
+                    print(f" Error: {str(e)[:60]}")
 
                 gc.collect()
                 if i < len(remaining) - 1:
@@ -274,7 +274,7 @@ def main():
                 estado = "MEJORADO"
                 bloques_mejorados += 1
             print(f"  Pág {page:>3} [{'cache borrada' if borrado else 'sin cache':>13}] "
-                  f"{estado:>10}: {src[:35]!r} -> {(nueva or src)[:35]!r}")
+                    f"{estado:>10}: {src[:35]!r} -> {(nueva or src)[:35]!r}")
             bloques_reporte.append((page, src, nueva or src, estado))
 
     # ── Re-count stats from scratch for accuracy ────────────────
@@ -331,24 +331,24 @@ def main():
     print("=" * 60)
     if failed_pages:
         print(f"\n  Páginas fallidas originales: {len(failed_pages)}")
-        print(f"  ✅ Recuperadas: {total_recovered}")
-        print(f"  ❌ Siguen fallando: {len(still_failed_pages)}")
+        print(f"   Recuperadas: {total_recovered}")
+        print(f"   Siguen fallando: {len(still_failed_pages)}")
         print(f"     Páginas: {still_failed_pages if still_failed_pages else 'ninguna'}")
     if bloques_fallidos:
         print(f"\n  Bloques silenciosos detectados: {len(bloques_fallidos)}")
-        print(f"  ✅ Mejorados: {bloques_mejorados}")
-        print(f"  ⚠️  Sin cambio: {len(bloques_fallidos) - bloques_mejorados}")
+        print(f"   Mejorados: {bloques_mejorados}")
+        print(f"    Sin cambio: {len(bloques_fallidos) - bloques_mejorados}")
     print()
     print(f"  Nuevas estadísticas globales:")
     s = updated_cp["stats"]
-    print(f"  ✅ Traducidas correctamente: {s['pages_translated']}")
-    print(f"  ⚠️  Con texto sin traducir:  {s['pages_with_text'] - s['pages_translated']}")
-    print(f"  ℹ️  Vacías (arte):            {s['pages_empty']}")
-    print(f"  ❌ Con error:                 {s['pages_error']}")
-    print(f"  📊 Total bloques:             {s['total_blocks_found']}")
-    print(f"  📊 Traducidos:                {s['total_blocks_translated']}")
+    print(f"   Traducidas correctamente: {s['pages_translated']}")
+    print(f"    Con texto sin traducir:  {s['pages_with_text'] - s['pages_translated']}")
+    print(f"  ℹ  Vacías (arte):            {s['pages_empty']}")
+    print(f"   Con error:                 {s['pages_error']}")
+    print(f"   Total bloques:             {s['total_blocks_found']}")
+    print(f"   Traducidos:                {s['total_blocks_translated']}")
     if s['total_blocks_found'] > 0:
-        print(f"  📊 Tasa traducción:           {s['total_blocks_translated']/s['total_blocks_found']*100:.1f}%")
+        print(f"   Tasa traducción:           {s['total_blocks_translated']/s['total_blocks_found']*100:.1f}%")
     print(f"\n  Checkpoint actualizado: {CHECKPOINT_FILE}")
 
     # ── Reporte en texto plano para pegar a una IA de solo texto ──

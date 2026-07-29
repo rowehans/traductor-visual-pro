@@ -71,7 +71,7 @@
         </div>
         <div id="langWarning" class="lang-warning hidden" role="alert">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          <span id="langWarningText">⚠️ El idioma de origen y destino son el mismo — no se traducirá nada.</span>
+          <span id="langWarningText"> El idioma de origen y destino son el mismo — no se traducirá nada.</span>
         </div>
       </section>
 
@@ -293,7 +293,7 @@
     });
 
     // OpenCV.js — SOLO UNA URL ACTIVA A LA VEZ (evita doble carga WASM)
-    // ⚠️ Promise.any() NO sirve aquí: aunque la primera URL gane, las
+    //Promise.any() NO sirve aquí: aunque la primera URL gane, las
     // promesas perdedoras NO se cancelan y el script se ejecuta igual,
     // causando "BindingError: Cannot register public name 'IntVector' twice".
     // Solución: carga secuencial con IIFE + timeouts.
@@ -409,7 +409,7 @@
         banner.id = 'brave-leo-warning';
         banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#ff6b35;color:#fff;padding:12px 16px;z-index:99999;font-family:system-ui,sans-serif;font-size:14px;line-height:1.4;box-shadow:0 2px 8px rgba(0,0,0,0.2);';
         banner.innerHTML = 
-          '<strong>⚠ Brave Leo/Shields detectado</strong> - El navegador está interceptando imágenes y causando errores.<br>' +
+          '<strong> Brave Leo/Shields detectado</strong> - El navegador está interceptando imágenes y causando errores.<br>' +
           '<button id="dismiss-leo-warning" style="margin-top:8px;padding:6px 12px;background:#fff;color:#ff6b35;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Entendido, continuar</button> ' +
           '<a href="brave://settings/ai" target="_blank" style="color:#fff;text-decoration:underline;margin-left:8px;">Desactivar Leo en brave://settings/ai</a> ' +
           '<a href="brave://settings/shields" target="_blank" style="color:#fff;text-decoration:underline;margin-left:8px;">Desactivar Shields para localhost</a>';

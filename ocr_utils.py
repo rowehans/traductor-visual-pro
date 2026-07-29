@@ -7,6 +7,7 @@ Extraído de server.py. Depende de config.py para patrones de ruido y constantes
 import base64
 import re
 import threading
+import unicodedata
 from typing import Any
 
 import cv2
@@ -25,6 +26,7 @@ _ocr_lock: threading.Lock = threading.Lock()
 # Semaforo para limitar concurrencia OCR: max 1 lectura simultanea
 # porque EasyOCR no es thread-safe y cada reader consume ~1-2GB VRAM/RAM
 _ocr_semaphore: threading.Semaphore = threading.Semaphore(1)
+_rapid_semaphore: threading.Semaphore = threading.Semaphore(1)
 
 
 def _get_ocr_reader(lang: str = "auto") -> Any:
@@ -105,6 +107,127 @@ def _get_ocr_reader(lang: str = "auto") -> Any:
                 print(f"[OCR] Error cargando EasyOCR incluso en CPU: {e2}")
                 return None
     return _ocr_readers[lang_key]
+
+
+# ─── RapidOCR (lazy load with thread safety) ─────────────────────
+# Usa los mismos modelos PP-OCRv4 que PaddleOCR pero via ONNX Runtime,
+# sin el conflicto de PaddlePaddle vs PyTorch.
+_rapid_engine: Any = None
+_rapid_lock: threading.Lock = threading.Lock()
+
+
+def _get_rapid_engine() -> Any:
+    global _rapid_engine
+    if _rapid_engine is not None:
+        return _rapid_engine
+    with _rapid_lock:
+        if _rapid_engine is not None:
+            return _rapid_engine
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            _rapid_engine = RapidOCR()
+            print("[OCR] RapidOCR listo (CPU/ONNX)")
+        except Exception as e:
+            print(f"[OCR] Error cargando RapidOCR: {e}")
+            return None
+    return _rapid_engine
+
+
+def _preprocess_rapid(img_bgr: _Img) -> _Img:
+    """Preprocesamiento optimizado para RapidOCR (pre-filter + enhance)."""
+    filtered = _pre_filter_image(img_bgr)
+    enhanced = _preprocess_enhanced(filtered)
+    return enhanced
+
+
+def _run_rapidocr(img_bgr: _Img) -> list[dict[str, Any]]:
+    """
+    Ejecuta RapidOCR sobre una imagen y retorna bloques en el
+    mismo formato que EasyOCR (x, y, w, h, text, confidence, ...).
+    Adquiere _rapid_semaphore (ONNX Runtime no es thread-safe).
+    """
+    engine = _get_rapid_engine()
+    if engine is None:
+        return []
+    acquired = _rapid_semaphore.acquire(blocking=True, timeout=120)
+    if not acquired:
+        print("[OCR] Timeout adquiriendo semaforo RapidOCR (120s)")
+        return []
+    try:
+        result, _ = engine(img_bgr)
+        blocks: list[dict[str, Any]] = []
+        if result:
+            for r in result:
+                try:
+                    bbox, text, conf = r
+                    text = str(text).strip()
+                    if not text or conf < 0.08:
+                        continue
+                    xs = [p[0] for p in bbox]
+                    ys = [p[1] for p in bbox]
+                    x, y = int(min(xs)), int(min(ys))
+                    w, h = int(max(xs) - x), int(max(ys) - y)
+                    if w < 3 or h < 3:
+                        continue
+                    blocks.append({
+                        "x": x, "y": y, "w": w, "h": h,
+                        "text": text,
+                        "confidence": float(conf),
+                        "fontSize": max(8, int(h * 0.75)),
+                        "textColor": "#000000",
+                    })
+                except (ValueError, IndexError, TypeError):
+                    continue
+        return _group_and_merge_blocks(blocks, img_bgr.shape[0])
+    except Exception as e:
+        print(f"[OCR] Error en RapidOCR: {e}")
+        return []
+    finally:
+        if acquired:
+            _rapid_semaphore.release()
+
+
+def _normalize_text(t: str) -> str:
+    """Normaliza texto para comparacion entre OCRs: lowercase + sin acentos."""
+    t = t.lower().strip()
+    t = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii")
+    return t
+
+
+def _fusionar_blocks(
+    easy_blocks: list[dict[str, Any]],
+    rapid_blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Fusiona bloques de EasyOCR y RapidOCR eliminando duplicados.
+    - Si ambos detectan el mismo texto, usa el de mayor confianza.
+    - Si solo uno detecta un texto, lo conserva.
+    - Compara textos normalizados (lowercase + sin acentos).
+    """
+    if not easy_blocks:
+        return rapid_blocks
+    if not rapid_blocks:
+        return easy_blocks
+
+    easy_by_text: dict[str, dict[str, Any]] = {_normalize_text(b["text"]): b for b in easy_blocks}
+    rapid_by_text: dict[str, dict[str, Any]] = {_normalize_text(b["text"]): b for b in rapid_blocks}
+
+    common = set(easy_by_text.keys()) & set(rapid_by_text.keys())
+    only_easy = set(easy_by_text.keys()) - common
+    only_rapid = set(rapid_by_text.keys()) - common
+
+    result: list[dict[str, Any]] = []
+    for t in common:
+        if easy_by_text[t]["confidence"] >= rapid_by_text[t]["confidence"]:
+            result.append(easy_by_text[t])
+        else:
+            result.append(rapid_by_text[t])
+    for t in only_easy:
+        result.append(easy_by_text[t])
+    for t in only_rapid:
+        result.append(rapid_by_text[t])
+
+    return result
 
 
 # ─── Image base64 conversion ─────────────────────────────────────
@@ -383,50 +506,90 @@ def _detect_and_ocr(
     lang_hint: str = "auto",
     allow_fallback: bool = True,
     prefilter: bool = False,
+    use_hybrid: bool = True,
+    avg_conf_threshold: float = 0.3,
 ) -> list[dict[str, Any]]:
     """
-    OCR con pipeline de 2 niveles:
-    1. EasyOCR directo (rápido, ~1s). Si prefilter=True, aplica limpieza
-       morfológica (_pre_filter_image) ANTES del tier 1 para eliminar
-       líneas de escaneo, speckle y artefactos de margen en TODAS las
-       páginas, no solo como fallback.
-    2. CLAHE+sharpen -> EasyOCR (fallback para texto artístico/decorativo)
+    OCR con pipeline HÍBRIDO de 3 niveles EasyOCR + RapidOCR:
+
+    1. **EasyOCR directo** (GPU, ~1.16s) — rápido para texto normal.
+       Si prefilter=True, aplica limpieza morfológica antes.
+    2. **CLAHE+sharpen -> EasyOCR** (~0.3s extra) — fallback para
+       texto artístico/decorativo que EasyOCR no captura directamente.
+    3. **RapidOCR** (CPU ONNX, ~2.4s) — fallback final usando los
+       mismos modelos PP-OCRv4 que PaddleOCR pero sin conflictos
+       de PaddlePaddle. Se activa solo cuando:
+       - EasyOCR devuelve 0 bloques (todo falló), O
+       - La confianza promedio de EasyOCR es < avg_conf_threshold
+         (texto artístico detectado débilmente)
+
+    Si ambos OCRs devuelven bloques y la confianza de EasyOCR es baja,
+    los resultados se fusionan con _fusionar_blocks(): por cada texto
+    detectado por ambos, se queda con el de mayor confianza.
 
     Args:
-        allow_fallback: Si False, desactiva tier 2 (solo EasyOCR directo)
+        allow_fallback: Si False, solo ejecuta tier 1 (EasyOCR directo).
         prefilter: Si True, aplica _pre_filter_image antes del tier 1.
-                   Limpia ruido de escaneo en todas las páginas (~0.2s extra).
-    NOTA: El tier 3 (binarización adaptativa) fue eliminado en 2026-07-27
-    porque el benchmark demostró que nunca agregaba bloques que EasyOCR
-    directo o CLAHE no hubieran detectado ya. Se ahorra ~0.8s por página.
+        use_hybrid: Si True, activa tier 3 (RapidOCR) como fallback.
+        avg_conf_threshold: Si la confianza promedio de EasyOCR es
+            menor a este valor, se activa el tier hibrido (RapidOCR + fusión).
     """
     reader = _get_ocr_reader(lang_hint)
     if reader is None:
         return []
 
     # ── Pre-filter opcional (antes de tier 1) ────────────────────
-    # Limpia líneas de escaneo, speckle y márgenes en TODAS las páginas,
-    # no solo cuando EasyOCR falla. Agrega ~0.2s por página.
     img_ocr = _pre_filter_image(img_bgr) if prefilter else img_bgr
 
-    # ── Intento 1: EasyOCR directo (sobre imagen pre-filtered o raw) ─
+    # ── Intento 1: EasyOCR directo ───────────────────────────────
     results = _run_ocr_on_image(reader, img_ocr)
     blocks_easy = _ocr_results_to_blocks(results, img_ocr)
+
+    if blocks_easy and use_hybrid:
+        avg_conf = float(np.mean([b.get("confidence", 0) for b in blocks_easy]))
+        print(f"[OCR] EasyOCR: {len(blocks_easy)} bloques (conf={avg_conf:.2f})")
+
+        # Si la confianza es suficiente, devolver EasyOCR directamente
+        if avg_conf >= avg_conf_threshold:
+            return blocks_easy
+
+        # Confianza baja: activar pipeline híbrido RapidOCR
+        print(f"[OCR] Confianza baja ({avg_conf:.2f} < {avg_conf_threshold}). "
+              f"Ejecutando RapidOCR para complementar...")
+        img_rapid = _preprocess_rapid(img_bgr)
+        rapid_blocks = _run_rapidocr(img_rapid)
+
+        if rapid_blocks:
+            merged = _fusionar_blocks(blocks_easy, rapid_blocks)
+            print(f"[OCR] Híbrido EasyOCR+ RapidOCR: {len(merged)} bloques"
+                  f" (Easy={len(blocks_easy)}, Rapid={len(rapid_blocks)})")
+            return merged
+        return blocks_easy
 
     if blocks_easy:
         avg_conf = float(np.mean([b.get("confidence", 0) for b in blocks_easy]))
         print(f"[OCR] EasyOCR: {len(blocks_easy)} bloques (conf={avg_conf:.2f})")
         return blocks_easy
 
+    # ── RapidOCR como fallback cuando use_hybrid=True ────────────
+    # Se ejecuta incluso si allow_fallback=False, porque RapidOCR
+    # es un motor diferente (ONNX), no "fallback de EasyOCR".
+    if use_hybrid:
+        print("[OCR] EasyOCR dio 0 bloques. Probando RapidOCR directamente...")
+        img_rapid = _preprocess_rapid(img_bgr)
+        rapid_blocks = _run_rapidocr(img_rapid)
+        if rapid_blocks:
+            print(f"[OCR] RapidOCR detecto {len(rapid_blocks)} bloques!")
+            return rapid_blocks
+
     if not allow_fallback:
         return []
 
-    # ── Intento 2: Pre-filter + CLAHE + sharpen (si no se hizo prefilter ya) ─
+    # ── Intento 2: Pre-filter + CLAHE + sharpen ──────────────────
     if not prefilter:
         print("[OCR] 0 bloques con EasyOCR. Probando pre-filter + CLAHE+sharpen...")
         img_filtered = _pre_filter_image(img_bgr)
     else:
-        # Si ya se aplicó prefilter, no repetir el paso de filtro
         print("[OCR] 0 bloques con EasyOCR (pre-filter ya aplicado). Probando CLAHE+sharpen...")
         img_filtered = img_ocr
     img_enhanced = _preprocess_enhanced(img_filtered)
@@ -437,7 +600,7 @@ def _detect_and_ocr(
         print(f"[OCR] Pre-filter+CLAHE detecto {len(blocks2)} bloques!")
         return blocks2
 
-    print("[OCR] Todos los fallbacks agotados (tier 3 binarización eliminado)")
+    print("[OCR] Todos los fallbacks agotados")
     return []
 
 

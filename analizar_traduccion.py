@@ -25,14 +25,12 @@ FLAGS = {
     "GARBAGE": lambda s, t: sum(c in "[]`~^<>{}|\\" for c in t) > len(t) * 0.3,
 }
 
-
 def verificar_servidor():
     try:
         r = requests.get(f"{SERVER_URL}/api/health", timeout=5)
         return r.status_code == 200
     except Exception:
         return False
-
 
 def esperar_servidor(timeout=45):
     t0 = time.time()
@@ -43,7 +41,6 @@ def esperar_servidor(timeout=45):
         time.sleep(2)
     return False
 
-
 def analizar_bloque(src: str, tgt: str) -> list[str]:
     """Retorna lista de flags de anomalía para un bloque traducido."""
     alertas = []
@@ -51,7 +48,6 @@ def analizar_bloque(src: str, tgt: str) -> list[str]:
         if fn(src, tgt):
             alertas.append(nombre)
     return alertas
-
 
 def procesar_pagina(pix, page_num: int) -> dict:
     """Envía una página al servidor y retorna resultados."""
@@ -106,7 +102,6 @@ def procesar_pagina(pix, page_num: int) -> dict:
         resultado["salud"] = "ALERTAS"
     return resultado
 
-
 def generar_reporte(resultados: list[dict], pdf_name: str):
     """Imprime reporte y genera HTML."""
     # ── Resumen consola ──
@@ -119,10 +114,10 @@ def generar_reporte(resultados: list[dict], pdf_name: str):
     print(f"RESUMEN — {pdf_name}")
     print("=" * 70)
     print(f"  Páginas analizadas: {len(resultados)}")
-    print(f"  ✅ OK:               {total_ok}")
-    print(f"  ⚠️  Alertas:          {total_alertas}")
-    print(f"  🔇 Sin texto:        {total_sin_texto}")
-    print(f"  ❌ Error HTTP:       {total_error}")
+    print(f"   OK:               {total_ok}")
+    print(f"    Alertas:          {total_alertas}")
+    print(f"   Sin texto:        {total_sin_texto}")
+    print(f"   Error HTTP:       {total_error}")
     print()
 
     # Páginas con problemas
@@ -174,16 +169,15 @@ th {{ background: #333; color: #fff; }}
 tr:nth-child(even) {{ background: #f5f5f5; }}
 </style></head><body>
 <h1>Reporte de Traducción — {pdf_name}</h1>
-<p>Total páginas: {len(resultados)} | ✅ {total_ok} | ⚠️ {total_alertas} | 🔇 {total_sin_texto} | ❌ {total_error}</p>
+<p>Total páginas: {len(resultados)} |  {total_ok} |  {total_alertas} |  {total_sin_texto} |  {total_error}</p>
 <table><thead><tr>
 <th>Pág</th><th>Tiempo</th><th>Bloques</th><th>Salud</th><th>Alertas</th>
 </tr></thead><tbody>{rows}</tbody></table>
 <p><i>Generado por analizar_traduccion.py</i></p>
 </body></html>"""
     html_path.write_text(html, encoding="utf-8")
-    print(f"[📄] Reporte HTML guardado: {html_path}")
+    print(f"[] Reporte HTML guardado: {html_path}")
     return html_path
-
 
 def main():
     pdf = PDF_PATH
@@ -192,11 +186,11 @@ def main():
         print("Copia tu PDF aquí o edita PDF_PATH en el script.")
         return
 
-    print(f"[📂] PDF: {pdf} ({pdf.stat().st_size // 1024 // 1024} MB)")
+    print(f"[] PDF: {pdf} ({pdf.stat().st_size // 1024 // 1024} MB)")
     doc = fitz.open(str(pdf))
     total = doc.page_count
     a_analizar = min(total, MAX_PAGES) if MAX_PAGES else total
-    print(f"[📄] Páginas totales: {total}, a analizar: {a_analizar}")
+    print(f"[] Páginas totales: {total}, a analizar: {a_analizar}")
 
     if not esperar_servidor():
         print("[ERROR] No se pudo conectar al servidor. ¿Está corriendo Flask?")
@@ -215,10 +209,10 @@ def main():
         try:
             res = procesar_pagina(pix, idx + 1)
             resultados.append(res)
-            icono = {"OK": "✅", "ALERTAS": "⚠️", "SIN_TEXTO": "🔇", "ERROR_HTTP": "❌"}.get(res["salud"], "?")
+            icono = {"OK": "", "ALERTAS": "", "SIN_TEXTO": "", "ERROR_HTTP": ""}.get(res["salud"], "?")
             print(f"{icono} {res['salud']} ({res['total_bloques']} bloques, {res['tiempo']:.1f}s)")
         except Exception as e:
-            print(f"❌ Error: {e}")
+            print(f" Error: {e}")
             resultados.append({"pagina": idx + 1, "salud": "ERROR_HTTP", "errores": [str(e)], "tiempo": time.time() - t_pag, "total_bloques": 0, "bloques": []})
 
         # Progreso estimado
@@ -235,7 +229,7 @@ def main():
     reporte = generar_reporte(resultados, pdf.name)
     total_t = time.time() - t_inicio
     print(f"[⏱] Tiempo total: {total_t:.0f}s ({total_t/60:.1f} min)")
-    print(f"[📊] Reporte: {reporte}")
+    print(f"[] Reporte: {reporte}")
     print()
     print("PÁGINAS CON TRADUCCIÓN DEFICIENTE (prioritarias):")
     malas = sorted(
@@ -243,10 +237,9 @@ def main():
         key=lambda x: -len(x.get("errores", [])),
     )
     for r in malas[:10]:
-        print(f"  🔴 Pág {r['pagina']}: {', '.join(set(r.get('errores', [])))}")
+        print(f"   Pág {r['pagina']}: {', '.join(set(r.get('errores', [])))}")
     if not malas:
-        print("  ✅ Ninguna — todas las páginas traducidas correctamente.")
-
+        print("   Ninguna — todas las páginas traducidas correctamente.")
 
 if __name__ == "__main__":
     main()

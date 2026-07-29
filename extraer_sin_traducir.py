@@ -17,7 +17,6 @@ import sys
 from collections import defaultdict
 from typing import DefaultDict, Optional
 
-
 # ─── Categorías de error ─────────────────────────────────────────
 # Cada categoría tiene: nombre, regex, y extracción de contexto
 Category = tuple[str, re.Pattern[str], Optional[re.Pattern[str]]]
@@ -131,7 +130,6 @@ CATEGORIES: list[Category] = [
     ),
 ]
 
-
 def gather_log_files(args: list[str]) -> list[str]:
     """Recolecta archivos .log. Si no se pasan argumentos, busca *.log en cwd."""
     if args:
@@ -139,9 +137,8 @@ def gather_log_files(args: list[str]) -> list[str]:
     import glob
     return sorted(glob.glob("*.log"))
 
-
 def classify_line(line: str, lineno: int, filename: str
-                  ) -> Optional[tuple[str, str, str]]:
+                    ) -> Optional[tuple[str, str, str]]:
     """
     Clasifica una línea del log.
     Retorna (categoria, line_text, context) o None si no coincide.
@@ -157,9 +154,8 @@ def classify_line(line: str, lineno: int, filename: str
             return (cat_name, line_stripped, ctx)
     return None
 
-
 def extract_text_before_translate(lines: list[str], idx: int, max_lookback: int = 30
-                                  ) -> str:
+                                    ) -> str:
     """
     Busca hacia atrás el texto que se estaba traduciendo.
     Busca 'text=...' en líneas previas.
@@ -169,7 +165,6 @@ def extract_text_before_translate(lines: list[str], idx: int, max_lookback: int 
         if m:
             return m.group(1)
     return ""
-
 
 def build_report(log_files: list[str]) -> str:
     """Procesa archivos de log y genera un reporte estructurado."""
@@ -217,7 +212,7 @@ def build_report(log_files: list[str]) -> str:
     for cat_name, entries in sorted_cats:
         unique_files = sorted(set(e[0] for e in entries))
         lines_out.append(f"{'─' * 60}")
-        lines_out.append(f"  📁 {cat_name}  ({len(entries)} ocurrencias)")
+        lines_out.append(f"   {cat_name}  ({len(entries)} ocurrencias)")
         lines_out.append(f"     Archivos: {', '.join(unique_files)}")
         lines_out.append("")
 
@@ -281,7 +276,6 @@ def build_report(log_files: list[str]) -> str:
 
     return "\n".join(lines_out)
 
-
 def main() -> None:
     log_files = gather_log_files(sys.argv[1:])
     report = build_report(log_files)
@@ -295,7 +289,6 @@ def main() -> None:
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
     print(f"\nReporte guardado en: {report_path}")
-
 
 if __name__ == "__main__":
     main()
