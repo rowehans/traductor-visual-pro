@@ -103,20 +103,42 @@ def _fix_cwd() -> None:
         if hasattr(sys, "_MEIPASS"):
             sys.path.insert(0, sys._MEIPASS)
 
-        # Buscar env/ subiendo directorios desde exe_dir
+        # Estrategia 1: Buscar env/ subiendo directorios desde exe_dir
+        # (cuando el .exe está dentro de la carpeta del proyecto)
+        def _try_env_paths(paths_to_try):
+            for candidate in paths_to_try:
+                full = os.path.join(candidate, "env", "Lib", "site-packages")
+                if os.path.exists(full):
+                    if full not in sys.path:
+                        sys.path.append(full)
+                        print(f"[cwd] Enlazado env desde: {full}")
+                    return True
+            return False
+
+        # Intentar subiendo desde el exe
+        found = False
         current = exe_dir
-        for _ in range(10):  # Máximo 10 niveles hacia arriba
-            candidate = os.path.join(current, "env", "Lib", "site-packages")
-            if os.path.exists(candidate):
-                if candidate not in sys.path:
-                    sys.path.append(candidate)
-                    print(f"[cwd] Enlazado env desde: {candidate}")
-                return
+        for _ in range(10):
+            if _try_env_paths([current]):
+                found = True
+                break
             parent = os.path.dirname(current)
-            if parent == current:  # Llegamos a la raíz del disco
+            if parent == current:
                 break
             current = parent
-        print(f"[cwd] env no encontrado. exe_dir={exe_dir}")
+
+        # Estrategia 2: Probar ubicaciones fijas conocidas del proyecto
+        if not found:
+            known_locations = [
+                r"D:\crear traductor",
+                os.path.join(exe_dir, "..", "crear traductor"),
+                os.path.abspath(os.path.join(exe_dir, "..", "..", "crear traductor")),
+            ]
+            if _try_env_paths(known_locations):
+                found = True
+
+        if not found:
+            print(f"[cwd] env no encontrado. exe_dir={exe_dir}")
 
 
 def _hide_console() -> None:

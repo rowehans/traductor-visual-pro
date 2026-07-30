@@ -194,6 +194,19 @@ _SPA_WORDS: set[str] = {
     "me", "se", "lo", "le", "te", "al", "del", "tú", "yo", "criar", "villano", "villanos", "correcto",
     "correctamente", "ayudan", "administrar", "subimos", "oficial", "visitas", "hacer", "hola",
     "gracias", "capitulo", "capítulo", "temporada",
+    "realmente", "increible", "increíble", "increiblemente", "nunca", "siempre",
+    "sino", "tambien", "también", "ahora", "entonces", "cada", "aunque",
+    "algo", "alguien", "nada", "nadie", "quizas", "quizás", "talvez", "tal vez",
+    "mismo", "misma", "propio", "propia", "gran", "grande", "mejor", "peor",
+    "otro", "otra", "otros", "otras", "poco", "poca", "unos", "unas",
+    "bueno", "buena", "malo", "mala", "primero", "primera", "ultimo", "último",
+    "solo", "sólo", "aun", "aún", "sobre", "bajo", "contra", "entre",
+    "ante", "segun", "según", "mediante", "durante", "despues", "después",
+    "antes", "luego", "pronto", "tarde", "temprano", "siempre",
+    "nuestro", "nuestra", "vuestro", "vuestra", "aquel", "aquella",
+    "esto", "eso", "aquello", "ese", "esa", "esos", "esas",
+    "donde", "dónde", "cuando", "cuándo", "como", "cual", "cuál",
+    "quien", "quién", "cuanto", "cuánto", "cuan", "cuán",
 }
 
 # Sufijos verbales enclíticos españoles
@@ -228,6 +241,8 @@ def _detect_language_simple(text: str) -> str:
         w_clean = w.strip()
         if any(w_clean.endswith(suf) for suf in _SPA_VERB_SUFFIXES):
             return "es" if len(w_clean) > 2 else "en"
+        if w_clean.endswith("mente") and len(w_clean) > 6:
+            return "es"
     return "en"
 
 
@@ -267,6 +282,12 @@ def _detect_language_robust(text: str) -> str:
                 return simple
             if len(text.split()) < 4 and lang == "en" and simple == "es":
                 print(f"[langdetect] '{text[:50]}' -> {lang}, sobrescrito a {simple} (heurística corta)")
+                return simple
+            if lang in ("pt", "fr", "it", "de") and simple == "es":
+                print(f"[langdetect] '{text[:50]}' -> {lang}, sobrescrito a {simple} (SPA_WORDS match)")
+                return simple
+            if "zh" in lang and simple == "es":
+                print(f"[langdetect] '{text[:50]}' -> {lang}, sobrescrito a {simple} (sin CJK real, SPA_WORDS match)")
                 return simple
             return "zh" if "zh" in lang else lang
     except Exception as e:

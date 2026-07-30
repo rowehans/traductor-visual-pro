@@ -1093,10 +1093,11 @@ function makeAutoTextBox(block, translated = "", serverData = null) {
     strokeC = "#000000";
     strokeW = 2;
     fillOpacityResult = 0;
-    // Glow blanco: crea un halo legible sobre parches oscuros de inpainting
+    // Glow blanco intensificado (blur=14): crea halo legible incluso sobre
+    // parches muy oscuros de inpainting en portadas y fondos complejos.
     glowToggle.checked = true;
     glowColorResult = "#ffffff";
-    glowBlurResult = 8;
+    glowBlurResult = 14;
   } else {
     // ── Modo local (sin servidor): muestrear colores del canvas original ──
     textCol = sampleTextColor(block);
@@ -1146,16 +1147,25 @@ function showProgress(label, done, total, startedAt) {
     progressContainer = document.createElement("div");
     progressContainer.className = "progress-info";
     progressContainer.innerHTML = `
-      <div style="font-size:11px; margin-bottom:4px; display:flex; justify-content:space-between; align-items:center;">
+      <div class="progress-header">
         <span class="progress-lbl"></span>
         <span class="progress-pct">0%</span>
-        <button class="progress-pause" style="font-size:10px; padding:2px 6px; background:var(--accent); color:white; border:none; border-radius:3px; cursor:pointer; margin-right:4px;"> Pausar</button>
-        <button class="progress-cancel" style="font-size:10px; padding:2px 6px; background:var(--danger); color:white; border:none; border-radius:3px; cursor:pointer;">Cancelar</button>
+        <span class="progress-btns">
+          <button class="progress-pause">Pausar</button>
+          <button class="progress-cancel">Cancelar</button>
+        </span>
       </div>
       <div class="progress-bar-container"><div class="progress-bar-fill"></div></div>
-      <div class="progress-eta" style="font-size:10px; color:var(--text-secondary); margin-top:4px;"></div>
+      <div class="progress-eta"></div>
     `;
-    $(".auto-controls").appendChild(progressContainer);
+    
+    // Intentar insertar en .auto-controls, si falla usar sidebar
+    const target = $(".auto-controls") || document.querySelector(".sidebar");
+    if (target) {
+      target.appendChild(progressContainer);
+    } else {
+      document.body.appendChild(progressContainer);
+    }
     
     // Botón Cancelar: aborta y limpia
     progressContainer.querySelector(".progress-cancel").addEventListener("click", () => {
@@ -1171,23 +1181,36 @@ function showProgress(label, done, total, startedAt) {
     // Botón Pausar/Reanudar: toggle sin perder progreso
     progressContainer.querySelector(".progress-pause").addEventListener("click", function() {
       state.translationPaused = !state.translationPaused;
-      this.textContent = state.translationPaused ? "Reanudar" : "Pausar";
-      this.style.background = state.translationPaused ? "var(--success, #27ae60)" : "var(--accent)";
-      setStatus(state.translationPaused ? "Traducción pausada. Haz clic en Reanudar para continuar." : " Reanudando traducción...");
-      if (!state.translationPaused) showToast("Reanudando traducción...", "info", 2000);
-      else showToast("Traducción en pausa", "warning", 2000);
+      const isPaused = state.translationPaused;
+      this.textContent = isPaused ? "Reanudar" : "Pausar";
+      this.style.background = isPaused ? "var(--success, #27ae60)" : "";
+      this.style.border = isPaused ? "1px solid var(--success, #27ae60)" : "";
+      setStatus(isPaused ? "Traducción pausada. Haz clic en Reanudar para continuar." : "Reanudando traducción...");
+      showToast(isPaused ? "Traducción en pausa" : "Reanudando traducción...", isPaused ? "warning" : "info", 2000);
     });
   }
   
   const percent = total > 0 ? Math.round((done / total) * 100) : 0;
-  progressContainer.querySelector(".progress-lbl").textContent = label;
-  progressContainer.querySelector(".progress-pct").textContent = `${percent}% (${done}/${total})`;
-  progressContainer.querySelector(".progress-bar-fill").style.width = `${percent}%`;
+  const lbl = progressContainer.querySelector(".progress-lbl");
+  const pct = progressContainer.querySelector(".progress-pct");
+  const bar = progressContainer.querySelector(".progress-bar-fill");
+  const eta = progressContainer.querySelector(".progress-eta");
   
-  const elapsed = Date.now() - startedAt;
-  const eta = done > 0 ? Math.max(0, Math.round((elapsed / done) * (total - done))) : 0;
-  const etaText = done > 0 ? `ETA: aprox. ${formatDuration(eta)}` : "Calculando tiempo...";
-  progressContainer.querySelector(".progress-eta").textContent = done === total ? "¡Completado!" : etaText;
+  if (lbl) lbl.textContent = label;
+  if (pct) pct.textContent = `${percent}% (${done}/${total})`;
+  if (bar) bar.style.width = `${percent}%`;
+  
+  // Mostrar ETA si hay progreso
+  if (startedAt && done > 0 && eta) {
+    const elapsed = Date.now() - startedAt;
+    const etaMs = done > 0 ? (elapsed / done) * (total - done) : 0;
+    const etaText = done === total
+      ? "¡Completado!"
+      : (etaMs > 1000
+        ? `ETA: ${Math.round(etaMs / 60000)}m ${Math.round((etaMs % 60000) / 1000)}s`
+        : `ETA: ${Math.round(etaMs / 1000)}s`);
+    eta.textContent = etaText;
+  }
   
   if (done === total) {
     setTimeout(() => {
@@ -1229,10 +1252,14 @@ async function serverProcessPage(pageNo = state.page) {
   const imageB64 = canvasToBase64(pageCanvas);
   console.log(`[serverProcessPage] imageB64 length=${imageB64?.length || 0}, starts=${imageB64?.substring(0, 30)}`);
 
+  let srcPage = sourceLang.value || "auto";
+  if (srcPage.includes("+")) {
+    srcPage = "auto";
+  }
   const payload = {
     image: imageB64,
     target: targetLang.value,
-    source: sourceLang.value || "auto",
+    source: srcPage,
     ocr_mode: "auto",
   };
 
@@ -1619,11 +1646,18 @@ function drawTextOnCanvas(ctx, text, box, layout) {
 
   // ── Centrado vertical ─────────────────────────────────────────
   const totalTextHeight = layout.lines.length * layout.lineHeight;
-  const startY = box.y + Math.max(0, (box.h - totalTextHeight) / 2);
-
-  // ── Relleno semitransparente de fondo (detrás de cada línea) ──
+  const startY = box.y + Math.max(0, (box.h - totalTextHeight) / 2);    // ── Relleno semitransparente de fondo (detrás de cada línea) ──
   // Usa startY para alinearse con el centrado vertical del texto.
-  const hasBgFill = box.fillOpacity > 0 && box.bg && box.bg !== "transparent";
+  // Para bloques server-inpainted (_serverInpainted), forzamos un fondo
+  // semitransparente oscuro (30%) aunque fillOpacity sea 0, garantizando
+  // que el texto blanco (#ffffff) + contorno negro (#000000) sean legibles
+  // sobre los parches impredecibles de OpenCV TELEA.
+  let hasBgFill = box.fillOpacity > 0 && box.bg && box.bg !== "transparent";    if (!hasBgFill && box._serverInpainted) {
+    // Forzar fondo oscuro 45% para bloques inpainted por el servidor.
+    // Aumentado de 30% a 45% para mejorar legibilidad sobre parches
+    // de inpainting especialmente oscuros (portadas, fondos complejos).
+    hasBgFill = true;
+  }
   const hasGlow = box.glowColor && box.glowColor !== "transparent" && box.glowBlur > 0;
 
   // ── Dibujar cada línea centrada horizontalmente ───────────────
@@ -1636,8 +1670,10 @@ function drawTextOnCanvas(ctx, text, box, layout) {
     // 1. Relleno semitransparente por línea (pill-shaped background)
     if (hasBgFill) {
       const pad = Math.max(2, layout.fontSize * 0.12);
-      ctx.globalAlpha = box.fillOpacity;
-      ctx.fillStyle = box.bg;
+      const alpha = box._serverInpainted ? 0.45 : box.fillOpacity;
+      const fill = box._serverInpainted ? "#111111" : box.bg;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = fill;
       ctx.fillRect(lineX - pad, lineY - pad, textWidth + pad * 2, layout.lineHeight + pad * 2);
       ctx.globalAlpha = 1.0;
     }
@@ -2082,7 +2118,7 @@ async function eraseWithInpainting(canvas, boxes) {
         
         const p1 = new cv.Point(x, y), p2 = new cv.Point(x + w, y + h), sc = new cv.Scalar(255);
         cv.rectangle(mask, p1, p2, sc, -1);
-        [p1, p2].forEach(o => o.delete());
+        [p1, p2, sc].forEach(function(o) { try { if (o && typeof o.delete === 'function') o.delete(); } catch(e) {} });
       }
     }
 

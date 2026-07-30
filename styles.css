@@ -889,21 +889,108 @@ button svg { flex-shrink: 0; }
 /* =============================================================================
    BARRA DE PROGRESO MEJORADA
    ============================================================================= */
-.progress-pause {
+
+/* Contenedor principal del progreso — visible con glassmorphism */
+.progress-info {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  margin-top: 8px;
+  box-shadow: var(--shadow-md), var(--shadow-inner);
+  animation: slideDown 0.35s ease-out;
+  position: relative;
+  z-index: 10;
+}
+
+.progress-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.progress-btns {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.progress-info .progress-lbl {
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress-info .progress-pct {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  margin: 0 8px;
+  min-width: 50px;
+  text-align: right;
+}
+
+.progress-info .progress-bar-container {
+  margin-top: 6px;
+}
+
+.progress-info .progress-eta {
   font-size: 10px;
-  padding: 2px 6px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  text-align: right;
+}
+
+/* Botón Pausar/Reanudar */
+.progress-pause {
+  font-size: 11px;
+  padding: 6px 14px;
   background: var(--accent);
   color: white;
   border: none;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   cursor: pointer;
-  transition: background 0.2s, transform 0.15s;
-  margin-right: 4px;
+  font-weight: 700;
+  font-family: inherit;
+  transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+  white-space: nowrap;
 }
 .progress-pause:hover {
   filter: brightness(1.15);
   transform: scale(1.05);
-}.progress-pause:active {
+  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.45);
+}
+.progress-pause:active {
+  transform: scale(0.95);
+}
+
+/* Botón Cancelar */
+.progress-cancel {
+  font-size: 11px;
+  padding: 6px 14px;
+  background: var(--danger);
+  color: white;
+  border: none;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  font-weight: 700;
+  font-family: inherit;
+  transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+  white-space: nowrap;
+}
+.progress-cancel:hover {
+  filter: brightness(1.15);
+  transform: scale(1.05);
+  box-shadow: 0 4px 16px rgba(239, 68, 68, 0.45);
+}
+.progress-cancel:active {
   transform: scale(0.95);
 }
 

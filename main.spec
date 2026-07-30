@@ -73,6 +73,9 @@ HIDDEN_IMPORTS = [
     "urllib3",
     "psutil",
     "tqdm",
+    # Stdlib module that PyInstaller may miss — pickletools es requerido por EasyOCR
+    # pero PyInstaller no lo detecta automaticamente porque se importa dinamicamente.
+    "pickletools",
 ]
 
 # ─── Excludes (reducir tamaño) ──────────────────────────

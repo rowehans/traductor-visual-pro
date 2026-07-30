@@ -13,8 +13,33 @@ from typing import Final
 
 
 # ─── Paths (compatible with PyInstaller frozen mode) ──────────────
+# En modo frozen (.exe), ROOT debe apuntar al DIRECTORIO DEL PROYECTO
+# (donde esta env/) para que EasyOCR, CT2 y otros modulos encuentren
+# sus modelos descargados. _MEIPASS es un dir temporal de solo lectura
+# dentro del .exe donde NO se pueden descargar modelos.
+# Buscamos el proyecto real subiendo desde el .exe hacia donde esta env/.
 if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-    ROOT: Path = Path(sys._MEIPASS)
+    _exe_dir = os.path.dirname(sys.executable)
+    _found = False
+    _current = _exe_dir
+    for _ in range(10):
+        if os.path.isdir(os.path.join(_current, 'env')):
+            ROOT = Path(_current)
+            _found = True
+            break
+        _parent = os.path.dirname(_current)
+        if _parent == _current:
+            break
+        _current = _parent
+    if not _found:
+        # Fallback: ubicaciones conocidas
+        for _loc in [r'D:\crear traductor']:
+            if os.path.isdir(os.path.join(_loc, 'env')):
+                ROOT = Path(_loc)
+                _found = True
+                break
+    if not _found:
+        ROOT = Path(_exe_dir)
 else:
     ROOT = Path(__file__).resolve().parent
 DIST: Final[Path] = ROOT / "dist"
