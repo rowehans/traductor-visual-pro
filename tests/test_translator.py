@@ -222,39 +222,30 @@ class TestPostProcessTranslation:
         result = _post_process_translation("hello world", "es", "en")
         assert result.startswith("Hello world")
 
-    def test_preserves_sfx(self):
-        result = _post_process_translation("BANG!", "es", "en")
-        assert result == "BANG!"
-
-    def test_adds_ellipsis_to_short_dialogue(self):
-        result = _post_process_translation("Hello there", "es", "en")
-        assert result == "Hello there..."
-
-    def test_adds_period_to_long_sentences(self):
-        text = "This is a very long sentence that has more than eight words in total here"
-        result = _post_process_translation(text, "es", "en")
-        assert result.endswith(".")
-
     def test_normalizes_spaces(self):
         result = _post_process_translation("hello    world", "es", "en")
         assert "  " not in result
+
+    def test_capitalizes_first_letter(self):
+        result = _post_process_translation("hello world", "es", "en")
+        assert result == "Hello world"
 
     def test_handles_empty_text(self):
         assert _post_process_translation("", "es", "en") == ""
         assert _post_process_translation(None, "es", "en") is None
 
-    def test_doesnt_add_punctuation_to_single_caps_word(self):
-        # Ej: nombre propio "SEOLLANG" en mayúsculas
+    def test_preserves_sfx(self):
+        result = _post_process_translation("BANG!", "es", "en")
+        assert result == "BANG!"
+
+    def test_preserves_existing_caps(self):
+        # Nombres en mayúsculas sostenidas no se modifican
         result = _post_process_translation("SEOLLANG", "es", "en")
         assert result == "SEOLLANG"
 
-    def test_target_language_spanish(self):
-        result = _post_process_translation("hello", "en", "es")
-        assert "..." in result or result == "hello..."
-
     def test_preserves_existing_punctuation(self):
         result = _post_process_translation("Hello!", "es", "en")
-        assert result.rstrip(".") == "Hello!"
+        assert result == "Hello!"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -439,8 +430,10 @@ class TestEsTraduccionValida:
     def test_same_text_invalid_when_not_lenient(self):
         assert _es_traduccion_valida("hello", "hello") is False
 
-    def test_same_text_valid_when_lenient(self):
-        assert _es_traduccion_valida("hello", "hello", lenient=True) is True
+    def test_lenient_accepts_similar_short_text(self):
+        # El modo lenient acepta texto corto que difiere del original
+        # (no relaja la validación de texto IDÉNTICO — ese siempre es rechazado)
+        assert _es_traduccion_valida("hello", "Hi there", lenient=True) is True
 
     def test_repeated_chunk_invalid(self):
         assert _es_traduccion_valida("test", "mainstremainstre") is False
@@ -496,12 +489,13 @@ def translate_mocks(mocker):
     Retorna un dict con los mocks clave para que cada test
     pueda sobreescribir valores específicos.
 
-    Por defecto:
+    Por defecto (pipeline secuencial CT2->Google->SIN_TRAD):
     - No es SFX, no es OCR noise
     - Idioma: español
     - Glosario: passthrough
-    - Executor mockeado con un solo future que retorna ("ctranslate2", "translated")
-    - sleep mockeado para evitar backoff real de 50s
+    - CT2 devuelve "translated" (éxito rápido)
+    - Google no se usa
+    - sleep mockeado
     - Traducción válida
     """
     mocks = {}
@@ -514,30 +508,17 @@ def translate_mocks(mocker):
     mocks["detect_lang"] = mocker.patch(
         "translator._detect_language_robust", return_value="es"
     )
-    mocks["ocr_noise"] = mocker.patch(
-        "translator._es_ocr_noise", return_value=False
-    )
     mocks["sleep"] = mocker.patch(
         "translator.time.sleep", return_value=None
     )
 
-    # ── Mock del executor + future ────────────────────────────
-    mock_future = mocker.MagicMock()
-    mock_future.result.return_value = ("ctranslate2", "translated")
-    mocks["future"] = mock_future
-
-    mock_executor = mocker.MagicMock()
-    mock_executor.submit.return_value = mock_future
-    mocks["executor"] = mock_executor
-
-    def _as_completed(fut_map, timeout=None):
-        yield mock_future
-
-    mocks["as_completed"] = mocker.patch(
-        "translator.concurrent.futures.as_completed", _as_completed
+    # ── Mock del pipeline secuencial: CT2 → Google → SIN_TRAD ─
+    # Por defecto: CT2 tiene éxito rápido
+    mocks["ct2"] = mocker.patch(
+        "translator._translate_ctranslate2", return_value="translated"
     )
-    mocks["get_executor"] = mocker.patch(
-        "translator._get_translate_engine_executor", return_value=mock_executor
+    mocks["google"] = mocker.patch(
+        "translator._translate_google", return_value=None
     )
 
     # ── Post-procesamiento: passthrough ──────────────────────
@@ -546,11 +527,6 @@ def translate_mocks(mocker):
     )
     mocks["valida"] = mocker.patch(
         "translator._es_traduccion_valida", return_value=True
-    )
-
-    # Google Translate mockeado por defecto (se sobreescribe si se necesita)
-    mocks["google"] = mocker.patch(
-        "translator._translate_google", return_value=None
     )
 
     return mocks
@@ -575,20 +551,20 @@ class TestTranslateOne:
         assert result is not None
         assert result != ""
 
-    def test_ocr_noise_skips_argos(self, translate_mocks):
-        """Texto con ruido OCR debe saltarse Argos y usar solo CT2+Google.
-        El fixture mockea _es_ocr_noise → False por defecto; lo sobreescribimos."""
-        translate_mocks["ocr_noise"].return_value = True  # activar OCR noise
-        translate_mocks["future"].result.return_value = ("ctranslate2", "noise result")
+    def test_ocr_noise_still_translated_by_ct2(self, translate_mocks):
+        """Texto con ruido OCR debe traducirse via CT2 (no se salta traduccion).
+        En el pipeline secuencial, CT2 procesa todo texto que no sea SFX."""
+        translate_mocks["ct2"].return_value = "noise translated"
 
         result = _translate_one("Q7%zn2", "es", "en")
         assert result is not None
 
     def test_sin_trad_fallback_returns_original(self, translate_mocks):
-        """Cuando todos los motores fallan, debe devolver el texto original (SIN_TRAD)."""
-        # Todos los motores devuelven None
-        translate_mocks["future"].result.return_value = ("ctranslate2", None)
-        translate_mocks["valida"].return_value = False  # nada pasa validación
+        """Cuando CT2 y Google fallan, debe devolver el texto original (SIN_TRAD)."""
+        # CT2 devuelve None (falla)
+        translate_mocks["ct2"].return_value = None
+        # Google devuelve None (falla)
+        translate_mocks["google"].return_value = None
 
         result = _translate_one("Texto original", "es", "en")
         assert result == "Texto original"

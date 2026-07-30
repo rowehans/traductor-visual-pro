@@ -11,7 +11,7 @@ from flask import Flask, jsonify, send_from_directory, abort
 # Force UTF-8 on Windows stdout
 if sys.platform == "win32":
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
     except Exception:  # nosec
         pass
 

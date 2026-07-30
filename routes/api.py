@@ -18,6 +18,7 @@ from typing import Any
 import cv2
 import numpy as np
 import psutil
+import threading
 from flask import Blueprint, Response, jsonify, request
 from numpy.typing import NDArray
 _Img = np.ndarray  # type: ignore[type-arg]
@@ -45,6 +46,55 @@ _LANG_CODES: frozenset[str] = frozenset({
     "ja", "ko", "zh", "zh-cn", "zh-tw",
     "auto",
 })
+
+
+# ════════════════════════════════════════════════════════════════
+# WATCHDOG ANTI-ZOMBIE
+# ════════════════════════════════════════════════════════════════
+# Detecta cuando el servidor responde sospechosamente rápido con 0 bloques,
+# lo que indica un proceso zombie con estado corrupto (como en el bug donde
+# el servidor PID 7140 devolvía 0 bloques en 0.1s porque EasyOCR no se
+# había cargado correctamente).
+#
+# Criterio: OCR en <2s con 0 bloques = sospechoso (una página real siempre
+# tarda >2s aunque esté vacía, por la carga de EasyOCR + procesamiento).
+# Tras N detecciones consecutivas, se marca como zombie.
+
+_ZOMBIE_THRESHOLD: int = 3                 # N detecciones consecutivas = zombie
+_ZOMBIE_COUNTER: int = 0                    # Contador actual
+_ZOMBIE_FAST_TIME: float = 2.0              # Tiempo máximo considerado "sospechoso"
+_ZOMBIE_LOCK: threading.Lock = threading.Lock()
+
+
+def _is_zombie() -> bool:
+    """Retorna True si el servidor está en estado zombie."""
+    with _ZOMBIE_LOCK:
+        return _ZOMBIE_COUNTER >= _ZOMBIE_THRESHOLD
+
+
+def _reset_zombie_counter() -> None:
+    """Resetea el contador (llamado tras una respuesta exitosa)."""
+    global _ZOMBIE_COUNTER
+    with _ZOMBIE_LOCK:
+        if _ZOMBIE_COUNTER > 0:
+            _ZOMBIE_COUNTER = 0
+            print("[watchdog] Contador zombie reseteado (respuesta OK)")
+
+
+def _increment_zombie_counter() -> bool:
+    """
+    Incrementa el contador zombie. Retorna True si se alcanzó el umbral.
+    """
+    global _ZOMBIE_COUNTER
+    with _ZOMBIE_LOCK:
+        _ZOMBIE_COUNTER += 1
+        current = _ZOMBIE_COUNTER
+    print(f"[watchdog] Posible zombie #{current}/{_ZOMBIE_THRESHOLD}: OCR rápido con 0 bloques")
+    if current >= _ZOMBIE_THRESHOLD:
+        print(f"[watchdog] ¡ZOMBIE DETECTADO! Umbral alcanzado ({current}/{_ZOMBIE_THRESHOLD}). "
+              f"Reinicia el servidor para restaurar funcionamiento.")
+        return True
+    return False
 
 
 # ════════════════════════════════════════════════════════════════
@@ -349,8 +399,12 @@ def health() -> Any:
     from server import DB_AVAILABLE, TRANSLATION_CACHE_AVAILABLE
     ready = [f"{s}->{t}" for (s, t), v in _argo_ready.items() if v]
     mem_mb = _get_memory_mb()
+    zombie_state = _is_zombie()
     return jsonify({
-        "ok": True,
+        "ok": not zombie_state,
+        "zombie": zombie_state,
+        "zombie_count": _ZOMBIE_COUNTER,
+        "zombie_threshold": _ZOMBIE_THRESHOLD,
         "version": APP_VERSION,
         "mode": "production" if IS_PRODUCTION else "development",
         "mit_available": False,
@@ -514,7 +568,7 @@ def process_page() -> Any:
         )
 
     # ── Validar modo OCR ───────────────────────────────────────
-    ocr_mode = _safe_str(payload.get("ocr_mode"), default="easyocr").lower()
+    ocr_mode = _safe_str(payload.get("ocr_mode"), default="auto").lower()
     if ocr_mode not in ("easyocr", "auto"):
         return _error_response(
             f"Modo OCR no soportado: '{ocr_mode}'. Use 'easyocr' o 'auto'.",
@@ -522,7 +576,7 @@ def process_page() -> Any:
         )
 
     # ── Validar prefilter (limpieza morfológica pre-OCR) ───────
-    prefilter: bool = bool(payload.get("prefilter", False))
+    prefilter: bool = bool(payload.get("prefilter", True))
 
     scale_x: float = 1.0
     scale_y: float = 1.0
@@ -573,6 +627,30 @@ def process_page() -> Any:
         t_ocr = _time.time() - t_ocr_before
         print(f"[process-page] OCR ({ocr_lang}): {len(blocks)} bloques en {t_ocr:.1f}s")
 
+        # ── Watchdog: detección de zombie ──────────────────────
+        # Si OCR devuelve 0 bloques en <2s, podría ser un proceso zombie
+        # con estado corrupto (EasyOCR no cargado, modelo no funcional, etc.)
+        if len(blocks) == 0 and t_ocr < _ZOMBIE_FAST_TIME:
+            reached = _increment_zombie_counter()
+            if reached:
+                inpainted_b64: str | None = _cv2_to_base64(img_bgr)
+                img_bgr = None
+                return jsonify({
+                    "error": "ZOMBIE_SERVER",
+                    "message": "El servidor parece estar en estado zombie (múltiples OCRs "
+                              f"rápidos sin resultados). El último request ({len(blocks)} "
+                              f"bloques en {t_ocr:.1f}s) sugiere que EasyOCR no está "
+                              "funcionando correctamente. Reinicia el servidor para "
+                              "restaurar el funcionamiento.",
+                    "blocks": [],
+                    "inpainted_image": inpainted_b64,
+                }), 200
+        elif len(blocks) > 0 or t_ocr >= _ZOMBIE_FAST_TIME:
+            # Respuesta normal: resetear contador
+            _reset_zombie_counter()
+
+        # ── Filtrar marcas de agua pre-inpainting ──────────────
+        blocks = _filter_watermarks_from_blocks(blocks)
         if not blocks:
             inpainted_b64: str | None = _cv2_to_base64(img_bgr)
             img_bgr = None

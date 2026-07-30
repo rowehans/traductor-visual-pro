@@ -10,6 +10,11 @@
 │  ├─ **CT2 preload en background** (hilo daemon):        │
 │  │   precarga modelos es→en y en→es al arrancar.       │
 │  │   Evita cold start de ~21.5s en 1ra traducción.     │
+│  ├─ **Logs en tiempo real**:                             │
+│  │   sys.stdout.reconfigure(line_buffering=True) +      │
+│  │   PYTHONUNBUFFERED=1 + python -u. Todos los prints   │
+│  │   [translate], [OCR], [CT2] se escriben inmediata-   │
+│  │   mente en server_output.log, sin buffer 8KB.        │
 │  └─ _translate_one wrapper (inyecta cache en módulo)    │
 ├─────────────────────────────────────────────────────────┤
 │                     config.py                            │
@@ -20,20 +25,16 @@
 ├─────────────────────────────────────────────────────────┤
 │                    translator.py                         │
 │  ┌─ _detect_language_simple / _robust (ES/JA/KO/ZH)    │
-│  ├─ _translate_one → 3 motores en PARALELO              │
-│  │    ┌─ CT2 (CTranslate2 int8, ~53ms, 10 pares)        │
-│  │    ├─ Argos (~2.8s, lock global, 100% cobertura)      │
-│  │    └─ Google (~1.1s, HTTP pool singleton)             │
-│  │    **Executor compartido** (4 threads, lazy init):   │
-│  │    _get_translate_engine_executor() con double-check │
-│  │    locking. Antes: ThreadPoolExecutor nuevo por      │
-│  │    llamada (~1.857 ciclos para 619 bloques). Ahora:  │
-│  │    threads siempre vivos, sin shutdown, retorno      │
-│  │    inmediato. Tiempo efectivo: ~53ms (el más rápido) │
-│  │    ├─ Fallback: si TODOS fallan → Google retry con    │
-│  │    │   backoff progresivo (5s, 15s, 30s). Resetea     │
-│  │    │   rate limit entre reintentos (fix SIN_TRAD).    │
-│  ├─ _es_ocr_noise (detecta OCR ruidoso, salta Argos)    │
+│  ├─ _translate_one → pipeline SECUENCIAL optimizado     │
+│  │    ├─ 1. CT2 síncrono (CTranslate2 int8, ~0.02-0.12s)│
+│  │    │      10 pares de idiomas, GPU auto-detect        │
+│  │    ├─ 2. Google fallback síncrono (~2s)              │
+│  │    └─ 3. SIN_TRAD inmediato (sin timeout 30-80s)     │
+│  │    **Eliminado**: pipeline paralelo (causaba timeouts │
+│  │    de 30s + retry 50s = 80s/bloque). Eliminado:      │
+│  │    _get_translate_engine_executor, _probar_motor,     │
+│  │    executor compartido (~80 líneas de código muerto). │
+│  ├─ _es_ocr_noise (detecta OCR ruidoso)                  │
 │  ├─ _es_traduccion_valida (6 validaciones anti-basura)  │
 │  ├─ _corregir_ct2 (glosario POST, 6 reglas)             │
 │  └─ _aplicar_glosario (correccion PRE-OCR)              │
@@ -176,9 +177,9 @@ Cliente (app.js)                    Servidor
       │    (base64 de cleanBgCanvas)    │
       │                                 ├─ _base64_to_cv2()
       │                                 ├─ _detect_and_ocr()
-      │                                 │    ├─ Tier 1: EasyOCR directo (~1s)
+      │                                 │    ├─ Tier 1: EasyOCR directo (~0.88s)
       │                                 │    ├─ Tier 2: CLAHE+sharpen (~1s)
-      │                                 │    └─ Tier 3: CTD detecta + EasyOCR lee (~3-5s)
+      │                                 │    └─ Tier 3: RapidOCR ONNX CPU (~1.1-1.5s)
       │                                 ├─ _detect_language_robust()
       │                                 ├─ _build_inpaint_mask()
       │                                 │    ├─ _is_inside_speech_bubble()

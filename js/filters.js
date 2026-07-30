@@ -14,8 +14,8 @@ export const MARGIN_NOISE_PATTERNS = [
   /\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}/,
   // Fechas con error de OCR: 13/7126, 13.726
   /\d{1,2}[/.\-]\d{1,2}1?\d{2}\b/,
-  // Horas: 4:58 P.M., 4:58 p.m., 4:58
-  /\d{1,2}:\d{2}\s*([ap]\.?\s?m\.?)?/i,
+  // Horas: 4:58 P.M., 4.58 p.m., 4:58
+  /\d{1,2}[:.]\d{2}\s*([ap]\.?\s?m\.?)?/i,
   // Numeración de página: 3/128, "3 de 128", "Pág. 3"
   /^\d{1,4}\s*\/\s*\d{1,4}$/,
   /\b\d{1,4}\s+de\s+\d{1,4}\b/i,

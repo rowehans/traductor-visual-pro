@@ -176,6 +176,18 @@
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.15);
 }
 
+/* Font utility classes */
+.font-bangers {
+  font-family: 'Bangers', cursive, sans-serif;
+  letter-spacing: 0.03em;
+  font-weight: 400;
+}
+
+.font-montserrat {
+  font-family: 'Montserrat', sans-serif;
+  font-weight: 500;
+}
+
 /* Gradient text utilities */
 .gradient-text {
   background: linear-gradient(135deg, var(--text-primary) 0%, var(--text-secondary) 100%);
@@ -262,7 +274,7 @@ html[data-theme="dark"] {
 body {
   background-color: var(--bg-app);
   color: var(--text-primary);
-  font-family: 'Inter', 'Outfit', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: 'Inter', 'Outfit', 'Montserrat', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: 14px;
   line-height: 1.6;
   min-height: 100vh;
@@ -403,7 +415,7 @@ body {
 }
 
 .brand h1 {
-  font-family: 'Outfit', sans-serif;
+  font-family: 'Outfit', 'Montserrat', sans-serif;
   font-size: 22px;
   font-weight: 800;
   letter-spacing: -0.02em;
@@ -593,7 +605,7 @@ kbd.hint {
   padding: 5px 12px;
   font-size: 13px;
   font-weight: 700;
-  font-family: 'Inter', 'Outfit', monospace;
+  font-family: 'Inter', 'Outfit', 'Montserrat', monospace;
   color: var(--text-primary);
   background: var(--bg-input);
   border: 1px solid var(--border);
@@ -1110,7 +1122,7 @@ button svg { flex-shrink: 0; }
 .empty-state svg { width: 112px; height: 112px; color: var(--accent-strong); opacity: 0.55; animation: float 5s ease-in-out infinite; }
 @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-14px); } }
 
-.empty-state h2 { font-family: 'Outfit', sans-serif; font-size: 28px; font-weight: 700; color: var(--text-primary); }
+.empty-state h2 { font-family: 'Outfit', 'Montserrat', sans-serif; font-size: 28px; font-weight: 700; color: var(--text-primary); }
 .empty-state p { color: var(--text-secondary); font-size: 15px; max-width: 400px; line-height: 1.7; }
 
 /* =============================================================================

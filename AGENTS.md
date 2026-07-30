@@ -11,10 +11,10 @@
 | Archivo | Rol | Tamaño |
 |---|---|---|
 | `app.js` | Frontend completo (~2560 líneas): renderizado PDF/imagen vía pdf.js, editor de burbujas (draw/move/resize), OCR delegado al servidor EasyOCR, filtros de bloques, **drawTextOnCanvas() compartida** (unifica renderBoxes + drawProfessionalText), **glow exterior** neón configurable, **relleno semitransparente** (fillOpacity), layout de texto en canvas (wrap+fit), comunicación con API Flask (ES6 modules), exportación PNG/PDF, tema oscuro/claro, atajos de teclado (incl. G para glow), toasts, carga asíncrona de OpenCV.js vía callback. **Botón ⏸️ Pausar/▶️ Reanudar** en barra de progreso (toggle `state.translationPaused`). **Aviso ⚠️ origen==destino** (función `checkLanguageWarning()` con mapa `isoToSelector`). **JS modularizado**: `import` desde js/config.js, js/theme.js, js/toast.js, js/filters.js, js/utils.js. | 99KB |
-| `server.py` | Entry point Flask (~217 líneas). Importa de config.py/translator.py, envuelve _translate_one() con caché, **precarga EasyOCR + CT2 en background** (orden crítico: EasyOCR primero para inicializar CUDA, luego CT2 auto-detecta GPU). Puerto 5174. | 8KB |
+| `server.py` | Entry point Flask (~217 líneas). Importa de config.py/translator.py, envuelve _translate_one() con caché, **precarga EasyOCR + CT2 en background** (orden crítico: EasyOCR primero para inicializar CUDA, luego CT2 auto-detecta GPU). **Logs en tiempo real**: `sys.stdout.reconfigure(line_buffering=True)` + `PYTHONUNBUFFERED=1` + `python -u` para que `print()` se escriba inmediatamente en `server_output.log`. Puerto 5174. | 8KB |
 | `config.py` | Constantes globales: paths, `LANGUAGES`, `CSP_POLICY`, patrones de ruido (`MARGIN_NOISE_PATTERNS`, `WATERMARK_PATTERNS`), glosario pre-OCR (`GLOSARIO_PRE`). | 6KB |
-| `translator.py` | Lógica de traducción: detección de idioma (`_detect_language_robust`), 3 motores en **paralelo** vía **executor compartido** (4 threads, evita crear/destruir threads por llamada), validación de traducción (6 validaciones anti-basura), glosarios PRE/POST, filtro pre-Argos para OCR noise. **Google retry con backoff** (5s, 15s, 30s) cuando todos los motores fallan (fix SIN_TRAD). Cache injectado desde server.py. | 28KB |
-| `ocr_utils.py` | OCR con EasyOCR (GPU prioritario, CPU fallback automático si CUDA no disponible), pre-filtro de imagen, inpainting con OpenCV (INPAINT_NS), detección de globos de diálogo, máscara de glifos, sampleo de color, fusión y filtrado de bloques (9 filtros post-merge). **Pipeline simplificado: 2 niveles**: EasyOCR directo → CLAHE+sharpen (sin CTD). **Optimizado**: canvas_size=2500px, text_threshold=0.18, mag_ratio=1.2. **GPU**: GTX 1050 Ti verificado ~0.88s/pág vs 5s CPU (5.7x). | 23KB |
+| `translator.py` | Lógica de traducción: detección de idioma (`_detect_language_robust`), **pipeline secuencial CT2→Google→SIN_TRAD** (antes: 3 motores en paralelo con 30s timeout + 50s retry = hasta 80s por texto. Ahora: CT2 síncrono ~0.02s en GPU, Google fallback ~2s, SIN_TRAD inmediato). Validación de traducción (6 validaciones anti-basura), glosarios PRE/POST, filtro pre-Argos para OCR noise. Cache injectado desde server.py. ~80 líneas de código muerto eliminadas (executor compartido, función `_probar_motor`, `translation_fns`). | 20KB |
+| `ocr_utils.py` | OCR con EasyOCR (GPU prioritario, CPU fallback automático si CUDA no disponible), **corrector ortográfico automático con pyspellchecker** (86K palabras, 0 mantenimiento manual, reemplaza _OCR_DICT manual de 600 palabras), pre-filtro de imagen, inpainting con OpenCV (INPAINT_NS), detección de globos de diálogo, máscara de glifos, sampleo de color, fusión y filtrado de bloques (9 filtros post-merge). **Pipeline simplificado: 2 niveles**: EasyOCR directo → CLAHE+sharpen (sin CTD). **Optimizado**: canvas_size=2500px, text_threshold=0.18, mag_ratio=1.2. **GPU**: GTX 1050 Ti verificado ~0.88s/pág vs 5s CPU (5.7x). | 23KB |
 | `routes/api.py` | Blueprint REST: `/api/health`, `/api/translate`, `/api/translate-batch`, `/api/process-page`. **Expone `ocr_mode`** en `/api/process-page` (default `"easyocr"`): `"easyocr"` (solo EasyOCR GPU, ~18 min 128 págs), `"auto"` (EasyOCR + CLAHE fallback, ~72 min). **Incluye decorador `@profile_endpoint`** para profiling cProfile inline activable vía `?profile=1`. Importa directamente de los submódulos. | 11KB |
 | `routes/main.py` | Blueprint de rutas estáticas con protección contra path traversal. | 1KB |
 | `index.html` | UI HTML (~339 líneas): estructura del editor visual, CSP vía `<meta>`, detección de Brave Leo/Shields. | 17KB |
@@ -95,7 +95,7 @@ Errores:      0
 
 | Función | Línea aprox. | Por qué es delicada |
 |---|---|---|
-| `_translate_one()` | ~185 | **3 motores en paralelo** (CT2 CTranslate2 int8 → Argos → Google) lanzados via **executor compartido** `_get_translate_engine_executor()` (4 threads, lazy init, double-checked locking). **Antes**: creaba/destruía un `ThreadPoolExecutor` por llamada (~1.857 ciclos para 619 bloques). **Ahora**: executor compartido, sin shutdown, retorno inmediato cuando CT2 gana. Acepta `cache_get`/`cache_set`/`translation_cache_available` para inyección. |
+| `_translate_one()` | ~185 | **Pipeline secuencial optimizado** (CT2 síncrono → Google fallback → SIN_TRAD inmediato). **Antes**: 3 motores en paralelo con `as_completed(timeout=30s)` + Google retry 5+15+30s = hasta 80s por texto. Cuando todos los motores fallaban (timeout por contienda de workers), SIN_TRAD devolvía el original. **Ahora**: CT2 primero (síncrono, ~0.02s en GPU). Si CT2 devuelve traducción válida → retorno inmediato. Si falla → Google fallback (~2s). Sin esperas, sin colas de workers. Acepta `cache_get`/`cache_set`/`translation_cache_available` para inyección. **Código muerto eliminado**: `_get_translate_engine_executor()`, `_probar_motor()`, `translation_fns`, lógica `_es_ocr_noise()` para construcción de lista de motores. |
 | `_get_google_session()` | ~58 | Double-checked locking con `_google_session_lock`. La sesión HTTP se crea **dentro del lock**. |
 | `_detect_language_robust()` | ~96 | langdetect thread-local + heurística `_detect_language_simple`. Mapeo zh-cn/zh-tw → zh. |
 | `_ensure_argo_package()` | ~20 | Descarga modelos Argos con lock para evitar descargas duplicadas. |
@@ -106,7 +106,7 @@ Errores:      0
 | Función | Línea aprox. | Por qué es delicada |
 |---|---|---|
 | `_get_ocr_reader()` | ~20 | Lazy-loading EasyOCR con `threading.Lock()`. **GPU prioritario** (torch.cuda.is_available() → gpu=True), CPU fallback automático si CUDA no disponible o hay error. **Importante**: el orden de carga respecto a CT2 es crítico — EasyOCR debe cargar PRIMERO para inicializar torch.cuda antes que CT2 cargue sus DLLs cuDNN. Verificado: GTX 1050 Ti, ~0.88s/pág vs 5s CPU (5.7x). No cargar en hilo secundario en Windows. |
-| `_detect_and_ocr()` | ~160 | Parámetros actuales: `text_threshold=0.18`, `low_text=0.12`, `min_size=8`, `mag_ratio=1.2`, `canvas_size=2500`. **2 niveles** de fallback: directo → CLAHE+sharpen. CTD eliminado (dependencia externa frágil, ~84MB ahorrados). Acepta `allow_fallback` (desactiva CLAHE en modo easyocr-only). |
+| `_get_spellchecker()` / `_ocr_spellcheck()` | ~67 | **Corrector ortográfico post-OCR con pyspellchecker** (86K palabras, lazy-load thread-safe). Reemplaza el antiguo `_OCR_DICT` manual (600 palabras, mantenimiento infinito). `_get_spellchecker()` con double-checked locking, carga 16 palabras de dominio manga con alta frecuencia (`wf.add(word, 1000000)`). `_ocr_spellcheck()` llama a `sp.correction()` una vez fuera del loop. **Sin mantenimiento manual**. Fallback a `_levenshtein()` + `_FALLBACK_DICT` (~20 palabras) si pyspellchecker no está instalado. |
 | `_group_and_merge_blocks()` | ~260 | **⚠️ Bug histórico corregido**: los patrones `WATERMARK_PATTERNS`, `MARGIN_NOISE_PATTERNS` y URL ahora se verifican contra el texto ORIGINAL del OCR (**antes** de limpiar símbolos). Antes se verificaban después de `re.sub(r'[/.,:;...]', ...)` que destruía `/`, `.`, `,` — los caracteres que necesitan las fechas/horas ("13/7/26", "4.58 p.m") para matchear. **9 filtros post-merge**: números puros, patrones numéricos, comillas, puntuación suelta, aspecto estrecho, chars sueltos, baja confianza, dígito+letra. Fusión horizontal con gap tolerante `max(35, w*2.5)`. |
 | `_build_inpaint_mask()` | ~390 | Para globos de diálogo usa máscara de solo-glifos (preserva forma del globo). Para texto flotante usa rectángulo completo. |
 | `_pre_filter_image()` | ~120 | Filtro pre-OCR con morfología OpenCV. Franjas 4% superior/inferior + líneas horizontales. |
@@ -140,9 +140,30 @@ Errores:      0
 
 ## 4. Estado Actual
 
-**Última actualización**: 2026-07-30
+**Última actualización**: 2026-07-29
 
 ### Cambios acumulados (Julio 2026)
+
+#### Sesión 2026-07-29 — Fix timeout de traducción + logs en tiempo real (2 fixes)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 68 | **Timeout de traducción eliminado**: reemplazado el pipeline paralelo (CT2+Argos+Google con `as_completed(timeout=30s)` + Google retry 5+15+30s = hasta 80s por texto) por flujo secuencial CT2→Google→SIN_TRAD. CT2 primero (síncrono, ~0.02-0.12s en GPU). Google fallback (~2s). SIN_TRAD inmediato sin esperas. **Resultado**: "CAPITULO 43" → "CHAPTER 43" en 0.03s, "TEMPORADA 1" → "SEASON 1" en 0.02s, "Como Criar Villanos Correctamente" → "Like raising villains correctly" en 0.07s. **Código muerto eliminado**: `_get_translate_engine_executor()`, `_probar_motor()`, `translation_fns`, lógica `_es_ocr_noise()`. | `translator.py` | 🚀 **~1000x más rápido** (0.03s vs 30-80s) |
+| 69 | **Logs en tiempo real**: `sys.stdout.reconfigure(line_buffering=True)` en server.py + `PYTHONUNBUFFERED=1` + `python -u` al iniciar. Antes: Python buferizaba stdout en bloques de 8KB cuando se redirigía a archivo → los `print("[translate] ...")` NUNCA aparecían en `server_output.log` hasta que el servidor terminara. Ahora: cada `\n` vacía el buffer inmediatamente. | `server.py` | 🐛 **Fix: logs ahora visibles en tiempo real** |
+
+#### Sesión 2026-08-01 — Diccionario manual eliminado: reemplazado por pyspellchecker (0 mantenimiento)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 67 | **Diccionario manual `_OCR_DICT` eliminado** (~50 líneas, 600 palabras). Reemplazado por **pyspellchecker** (86,158 palabras pre-cargadas) con lazy-load thread-safe. **Cero mantenimiento**: el usuario nunca tendrá que agregar palabras. 16 palabras de dominio manga cargadas con `wf.add(word, 1000000)` para forzar frecuencia alta (villano, villanos, manga, manhwa, scanlation, capítulo, etc.). `_ocr_spellcheck()` refactorizada para llamar `_get_spellchecker()` una vez fuera del loop. Fallback `_levenshtein()` + `_FALLBACK_DICT` si pyspellchecker no está instalado. `pyspellchecker==0.9.0` agregado a `requirements.txt`. | `ocr_utils.py`, `requirements.txt` | 🆕 **Cero mantenimiento** |
+
+#### Sesión 2026-07-30 — Inpainting por glifos universal + Fix cabeceras con hora en punto (2 fixes)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 64 | **Inpainting por glifos universal**: `_build_inpaint_mask()` ahora aplica máscara por trazo de letra (glifos) en el 100% de los bloques por defecto. Eliminada la restricción de `brightness > 80` en `_is_inside_speech_bubble()` que descartaba el 99% de globos blancos. Preserva el arte del manga, fondos e ilustraciones sin destruirlos con rectángulos sólidos. | `ocr_utils.py` | 🎨 **Arte preservado** |
+| 65 | **Fix de marcas de tiempo en cabecera**: Se actualizó `MARGIN_NOISE_PATTERNS` en `config.py` y `js/filters.js` para admitir horas con punto (`4.58 p.m.`) además de dos puntos. Ajustado `margin_top` de 7% a 8.5% para eliminar cabeceras de navegación de lectores web. | `config.py`, `js/filters.js`, `ocr_utils.py` | 🧹 **Márgenes limpios** |
+| 66 | **Pipeline híbrido universal RapidOCR + EasyOCR**: `_detect_and_ocr()` ahora ejecuta siempre RapidOCR para complementar EasyOCR. Resuelve el problema donde EasyOCR direct ignoraba títulos estilizados en dorado o portadas (como "Cómo Criar Villanos Correctamente") devolviendo solo ruido de margen. | `ocr_utils.py` | 🎯 **Títulos detectados** |
 
 #### Sesión 2026-07-30 — is_ocr_garbage() mejorado: 8 filtros para OCR fragments + pipeline híbrido EasyOCR+RapidOCR (2 cambios)
 

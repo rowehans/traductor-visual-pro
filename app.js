@@ -1060,47 +1060,58 @@ function makeAutoTextBox(block, translated = "", serverData = null) {
     finalFontWeight = state.bold ? "700" : "400";
   }
 
-  // Colores: preferir datos del servidor si existen
-  const textCol = serverData?.textColor || sampleTextColor(block);
-  let bgCol     = serverData?.bgColor   || sampleBgColorAround(block);
-
-  // Si el servidor detectó un globo de diálogo (fondo muy oscuro, brillo < 60),
-  // usar bg transparente para que el canvas inpainted (que preserva el globo)
-  // se vea a través, en vez de pintar un rectángulo opaco que destruye el arte.
-  if (serverData && bgCol) {
-    const m = bgCol.match(/\d+/g);
-    if (m) {
-      const [r, g, b] = m.map(Number);
-      const brightness = r * 0.299 + g * 0.587 + b * 0.114;
-      if (brightness < 60) {
-        bgCol = "transparent";
-      }
-    }
-  }
-
-  // Para texto flotante sobre arte, agregar contorno de contraste para legibilidad
-  // Si serverData existe y tiene bgColor oscuro (globo de diálogo), no usar contorno
-  const isServerBubble = serverData?.bgColor && (() => {
-    const m = serverData.bgColor.match(/\d+/g);
-    if (m) { const [r,g,b] = m.map(Number); return (r*0.299 + g*0.587 + b*0.114) < 80; }
-    return false;
-  })();
-  // Glow exterior (brillo tipo neón) — controlado por UI
-  // Lee el estado actual de los controles de efectos de texto
-  const useGlow = !isBubble || (isExpressive && hasAggressive);
-  glowToggle.checked = useGlow;
+  // ── Estrategia de color para servidor inpainted ────────────────────
+  // Cuando el servidor ya hizo inpainting, el fondo original fue reemplazado
+  // por relleno sintético (OpenCV TELEA). Este relleno NO es predecible:
+  // puede ser blanco, marrón, o parches del color del borde del texto.
+  //
+  // Por lo tanto, NO podemos confiar en el color original del fondo para
+  // elegir el color del texto. En su lugar:
+  //   - Texto SIEMPRE blanco (#ffffff) con contorno negro (#000000, 2px)
+  //   - Esta combinación es legible sobre CUALQUIER fondo (claro, oscuro,
+  //     o parches irregulares de inpainting)
+  //   - No usar isWhiteBubble (basado en el color ORIGINAL, no el inpainted)
+  //
+  // Para bloques SIN servidor: muestrear color del canvas original (pre-inpainting)
+  let textCol, bgCol, strokeC, strokeW;
   let glowColorResult = "transparent";
   let glowBlurResult = 0;
   let fillOpacityResult = 0;
-  
-  if (glowToggle.checked) {
-    glowColorResult = glowColor.value;
-    glowBlurResult = Math.max(1, Number(glowBlur.value) || 12);
-  }
-  fillOpacityResult = (!isBubble && bgCol !== "transparent") ? (Number(fillOpacity.value) / 100) || 0.35 : 0;
 
-  const strokeC  = (isBubble || isServerBubble) ? "transparent" : (isLightColor(textCol) ? "#000000" : "#ffffff");
-  const strokeW  = isBubble ? 0 : 2;
+  if (serverData) {
+    // ── Modo servidor-inpainted: blanco + contorno negro + glow blanco ──
+    // El servidor reemplazo el fondo original con relleno sintetico (OpenCV TELEA).
+    // El color del relleno puede ser cualquier tono (parche marron, oscuro, etc.).
+    // Para garantizar legibilidad en CUALQUIER fondo:
+    //   - Texto: blanco (#ffffff)
+    //   - Contorno: negro (#000000, 2px)  -> visible en fondos claros
+    //   - Glow: blanco (#ffffff, blur 8)  -> visible en fondos oscuros/parches
+    // Esta combinacion de STROKE + GLOW invertidos hace que el texto sea
+    // legible sobre cualquier color de fondo.
+    textCol = "#ffffff";
+    bgCol = "transparent";
+    strokeC = "#000000";
+    strokeW = 2;
+    fillOpacityResult = 0;
+    // Glow blanco: crea un halo legible sobre parches oscuros de inpainting
+    glowToggle.checked = true;
+    glowColorResult = "#ffffff";
+    glowBlurResult = 8;
+  } else {
+    // ── Modo local (sin servidor): muestrear colores del canvas original ──
+    textCol = sampleTextColor(block);
+    bgCol = sampleBgColorAround(block);
+    strokeC = (isBubble) ? "transparent" : (isLightColor(textCol) ? "#000000" : "#ffffff");
+    strokeW = isBubble ? 0 : 2;
+    glowToggle.checked = !isBubble || (isExpressive && hasAggressive);
+    if (glowToggle.checked) {
+      glowColorResult = glowColor.value;
+      glowBlurResult = Math.max(1, Number(glowBlur.value) || 6);
+    }
+    if (!isBubble && bgCol !== "transparent") {
+      fillOpacityResult = (Number(fillOpacity.value) / 100) || 0.35;
+    }
+  }
 
   return {
     id: crypto.randomUUID(),
@@ -1192,23 +1203,38 @@ function showProgress(label, done, total, startedAt) {
 
 // Procesar página completa en el servidor (OCR + inpainting + traducción)
 async function serverProcessPage(pageNo = state.page) {
+  console.log(`[serverProcessPage] INICIO page=${pageNo}, cleanBg=${cleanBgCanvas.width}x${cleanBgCanvas.height}`);
+  
+  // SIEMPRE re-renderizar la página para garantizar un canvas limpio
+  // y evitar enviar al servidor una imagen con artefactos de páginas anteriores
+  // o modificaciones parciales del usuario.
+  try {
+    const result = await renderPage(pageNo);
+    if (result && result.aborted) {
+      throw new Error("Renderizado abortado para página " + pageNo);
+    }
+  } catch (e) {
+    console.error(`[serverProcessPage] Error en renderPage:`, e);
+    throw e;
+  }
+  console.log(`[serverProcessPage] Tras renderPage: cleanBg=${cleanBgCanvas.width}x${cleanBgCanvas.height}`);
+  
+  // Crear una copia FRESCA del canvas limpio (evitar que modificaciones
+  // posteriores del canvas afecten el envío al servidor)
   const pageCanvas = document.createElement("canvas");
   pageCanvas.width = cleanBgCanvas.width;
   pageCanvas.height = cleanBgCanvas.height;
-  pageCanvas.getContext("2d").drawImage(cleanBgCanvas, 0, 0);
+  const pageCtx = pageCanvas.getContext("2d");
+  pageCtx.drawImage(cleanBgCanvas, 0, 0);
   const imageB64 = canvasToBase64(pageCanvas);
+  console.log(`[serverProcessPage] imageB64 length=${imageB64?.length || 0}, starts=${imageB64?.substring(0, 30)}`);
 
   const payload = {
     image: imageB64,
     target: targetLang.value,
     source: sourceLang.value || "auto",
+    ocr_mode: "auto",
   };
-
-  //console.log("[serverProcessPage] Enviando a servidor:", { 
-  // target: payload.target, 
-  // source: payload.source, 
-  // imgSize: imageB64.length 
-  //});
 
   // Fetch con timeout de 120 segundos
   const controller = new AbortController();  const timeoutId = setTimeout(() => controller.abort(), window.__CLIENT_CONFIG.TIMEOUT_PROCESS_PAGE_MS);
@@ -1222,8 +1248,6 @@ async function serverProcessPage(pageNo = state.page) {
   
   clearTimeout(timeoutId);
 
-  //console.log("[serverProcessPage] Respuesta status:", resp.status);
-
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
     console.error("[serverProcessPage] Error:", err);
@@ -1232,23 +1256,40 @@ async function serverProcessPage(pageNo = state.page) {
 
   let result;
   try { result = await resp.json(); } catch (e) { throw new Error("Respuesta inválida del servidor"); }
-  //console.log("[serverProcessPage] Bloques recibidos:", result.blocks?.length || 0);
+
+  // ── Detectar estado zombie ──────────────────────────────────
+  // Si el servidor devuelve el marcador ZOMBIE_SERVER, significa que
+  // EasyOCR no está funcionando correctamente (múltiples OCRs rápidos
+  // sin resultados). Esto ocurre cuando el proceso servidor se queda
+  // en un estado corrupto que requiere reinicio.
+  if (result?.error === "ZOMBIE_SERVER") {
+    console.error("[serverProcessPage] ¡ZOMBIE DETECTADO!:", result.message);
+    throw new Error(
+      "ZOMBIE_SERVER: " + (result.message || "El servidor está en estado zombie. Reinícialo.")
+    );
+  }
+
+  console.log(`[serverProcessPage] Respuesta: ${result.blocks?.length || 0} bloques, inpainted=${!!result.inpainted_image}`);
   return result; // { inpainted_image, blocks }
 }
 
-async function autoTranslateCurrentPage(pageNo = state.page, startedAt = Date.now(), progressIndex = 1, totalProgress = 1) {
+async function autoTranslateCurrentPage(pageNo = state.page, startedAt = Date.now(), progressIndex = 1, totalProgress = 1, isRetry = false) {
+  console.log(`[autoTranslate] INICIO page=${pageNo}, isRetry=${isRetry}`);
   // Solo resetear la bandera si se llama individualmente (no en bucle desde autoTranslateAllPages)
-  if (totalProgress === 1 && progressIndex === 1) {
+  if (totalProgress === 1 && progressIndex === 1 && !isRetry) {
     state.abortTranslation = false;
   }
-  setStatus(`Procesando página ${pageNo} en el servidor...`);
-  showProgress(`Traduciendo Pág. ${pageNo}`, progressIndex - 1, totalProgress, startedAt);
+  showProgress(`Traduciendo Pág. ${pageNo} (paso 1: renderizando)`, progressIndex - 1, totalProgress, startedAt);
 
   try {
     // ── Camino ÚNICO: Usar el servidor para OCR + inpainting + traducción ──────
     let serverResult = null;
     try {
+      // Mostrar progreso antes del server call (evita salto 0%->100%)
+      showProgress(`Traduciendo Pág. ${pageNo} (paso 2: OCR+traducción)`, progressIndex - 0.7, totalProgress, startedAt);
       serverResult = await serverProcessPage(pageNo);
+      // Progreso intermedio post-servidor
+      showProgress(`Traduciendo Pág. ${pageNo} (paso 3: aplicando cambios)`, progressIndex - 0.4, totalProgress, startedAt);
     } catch (serverErr) {
       console.error("[server-process] Error:", serverErr.message);
       throw new Error("Servidor no disponible: " + serverErr.message);
@@ -1257,6 +1298,11 @@ async function autoTranslateCurrentPage(pageNo = state.page, startedAt = Date.no
     if (state.abortTranslation) return 0;
     
     if (!serverResult || !serverResult.blocks || serverResult.blocks.length === 0) {
+      if (!isRetry) {
+        console.log("[autoTranslate] 0 bloques detectados. Reintentando tras forzar renderizado...");
+        await renderPage(pageNo);
+        return await autoTranslateCurrentPage(pageNo, startedAt, progressIndex, totalProgress, true);
+      }
       showProgress(`Traduciendo Pág. ${pageNo}`, progressIndex, totalProgress, startedAt);
       setStatus(`Página ${pageNo}: sin texto detectado.`);
       return 0;
@@ -1319,16 +1365,23 @@ async function checkServerHealth() {
     const resp = await fetch('/api/health', { method: 'GET', signal: AbortSignal.timeout(5000) });
     if (resp.ok) {
       const data = await resp.json();
+      // Verificar estado zombie desde el health endpoint
+      if (data && data.zombie) {
+        console.error('[health] SERVIDOR EN ESTADO ZOMBIE! counter=' + data.zombie_count + '/' + data.zombie_threshold);
+        return { ok: false, zombie: true, message: 'El servidor est\u00e1 en estado zombie (EasyOCR no responde). Reinicia el servidor.' };
+      }
       if (data && data.ok) {
-        //console.log('[health] Servidor OK:', data);
-        return true;
+        return { ok: true };
+      }
+      if (data && data.zombie_count && data.zombie_count > 0) {
+        console.warn('[health] Watchdog: contador zombie=' + data.zombie_count + '/' + data.zombie_threshold);
       }
     }
     console.warn('[health] Servidor respondio con status:', resp.status);
-    return false;
+    return { ok: false, message: 'El servidor respondi\u00f3 con estado ' + resp.status };
   } catch (e) {
     console.error('[health] Error de conexion con el servidor:', e.message);
-    return false;
+    return { ok: false, message: 'No se puede conectar con el servidor: ' + e.message };
   }
 }
 
@@ -1337,12 +1390,22 @@ async function autoTranslateAllPages() {
   
   // Verificar que el servidor está corriendo antes de empezar
   setStatus("Verificando conexión con el servidor...");
-  const serverOk = await checkServerHealth();
-  if (!serverOk) {
-    const msg = "El servidor Flask no responde. Asegúrate de iniciar server.py primero (http://127.0.0.1:5174).";
+  const healthResult = await checkServerHealth();
+  if (!healthResult.ok) {
+    if (healthResult.zombie) {
+      const msg = healthResult.message || "El servidor está en estado zombie (EasyOCR no responde). Reinicia el servidor.";
+      setStatus("Error: " + msg);
+      showToast("⚠️ " + msg, "error", 15000);
+      return;
+    }
+    const msg = healthResult.message || "El servidor Flask no responde. Asegúrate de iniciar server.py primero (http://127.0.0.1:5174).";
     setStatus("Error: " + msg);
     showToast(msg, "error", 10000);
     return;
+  }
+  // Mostrar advertencia si el watchdog tiene conteo activo
+  if (healthResult.zombie_count && healthResult.zombie_count > 0) {
+    console.warn(`[autoTranslateAll] Watchdog: ${healthResult.zombie_count}/${healthResult.zombie_threshold} detecciones r\u00e1pidas`);
   }
   
   state.abortTranslation = false;
@@ -1552,12 +1615,7 @@ function drawTextOnCanvas(ctx, text, box, layout) {
 
   // ── Sombra de legibilidad ─────────────────────────────────────
   const col = box.color || "#000000";
-  const isLightText = (() => {
-    const m = col.match(/\d+/g);
-    if (!m) return false;
-    const [r, g, b] = m.map(Number);
-    return (r * 0.299 + g * 0.587 + b * 0.114) > 128;
-  })();
+  const isLightText = isLightColor(col);
 
   // ── Centrado vertical ─────────────────────────────────────────
   const totalTextHeight = layout.lines.length * layout.lineHeight;
@@ -1584,23 +1642,24 @@ function drawTextOnCanvas(ctx, text, box, layout) {
       ctx.globalAlpha = 1.0;
     }
 
-    // 2. Glow exterior: dibujar texto transparente con shadow para crear el halo
+    // 2. Glow exterior: dibujar sombra difusa detrás del texto
     if (hasGlow) {
+      const glowBlurScaled = Math.min(12, Math.max(3, Math.round(layout.fontSize * 0.3)));
       ctx.shadowColor = box.glowColor;
-      ctx.shadowBlur = box.glowBlur;
+      ctx.shadowBlur = glowBlurScaled;
       ctx.shadowOffsetX = 0;
       ctx.shadowOffsetY = 0;
-      ctx.fillStyle = "transparent";
-      ctx.fillText(line, lineX, lineY);  // solo el shadow (glow) es visible
-      ctx.shadowColor = "transparent";  // reset para el texto principal
+      ctx.fillStyle = box.glowColor;
+      ctx.fillText(line, lineX, lineY);
+      ctx.shadowColor = "transparent";
       ctx.shadowBlur = 0;
-      ctx.fillStyle = box.color;        // restaurar color original
+      ctx.fillStyle = box.color;
     }
 
     // 3. Sombra de legibilidad (sombra normal del texto)
     if (box.shadow !== false && !hasGlow) {
       ctx.shadowColor = isLightText ? "rgba(0,0,0,0.85)" : "rgba(255,255,255,0.6)";
-      ctx.shadowBlur = Math.max(3, layout.fontSize * 0.18);
+      ctx.shadowBlur = Math.max(3, Math.round(layout.fontSize * 0.18));
       ctx.shadowOffsetX = 0;
       ctx.shadowOffsetY = 0;
     } else {
@@ -1608,10 +1667,11 @@ function drawTextOnCanvas(ctx, text, box, layout) {
       ctx.shadowBlur = 0;
     }
 
-    // 4. Contorno de texto
+    // 4. Contorno de texto (proporcional a la fuente real cargada, max 4px para no tapar el texto)
     if (box.strokeColor && box.strokeWidth > 0 && box.strokeColor !== "transparent") {
+      const calcStroke = Math.min(4, Math.max(1.5, Math.round(layout.fontSize * 0.10)));
       ctx.strokeStyle = box.strokeColor;
-      ctx.lineWidth = box.strokeWidth * 2;
+      ctx.lineWidth = calcStroke * 2;
       ctx.lineJoin = "round";
       ctx.strokeText(line, lineX, lineY);
     }
@@ -1805,11 +1865,18 @@ function getRelativePoint(event) {
 // Convierte cualquier color CSS a hex válido para inputs type=color
 function toHexColor(col, fallback = "#ffffff") {
   if (!col || col === "transparent" || col === "none") return fallback;
-  if (col.startsWith("#")) return col;
+  if (typeof col === "string" && col.startsWith("#")) {
+    if (/^#[0-9a-fA-F]{6}$/.test(col)) return col;
+    if (col.length >= 7) {
+      const hex6 = col.substring(0, 7);
+      if (/^#[0-9a-fA-F]{6}$/.test(hex6)) return hex6;
+    }
+    return fallback;
+  }
   // rgb(r,g,b) o rgba(r,g,b,a)
-  const m = col.match(/(\d+),\s*(\d+),\s*(\d+)/);
+  const m = String(col).match(/(\d+),\s*(\d+),\s*(\d+)/);
   if (m) {
-    const hex = n => Number(n).toString(16).padStart(2, "0");
+    const hex = n => Math.min(255, Math.max(0, Number(n))).toString(16).padStart(2, "0");
     return `#${hex(m[1])}${hex(m[2])}${hex(m[3])}`;
   }
   // Intentar resolver colores con nombre (red, blue, etc) via canvas
@@ -1819,7 +1886,7 @@ function toHexColor(col, fallback = "#ffffff") {
     const resolved = ctx.fillStyle; // Devuelve rgb(r,g,b)
     const rm = resolved.match(/(\d+),\s*(\d+),\s*(\d+)/);
     if (rm) {
-      const hex = n => Number(n).toString(16).padStart(2, "0");
+      const hex = n => Math.min(255, Math.max(0, Number(n))).toString(16).padStart(2, "0");
       return `#${hex(rm[1])}${hex(rm[2])}${hex(rm[3])}`;
     }
   } catch (e) { /* ignore */ }
@@ -2015,7 +2082,7 @@ async function eraseWithInpainting(canvas, boxes) {
         
         const p1 = new cv.Point(x, y), p2 = new cv.Point(x + w, y + h), sc = new cv.Scalar(255);
         cv.rectangle(mask, p1, p2, sc, -1);
-        [p1, p2, sc].forEach(o => o.delete());
+        [p1, p2].forEach(o => o.delete());
       }
     }
 
@@ -2493,13 +2560,53 @@ btnBold.addEventListener("click", () => {
 translateBtn.addEventListener("click", async () => {
   try {
     if (!state.selectedId) return setStatus("Selecciona una burbuja primero.");
-    const text = sourceText.value.trim();
-    if (!text) return setStatus("El texto original está vacío.");
+    const box = getPageBoxes().find(b => b.id === state.selectedId);
+    if (!box) return setStatus("Selecciona una burbuja primero.");
 
+    let text = sourceText.value.trim();
+    // Si el texto original es "Texto Original" o está vacío, hacer OCR del recorte con el servidor
+    if (!text || text === "Texto Original") {
+      setStatus("Analizando texto de la región seleccionada...");
+      const cropCanvas = document.createElement("canvas");
+      const pad = 10;
+      const cx = Math.max(0, box.x - pad);
+      const cy = Math.max(0, box.y - pad);
+      const cw = Math.min(cleanBgCanvas.width - cx, box.w + pad * 2);
+      const ch = Math.min(cleanBgCanvas.height - cy, box.h + pad * 2);
+      cropCanvas.width = cw;
+      cropCanvas.height = ch;
+      cropCanvas.getContext("2d").drawImage(cleanBgCanvas, cx, cy, cw, ch, 0, 0, cw, ch);
+      const cropB64 = canvasToBase64(cropCanvas);
+
+      const resp = await fetch("/api/process-page", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: cropB64, target: targetLang.value, source: sourceLang.value || "auto", ocr_mode: "auto" })
+      });
+      if (resp.ok) {
+        const resData = await resp.json();
+        if (resData.blocks && resData.blocks.length > 0) {
+          const joinedSource = resData.blocks.map(b => b.source || b.text).join(" ");
+          const joinedTrans = resData.blocks.map(b => b.translated || b.text).join(" ");
+          sourceText.value = joinedSource;
+          translatedText.value = joinedTrans;
+          updateSelectedBox({ source: joinedSource, text: joinedTrans });
+          await updateErasedBg();
+          refreshScreenCanvas();
+          setStatus("Región detectada y traducida.");
+          return;
+        }
+      }
+    }
+
+    const textToTranslate = sourceText.value.trim();
+    if (!textToTranslate) return setStatus("El texto original está vacío.");
     setStatus("Traduciendo texto...");
-    const translated = await translateOnline(text, targetLang.value);
+    const translated = await translateOnline(textToTranslate, targetLang.value);
     translatedText.value = translated;
     updateSelectedBox({ text: translated });
+    await updateErasedBg();
+    refreshScreenCanvas();
     setStatus("Traducido.");
   } catch (err) {
     setStatus(`Error traduciendo: ${err.message}`);

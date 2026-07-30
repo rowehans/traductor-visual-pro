@@ -90,18 +90,34 @@ export function mergeLinesIntoBlocks(lines) {
   }));
 }
 
+export function parseColorToRGB(col) {
+  if (!col) return [255, 255, 255];
+  col = String(col).trim();
+  if (col.startsWith("#")) {
+    let hex = col.slice(1);
+    if (hex.length === 3) {
+      hex = hex.split("").map(c => c + c).join("");
+    }
+    if (hex.length === 6) {
+      const r = parseInt(hex.slice(0, 2), 16);
+      const g = parseInt(hex.slice(2, 4), 16);
+      const b = parseInt(hex.slice(4, 6), 16);
+      if (!isNaN(r) && !isNaN(g) && !isNaN(b)) return [r, g, b];
+    }
+  }
+  const m = col.match(/\d+/g);
+  if (m && m.length >= 3) {
+    return m.slice(0, 3).map(Number);
+  }
+  return [255, 255, 255];
+}
+
 /**
- * Determina si un color RGB es claro (brillo > 128).
- * @param {string} col - Color en formato rgb(r,g,b) o cualquier string con dígitos
+ * Determina si un color es claro (brillo > 128).
+ * @param {string} col - Color en formato #hex o rgb(r,g,b)
  * @returns {boolean}
  */
 export function isLightColor(col) {
-  try {
-    const m = col.match(/\d+/g);
-    if (!m) return true;
-    const [r, g, b] = m.map(Number);
-    return (r * 0.299 + g * 0.587 + b * 0.114) > 128;
-  } catch (e) {
-    return true;
-  }
+  const [r, g, b] = parseColorToRGB(col);
+  return (r * 0.299 + g * 0.587 + b * 0.114) > 128;
 }

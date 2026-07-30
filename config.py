@@ -56,6 +56,17 @@ LANGUAGES: Final[dict[str, str]] = {
 # ─── Diccionario de corrección PRE-OCR (Errores comunes de OCR) ──
 # Versión raw (strings de regex) para compatibilidad hacia atrás.
 GLOSARIO_PRE: Final[dict[str, str]] = {
+    r"\bCoirectamente\b": "Correctamente",
+    r"\bVilianos\b": "Villanos",
+    r"\bYilianos\b": "Villanos",  # OCR: 'V' misread as 'Y' en tipografia artistica
+    r"\bIFMPORAOA1\b": "TEMPORADA 1",
+    r"\bIFMPORAOA\b": "TEMPORADA",
+    r"\bTEMPORADA1\b": "TEMPORADA 1",       # OCR: fusionó palabra+número
+    r"\bTEMPORADA(\d+)\b": "TEMPORADA \1", # OCR: "TEMPORADA7" sin espacio
+    r"\btuis\b": "tus",
+    r"\bvisitos\b": "visitas",
+    r"\bporu\b": "para",
+    r"\bAdhniaistrur\b": "Administrar",
     r"\belscon\b": "el scan",
     r"\bIo web\b": "la web",
     r"\bJPuede\b": "¿Puede",
@@ -88,6 +99,12 @@ GLOSARIO_PRE: Final[dict[str, str]] = {
     r"\bshInel\b": "Shinel",  # OCR: username handle mixed case
     r"\b@\b": "",              # OCR: @ solitario (ruido de escaneo)
     r"@": "",                  # OCR: @ en cualquier posición (ruido decorativo)
+    r"\bC0M0\b": "COMO",          # OCR: 'O' misread as '0'
+    r"\bC0RRECTAMENTE\b": "CORRECTAMENTE",
+    r"\bC0RREC\b": "CORREC",
+    r"\bSer1e\b": "Serie",          # OCR: 'i' misread as '1'
+    r"\b5in\b": "sin",             # OCR: 's' misread as '5'
+    r"\bR\b": "Y",                 # OCR: 'Y' misread as 'R'
 }
 
 # Versión pre-compilada (evita re.compile() implícito en cada llamada)
@@ -100,15 +117,15 @@ GLOSARIO_REGEX: Final[list[tuple[re.Pattern[str], str]]] = [
 MARGIN_NOISE_PATTERNS: Final[list[re.Pattern[str]]] = [
     re.compile(r'\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}'),
     re.compile(r'\d{1,2}[/.\-]\d{1,2}1?\d{2}\b'),
-    re.compile(r'\d{1,2}:\d{2}\s*([ap]\.?\s?m\.?)?', re.IGNORECASE),
+    re.compile(r'\d{1,2}[:.]\d{2}\s*([ap]\.?\s?m\.?)?', re.IGNORECASE),
     re.compile(r'^\d{1,4}\s*/\s*\d{1,4}$'),
     re.compile(r'\b\d{1,4}\s+de\s+\d{1,4}\b', re.IGNORECASE),
     re.compile(r'\bp[aá]g(?:ina)?\.?\s?\d{1,4}\b', re.IGNORECASE),
     re.compile(r'\b(?:p[aá]g(?:ina)?|page)\s+\d+\s+(?:de|of)\s+\d+\b', re.IGNORECASE),
     # Metadatos de exportación y timestamps en márgenes (ej. 20260713-11032519C, 13726, 458pm)
     re.compile(r'\b\d{8,14}[A-Za-z0-9_\-]*\b'),
-    re.compile(r'\b\d{3,6}\s*,?\s*\d{3,4}\s*p\.?m\.?\b', re.IGNORECASE),
-    re.compile(r'\b\d{3,4}\s*p\.?m\.?\b', re.IGNORECASE),
+    re.compile(r'\b\d{1,6}\s*[,.]?\s*\d{1,4}\s*p\.?m\.?\b', re.IGNORECASE),
+    re.compile(r'\b\d{1,4}\s*p\.?m\.?\b', re.IGNORECASE),
 ]
 
 # Patrones de marcas de agua globales (sellos de grupos de escaneo)
@@ -132,7 +149,9 @@ WATERMARK_PATTERNS: Final[list[re.Pattern[str]]] = [
 GLOSARIO_POST: Final[list[tuple[str, str]]] = [
     # Términos de capítulos/episodios
     (r"\bTEMPORARY\s+(\d+)\b", r"SEASON \1"),          # TEMPORADA 7 → SEASON 7
-    (r"\bTEMPORARILY\s+(\d+)\b", r"SEASON \1"),         # variante
+    (r"\bTEMPORARILY\s+(\d+)\b", r"SEASON \1"),         # variante con espacio
+    (r"\bTEMPORARY(\d+)\b", r"SEASON \1"),                # TEMPORADA1 → SEASON 1 (sin espacio)
+    (r"\bTEMPORARILY(\d+)\b", r"SEASON \1"),              # variante sin espacio
     # Términos de scanlation
     (r"\bSCAN\b", r"scan"),                                # normalizar mayúsculas
     (r"\bSCANLATION\b", r"scanlation"),

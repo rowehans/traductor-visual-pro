@@ -317,10 +317,11 @@ _SFX_EXCLUDE: frozenset[str] = frozenset({
 def _es_sfx(text: str) -> bool:
     """Detecta si un texto es onomatopeya/SFX y debe preservarse sin traducir."""
     t = text.strip()
-    if not t or len(t) > 20:
+    if not t or len(t) > 25:
         return False
-    # ── Excluir palabras españolas comunes (no deben preservarse como SFX) ──
-    if t.lower() in _SFX_EXCLUDE:
+    # Si contiene cualquier palabra común (capítulo, temporada, cómo, etc.), NO es SFX
+    words_lower = [w.lower() for w in re.findall(r'\b\w+\b', t)]
+    if any(w in _SFX_EXCLUDE for w in words_lower):
         return False
     for pat in _SFX_PATTERNS:
         if pat.match(t):
@@ -332,9 +333,7 @@ def _post_process_translation(text: str, source_lang: str, target_lang: str) -> 
     """
     Post-procesa la traducción para manga/cómic:
     - Capitalización correcta de primera letra
-    - Puntuación final si falta
     - Normaliza espacios múltiples
-    - Preserva SFX detectados
     """
     if not text:
         return text
@@ -343,23 +342,12 @@ def _post_process_translation(text: str, source_lang: str, target_lang: str) -> 
         return t
     # Normalizar espacios múltiples
     t = re.sub(r'\s{2,}', ' ', t)
-    # Si es SFX, devolver tal cual (ya se verifica antes de traducir, pero por si acaso)
+    # Si es SFX, devolver tal cual
     if _es_sfx(t):
         return t
     # Capitalizar primera letra si es minúscula y hay más texto
     if t[0].islower() and len(t) > 1 and t[1:].lstrip():
         t = t[0].upper() + t[1:]
-    # Asegurar puntuación final para diálogos (no SFX, no nombres propios cortos)
-    if target_lang in ("en", "es") and len(t) > 2:
-        if not re.search(r'[.!?…。]$', t):
-            # No añadir punto si parece nombre propio o SFX
-            words = t.split()
-            if not (len(words) == 1 and words[0].isupper() and len(words[0]) > 2):
-                # Estilo manga: añadir "..." para diálogos continuados
-                if len(words) <= 8:
-                    t += "..."
-                else:
-                    t += "."
     return t
 
 
@@ -463,7 +451,9 @@ _REPEATED_CHUNK_PAT: re.Pattern[str] = re.compile(
 def _es_traduccion_valida(orig: str, trad: str, lenient: bool = False) -> bool:
     if not trad or not trad.strip():
         return False
-    if not lenient and trad == orig:
+    # Siempre rechazar texto identico al original, incluso en modo lenient
+    # (el modo lenient relaja la validacion del CONTENIDO, no la ausencia de traduccion)
+    if trad == orig:
         return False
     # Detectar fragmentos repetidos pegados (reemplaza el viejo hardcode "mainstremainstre")
     if _REPEATED_CHUNK_PAT.search(trad):
@@ -758,28 +748,9 @@ def _translate_ctranslate2(text: str, source: str, target: str) -> str | None:
         return None
 
 
-# ─── Shared executor para motores de traducción en paralelo ─────
-# Cada llamada a _translate_one prueba CT2, Argos y Google en paralelo.
-# Antes se creaba un ThreadPoolExecutor NUEVO por cada llamada (619 bloques
-# × 3 threads = 1857 creaciones). Ahora usamos un executor compartido que
-# mantiene 4 threads vivos, eliminando el overhead de crear/destruir threads.
-_translate_engine_executor: concurrent.futures.ThreadPoolExecutor | None = None
-_translate_engine_executor_lock: threading.Lock = threading.Lock()
-
-
-def _get_translate_engine_executor() -> concurrent.futures.ThreadPoolExecutor:
-    global _translate_engine_executor
-    if _translate_engine_executor is None:
-        with _translate_engine_executor_lock:
-            if _translate_engine_executor is None:
-                _translate_engine_executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=4,  # suficiente para CT2 + Argos + Google
-                    thread_name_prefix="translate_engines",
-                )
-    return _translate_engine_executor
-
-
 # ─── ArgosTranslate direct (con lock global — NO es thread-safe) ──
+# NOTA: Ya no se usa en el pipeline principal de _translate_one().
+# Se mantiene la funcion por si se necesita como fallback adicional.
 _argos_translate_lock: threading.Lock = threading.Lock()
 
 
@@ -850,51 +821,24 @@ def _translate_one(
     is_all_caps = text_processed.isupper() and any(c.isalpha() for c in text_processed) and len(text_processed) > 1
     query_text = text_processed.title() if is_all_caps else text_processed
 
-    # Detectar ruido OCR: si el texto parece basura, nos saltamos Argos
-    # (que tarda ~3s y produce cadenas "mainstremainstre" inútiles)
-    if _es_ocr_noise(text_processed):
-        print(f"[translate] OCR noise detectado, saltando Argos")
-        translation_fns: list[tuple[str, Callable[[str, str, str], str | None]]] = [
-            ("ctranslate2", _translate_ctranslate2),
-            ("google", lambda t, s, tg: _translate_google(t, s, tg)),
-        ]
-    else:
-        translation_fns: list[tuple[str, Callable[[str, str, str], str | None]]] = [
-            ("ctranslate2", _translate_ctranslate2),
-            ("argos", _translate_argos),
-            ("google", lambda t, s, tg: _translate_google(t, s, tg)),
-        ]
-
-    # ── Probar motores en PARALELO, aceptar el primer resultado valido ──
-    # Usa executor compartido (no crea/destruye 3 threads por llamada)
-
-    def _probar_motor(method_name: str, fn: Callable) -> tuple[str, str | None]:
-        try:
-            res = fn(query_text, src_lang, target)
-            if res and is_all_caps:
-                res = res.upper()
-            return method_name, res
-        except Exception as e:
-            print(f"[translate] {method_name} error: {e}")
-            return method_name, None
+    # ── ESTRATEGIA OPTIMIZADA: CT2 primero (síncrono), Google fallback ──
+    # Ya no se usa el pipeline paralelo (CT2+Argos+Google con timeout 30s)
+    # que causaba contienda de workers y colgaba por 30-80s por texto.
+    # Ahora es secuencial: CT2 (~0.12s GPU) -> Google (~2s) -> SIN_TRAD.
 
     def _resultado_valido(method_name: str, resultado: str | None, src_lang: str) -> bool:
         """Verifica si un resultado de traduccion es aceptable."""
         if not resultado:
             return False
         if resultado == text_processed:
-            # Lenient: textos cortos (nombres, SFX, onomatopeyas)
-            # se aceptan sin cambios aunque src_lang != target
-            if is_lenient:
-                return True
-            # Si el texto no cambio y el idioma origen NO es el destino,
-            # es una NO-traduccion (garbage in, garbage out).
-            # Esto evita que OCR ruidoso como 'momms@' pase validacion
-            # solo porque _detect_language_robust('momms@') retorna 'en'
-            # por defecto.
             if src_lang != target:
-                print(f"[translate] {method_name} mismo texto "
-                      f"(src_lang={src_lang}, target={target}) — descartado")
+                words_lower = [w.lower() for w in re.findall(r'\b\w+\b', text_processed)]
+                has_src_words = any(w in _SPA_WORDS for w in words_lower)
+                if has_src_words:
+                    print(f"[translate] {method_name} texto sin traducir (src={src_lang}, target={target}) — descartado")
+                    return False
+                print(f"[translate] {method_name} mismo texto (sin traducir) "
+                      f"src_lang={src_lang}, target={target} — descartado")
                 return False
             result_lang = _detect_language_robust(resultado)
             if result_lang != target:
@@ -902,76 +846,50 @@ def _translate_one(
                       f"(detectado={result_lang}, target={target}) — descartado")
                 return False
         if not _es_traduccion_valida(text_processed, resultado, lenient=is_lenient):
-            print(f"[translate] {method_name} inválido: '{resultado[:50]}'")
+            print(f"[translate] {method_name} invalido: '{resultado[:50]}'")
             return False
         return True
 
-    # Lanzar todos los motores en paralelo usando executor compartido
-    executor = _get_translate_engine_executor()
-    fut_map = {
-        executor.submit(_probar_motor, method_name, fn): method_name
-        for method_name, fn in translation_fns
-    }
-    mejor_resultado: str | None = None
-    mejor_nombre: str | None = None
-
-    for future in concurrent.futures.as_completed(fut_map, timeout=30):
-        method_name, resultado = future.result()
-        if _resultado_valido(method_name, resultado, src_lang):
-            # Primer resultado valido: aceptarlo inmediatamente
-            # Aplicar post-procesado para manga
-            final_result = _post_process_translation(resultado, src_lang, target)
-            print(f"[translate] {method_name} OK: '{final_result[:50]}'")
-            if translation_cache_available and cache_set is not None:
-                try:
-                    cache_set(text_processed, src_lang, target, final_result)
-                except Exception as e:
-                    print(f"[translate] Error guardando en cache: {e}")
-            return final_result  # type: ignore[no-any-return]
-        # Guardar el mejor para fallback si ninguno es valido
-        if resultado and mejor_resultado is None:
-            mejor_resultado = resultado
-            mejor_nombre = method_name
-
-    # ── Fallback: si ningun motor dio resultado valido ────────────
-    # Intentamos Google con backoff progresivo (5s, 15s, 30s) porque
-    # suele ser rate limiting temporal, no un error real del motor.
-    backoff_delays = [5, 15, 30]
-    for attempt, delay in enumerate(backoff_delays):
-        print(f"[translate] Google retry {attempt + 1}/{len(backoff_delays)} "
-              f"(esperando {delay}s)...")
-        time.sleep(delay)
-        # Resetear backoff de rate limiting para forzar el intento
-        with _google_lock:
-            _google_rate_limit_state["backoff_until"] = 0.0
-        try:
-            retry_result = _translate_google(query_text, src_lang, target)
-            if retry_result and is_all_caps:
-                retry_result = retry_result.upper()
-            if retry_result and _resultado_valido("google-retry", retry_result, src_lang):
-                final_result = _post_process_translation(retry_result, src_lang, target)
-                print(f"[translate] Google retry {attempt + 1} OK: '{final_result[:50]}'")
-                if translation_cache_available and cache_set is not None:
-                    try:
-                        cache_set(text_processed, src_lang, target, final_result)
-                    except Exception as cache_err:
-                        print(f"[translate] Error guardando en cache (retry): {cache_err}")
-                return final_result  # type: ignore[no-any-return]
-        except Exception as e:
-            print(f"[translate] Google retry {attempt + 1} error: {e}")
-
-    # Fallback final: lo mejor que tengamos
-    if mejor_resultado is not None and mejor_nombre is not None:
-        final_result = _post_process_translation(mejor_resultado, src_lang, target)
-        print(f"[translate] Fallback final ({mejor_nombre}): '{final_result[:50]}'")
+    # ── ESTRATEGIA OPTIMIZADA: CT2 primero (síncrono, rápido) ────
+    # CT2 es el motor mas rapido (~0.12s en GPU) y no necesita executor.
+    # Probarlo primero evita la contienda de workers con Google/Argos
+    # y reduce la latencia de ~30s a <1s en el caso comun.
+    ct2_result = _translate_ctranslate2(query_text, src_lang, target)
+    if ct2_result is not None and is_all_caps:
+        ct2_result = ct2_result.upper()
+    if ct2_result and _resultado_valido("ctranslate2", ct2_result, src_lang):
+        final_result = _post_process_translation(ct2_result, src_lang, target)
+        print(f"[translate] ctranslate2 OK (fast path): '{final_result[:50]}'")
         if translation_cache_available and cache_set is not None:
             try:
                 cache_set(text_processed, src_lang, target, final_result)
             except Exception as e:
-                print(f"[translate] Error guardando en cache (fallback): {e}")
+                print(f"[translate] Error guardando en cache: {e}")
         return final_result
 
-    # ── SIN_TRAD fallback: copiar original si TODO falla ──
-    # Esto garantiza que nunca perdamos el texto original
-    print(f"[translate] SIN_TRAD: todos fallaron, copiando original")
+    # ── Fallback: Google (con timeout rapido) ────────────────────
+    # Google es el unico fallback realista. Argos se omite porque:
+    #   1. Produce basura con texto OCR ruidoso ("mainstremainstre")
+    #   2. Tarda ~3s en cargar el modelo la primera vez
+    #   3. Requiere descarga de internet
+    # Google retorna None si esta en backoff de rate limiting.
+    google_result = _translate_google(query_text, src_lang, target)
+    if google_result and is_all_caps:
+        google_result = google_result.upper()
+    if google_result and _resultado_valido("google", google_result, src_lang):
+        final_result = _post_process_translation(google_result, src_lang, target)
+        print(f"[translate] google OK (fallback): '{final_result[:50]}'")
+        if translation_cache_available and cache_set is not None:
+            try:
+                cache_set(text_processed, src_lang, target, final_result)
+            except Exception as e:
+                print(f"[translate] Error guardando en cache: {e}")
+        return final_result
+
+    # ── SIN_TRAD: devolver original sin cambios ──────────────────
+    # Esto pasa cuando CT2 y Google fallan (raro). En vez de esperar
+    # 30s+ con backoff exponencial, devolvemos el texto original
+    # inmediatamente. El usuario ve el texto sin traducir pero al menos
+    # no se cuelga todo el pipeline por un solo bloque.
+    print(f"[translate] SIN_TRAD (fallback final): '{text_processed[:50]}'")
     return text_processed

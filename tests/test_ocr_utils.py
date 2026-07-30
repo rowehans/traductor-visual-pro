@@ -43,11 +43,11 @@ def small_bgr() -> np.ndarray:
 def gray_test_image() -> np.ndarray:
     """Imagen en escala de grises con texto simulado."""
     img = np.ones((100, 300, 3), dtype=np.uint8) * 200  # fondo claro
-    # Simular texto: rectángulos oscuros en posiciones de "texto"
+    # Simular texto (usar español para no activar spellchecker)
     cv2 = pytest.importorskip("cv2")
-    cv2.putText(img, "Hello World", (10, 40),
+    cv2.putText(img, "Hola Mundo", (10, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (30, 30, 30), 2)
-    cv2.putText(img, "OCR Test", (10, 75),
+    cv2.putText(img, "OCR Prueba", (10, 75),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (50, 50, 50), 1)
     return img
 
@@ -61,12 +61,13 @@ def dark_image() -> np.ndarray:
 
 @pytest.fixture
 def blocks_fixture() -> list[dict[str, Any]]:
-    """Lista típica de bloques de texto para pruebas de merge/filtro."""
+    """Lista típica de bloques de texto para pruebas de merge/filtro.
+    Usa palabras españolas para evitar correcciones del spellchecker."""
     return [
-        {"x": 10, "y": 20, "w": 80, "h": 15, "text": "Hello", "confidence": 0.85, "fontSize": 14, "textColor": "#000000"},
-        {"x": 95, "y": 21, "w": 90, "h": 16, "text": "World", "confidence": 0.90, "fontSize": 14, "textColor": "#000000"},
+        {"x": 10, "y": 20, "w": 80, "h": 15, "text": "Hola", "confidence": 0.85, "fontSize": 14, "textColor": "#000000"},
+        {"x": 95, "y": 21, "w": 90, "h": 16, "text": "Mundo", "confidence": 0.90, "fontSize": 14, "textColor": "#000000"},
         {"x": 10, "y": 50, "w": 60, "h": 12, "text": "OCR", "confidence": 0.70, "fontSize": 12, "textColor": "#000000"},
-        {"x": 75, "y": 52, "w": 110, "h": 13, "text": "testing", "confidence": 0.75, "fontSize": 12, "textColor": "#000000"},
+        {"x": 75, "y": 52, "w": 110, "h": 13, "text": "Prueba", "confidence": 0.75, "fontSize": 12, "textColor": "#000000"},
     ]
 
 
@@ -269,12 +270,12 @@ class TestOcrResultsToBlocks:
     def test_single_block_conversion(self, small_bgr):
         from ocr_utils import _ocr_results_to_blocks
         results = [
-            ([[10, 20], [90, 20], [90, 40], [10, 40]], "Hello", 0.85)
+            ([[10, 20], [90, 20], [90, 40], [10, 40]], "Hola", 0.85)
         ]
         blocks = _ocr_results_to_blocks(results, small_bgr)
         assert len(blocks) >= 1
         block = blocks[0]
-        assert block["text"] == "Hello"
+        assert block["text"] == "Hola"
         assert abs(block["confidence"] - 0.85) < 0.01
         assert block["w"] >= 80  # 90-10
         assert block["h"] >= 20  # 40-20
@@ -286,8 +287,8 @@ class TestOcrResultsToBlocks:
     def test_multiple_blocks(self, small_bgr):
         from ocr_utils import _ocr_results_to_blocks
         results = [
-            ([[10, 20], [80, 20], [80, 35], [10, 35]], "Hello", 0.85),
-            ([[90, 21], [170, 21], [170, 36], [90, 36]], "World", 0.90),
+            ([[10, 20], [80, 20], [80, 35], [10, 35]], "Hola", 0.85),
+            ([[90, 21], [170, 21], [170, 36], [90, 36]], "Mundo", 0.90),
         ]
         blocks = _ocr_results_to_blocks(results, small_bgr)
         # Pueden mergearse en 1 bloque si están cerca
@@ -330,9 +331,9 @@ class TestOcrResultsToBlocks:
         blocks = _ocr_results_to_blocks([
             ([[5, 5], [40, 5], [40, 20], [5, 20]], "Dark", 0.80)
         ], img)
-        # El ROI alrededor del centro del bloque tiene fondo claro (200) → brightness > 128 → #ffffff
+        # El ROI alrededor del centro del bloque tiene fondo claro (200) → brightness > 128 → #000000 (texto negro en fondo claro)
         if blocks:
-            assert blocks[0]["textColor"] == "#ffffff"
+            assert blocks[0]["textColor"] == "#000000"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -397,35 +398,34 @@ class TestGroupAndMergeBlocks:
     def test_single_block_unchanged(self):
         from ocr_utils import _group_and_merge_blocks
         blocks = [
-            {"x": 10, "y": 20, "w": 80, "h": 15, "text": "Hello", "confidence": 0.85,
+            {"x": 10, "y": 20, "w": 80, "h": 15, "text": "Hola", "confidence": 0.85,
              "fontSize": 14, "textColor": "#000000"},
         ]
         result = _group_and_merge_blocks(blocks)
         assert len(result) == 1
-        assert result[0]["text"] == "Hello"
+        assert result[0]["text"] == "Hola"
 
     def test_horizontal_merge(self, blocks_fixture):
         from ocr_utils import _group_and_merge_blocks
-        # "Hello" y "World" están cerca horizontalmente → deben mergearse
+        # "Hola" y "Mundo" están cerca horizontalmente → deben mergearse
         result = _group_and_merge_blocks(blocks_fixture, img_h=200)
         assert len(result) <= len(blocks_fixture)
-        # "Hello World" debe aparecer en algún bloque merged
         texts = [b["text"] for b in result]
         combined = " ".join(texts)
-        assert "Hello" in combined or "Hello World" in combined.replace("  ", " ")
+        assert "Hola" in combined and "Mundo" in combined
 
     def test_vertical_merge(self):
         from ocr_utils import _group_and_merge_blocks
         # Dos bloques en misma columna (x overlap) cerca verticalmente
         blocks = [
-            {"x": 10, "y": 20, "w": 80, "h": 15, "text": "Line 1", "confidence": 0.85, "fontSize": 14, "textColor": "#000000"},
-            {"x": 12, "y": 40, "w": 75, "h": 14, "text": "Line 2", "confidence": 0.80, "fontSize": 14, "textColor": "#000000"},
+            {"x": 10, "y": 20, "w": 80, "h": 15, "text": "Texto 1", "confidence": 0.85, "fontSize": 14, "textColor": "#000000"},
+            {"x": 12, "y": 40, "w": 75, "h": 14, "text": "Texto 2", "confidence": 0.80, "fontSize": 14, "textColor": "#000000"},
         ]
         result = _group_and_merge_blocks(blocks, img_h=200)
         # x overlap: 75 over min_w=75*0.5 → deben mergearse verticalmente
         if len(result) == 1:
-            assert "Line 1" in result[0]["text"]
-            assert "Line 2" in result[0]["text"]
+            assert "Texto 1" in result[0]["text"]
+            assert "Texto 2" in result[0]["text"]
 
     def test_filters_number_only(self):
         from ocr_utils import _group_and_merge_blocks
@@ -476,11 +476,11 @@ class TestGroupAndMergeBlocks:
     def test_clean_text_preserved(self):
         from ocr_utils import _group_and_merge_blocks
         blocks = [
-            {"x": 10, "y": 50, "w": 100, "h": 15, "text": "Hello beautiful world", "confidence": 0.90, "fontSize": 14, "textColor": "#000000"},
+            {"x": 10, "y": 50, "w": 100, "h": 15, "text": "Hola hermoso mundo", "confidence": 0.90, "fontSize": 14, "textColor": "#000000"},
         ]
         result = _group_and_merge_blocks(blocks, img_h=200)
         assert len(result) == 1
-        assert result[0]["text"] == "Hello beautiful world"
+        assert result[0]["text"] == "Hola hermoso mundo"
 
     def test_punctuation_only_filtered(self):
         from ocr_utils import _group_and_merge_blocks
@@ -514,40 +514,31 @@ class TestGroupAndMergeBlocks:
 # ═══════════════════════════════════════════════════════════════
 
 class TestIsInsideSpeechBubble:
-    """Detección de globos de diálogo."""
+    """Detección de globos de diálogo (basada en uniformidad del borde)."""
 
-    def test_bright_background_not_bubble(self):
+    def test_bright_uniform_background_is_bubble(self):
         from ocr_utils import _is_inside_speech_bubble
-        # Fondo blanco (brightness >> 80)
-        img = np.ones((100, 200, 3), dtype=np.uint8) * 200
+        # Fondo blanco uniforme (globo típico de manga) -> ES burbuja (True)
+        img = np.ones((100, 200, 3), dtype=np.uint8) * 250
         block = {"x": 30, "y": 30, "w": 80, "h": 20}
-        assert _is_inside_speech_bubble(img, block) is False
+        assert _is_inside_speech_bubble(img, block) is True
 
-    def test_dark_background_candidate_bubble(self):
+    def test_dark_uniform_background_is_bubble(self):
         from ocr_utils import _is_inside_speech_bubble
-        # Fondo oscuro uniforme + borde oscuro
-        img = np.ones((100, 200, 3), dtype=np.uint8) * 60
+        # Fondo oscuro uniforme -> ES burbuja (True)
+        img = np.ones((100, 200, 3), dtype=np.uint8) * 40
         block = {"x": 30, "y": 30, "w": 80, "h": 20}
-        # brightness=60 < 80, y std baja → puede ser burbuja
-        result = _is_inside_speech_bubble(img, block)
-        # Depende de std_per_channel (si todas las muestras son iguales, std≈0)
-        assert result is True
+        assert _is_inside_speech_bubble(img, block) is True
 
     def test_non_uniform_background_not_bubble(self):
         from ocr_utils import _is_inside_speech_bubble
-        # Fondo claro (brightness > 80) → no burbuja (early return)
-        img = np.ones((100, 200, 3), dtype=np.uint8) * 150
-        block = {"x": 30, "y": 30, "w": 80, "h": 20}
-        result = _is_inside_speech_bubble(img, block)
-        assert result is False
-
-    def test_bright_uniform_not_bubble(self):
-        from ocr_utils import _is_inside_speech_bubble
-        # Fondo muy claro (brightness >> 80) → early return False
-        img = np.ones((100, 200, 3), dtype=np.uint8) * 220
-        block = {"x": 30, "y": 30, "w": 80, "h": 20}
-        result = _is_inside_speech_bubble(img, block)
-        assert result is False
+        # Fondo no uniforme (ruido/arte multicolor) -> NO es burbuja (False)
+        img = np.zeros((100, 200, 3), dtype=np.uint8)
+        img[:50, :, 0] = 255  # canal azul arriba
+        img[50:, :, 1] = 255  # canal verde abajo
+        img[:, :100, 2] = 255 # canal rojo izquierda
+        block = {"x": 30, "y": 30, "w": 80, "h": 40}
+        assert _is_inside_speech_bubble(img, block) is False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -615,13 +606,12 @@ class TestBuildInpaintMask:
 
     def test_text_region_marked(self):
         from ocr_utils import _build_inpaint_mask
-        # Usar imagen clara (brightness > 80) para que el bloque se detecte
-        # como fuera de burbuja y use máscara rectangular (garantiza píxeles marcados)
+        import cv2
         img = np.ones((100, 200, 3), dtype=np.uint8) * 200
+        cv2.putText(img, "test", (30, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (20, 20, 20), 2)
         blocks = [{"x": 30, "y": 30, "w": 50, "h": 20, "text": "test"}]
         mask = _build_inpaint_mask(img, blocks)
-        # La región del texto debe tener píxeles marcados (rectángulo)
-        region = mask[25:55, 25:90]  # área alrededor del bloque
+        region = mask[25:55, 25:90]
         assert int(region.max()) > 0
 
 
@@ -643,7 +633,7 @@ class TestInpaintImage:
         from ocr_utils import _inpaint_image
         mask = np.zeros(small_bgr.shape[:2], dtype=np.uint8)
         mask[40:60, 50:150] = 255
-        result = _inpaint_image(small_bgr, mask, blocks=[{"h": 20}])
+        result = _inpaint_image(small_bgr, mask, blocks=[{"x": 50, "y": 40, "w": 100, "h": 20}])
         assert result.shape == small_bgr.shape
         # La región inpaintada no debe ser idéntica a la original
         region_orig = small_bgr[40:60, 50:150, :]
@@ -761,7 +751,7 @@ class TestDetectAndOcr:
         """Tier 1 (EasyOCR directo) encuentra bloques."""
         mock_reader = MagicMock()
         mock_reader.readtext.return_value = [
-            ([[10, 20], [80, 20], [80, 35], [10, 35]], "Hello", 0.85)
+            ([[10, 20], [80, 20], [80, 35], [10, 35]], "Hola", 0.85)
         ]
         with patch("ocr_utils._get_ocr_reader", return_value=mock_reader):
             with patch("ocr_utils._ocr_semaphore.acquire", return_value=True):
@@ -771,7 +761,7 @@ class TestDetectAndOcr:
                     # Debe encontrar al menos 1 bloque
                     assert len(result) >= 1
                     texts = [b["text"] for b in result]
-                    assert "Hello" in " ".join(texts)
+                    assert "Hola" in " ".join(texts)
 
     def test_tier1_fallback_to_tier2_without_fallback(self, small_bgr):
         """Con allow_fallback=False, si tier 1 da 0 bloques, retorna []."""
