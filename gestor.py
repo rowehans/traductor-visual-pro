@@ -5,6 +5,7 @@ con detección y corrección de páginas mal traducidas.
 Reintenta páginas fallidas con mayor resolución automáticamente.
 """
 import base64
+import hashlib
 import io
 import json
 import os
@@ -18,12 +19,16 @@ from datetime import datetime
 from pathlib import Path
 
 RUTA_RAIZ = Path(__file__).parent
-RUTA_PDF = RUTA_RAIZ / "Capítulo 43 de Cómo criar villanos correctamente _ Olympus Scanlation_compressed.pdf"
+RUTA_PDF = RUTA_RAIZ / "Capítulo 43 de Cómo criar villanos correctamente.pdf"
 RUTA_SERVIDOR = RUTA_RAIZ / "server.py"
 RUTA_PYTHON = RUTA_RAIZ / "env" / "Scripts" / "python.exe"
 RUTA_REPORTE = RUTA_RAIZ / "reporte_final.html"
 RUTA_PROGRESO = RUTA_RAIZ / "progreso.json"
 RUTA_FALLIDAS = RUTA_RAIZ / "paginas_fallidas"
+# DOC_ID (sesión 126): scope por documento de los caches de decisión del
+# servidor — mismo hash que process_all_pages.py para no interferir con otros
+# capítulos procesados en el mismo servidor.
+DOC_ID = hashlib.md5(RUTA_PDF.name.encode("utf-8")).hexdigest()[:12]
 
 URL_SERVIDOR = "http://127.0.0.1:5174"
 IDIOMA_ORIGEN = "es"
@@ -280,6 +285,7 @@ def procesar_pagina(numero_pagina, documento, dpi=DPI_POR_DEFECTO, intento=1):
                     "image": f"data:image/png;base64,{codigo_b64}",
                     "target": IDIOMA_DESTINO,
                     "source": IDIOMA_ORIGEN,
+                    "doc_id": DOC_ID,
                 },
                 timeout=180,
             )

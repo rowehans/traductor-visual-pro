@@ -5,15 +5,19 @@ Procesa N páginas consecutivas EN PARALELO y reporta errores HTTP + memoria.
 Workers simultáneos: 4 (el servidor serializa OCR internamente con semáforo,
 pero inpaint/translate se overlapan entre requests paralelos).
 """
-import os, sys, time, json, base64, gc, psutil, concurrent.futures, threading
+import os, sys, time, json, base64, gc, psutil, concurrent.futures, threading, hashlib
 sys.stdout.reconfigure(encoding='utf-8')
 
 import fitz, cv2, numpy as np, requests
 from PIL import Image
 from io import BytesIO
 
-PDF_PATH = "Capítulo 43 de Cómo criar villanos correctamente _ Olympus Scanlation_compressed.pdf"
+PDF_PATH = "Capítulo 43 de Cómo criar villanos correctamente.pdf"
 API_URL = "http://127.0.0.1:5174"
+# DOC_ID (sesión 126): scope por documento de los caches de decisión — mismo
+# hash que process_all_pages.py para que el stress test no contamine el scope
+# de otros capítulos procesados en el mismo servidor.
+DOC_ID = hashlib.md5(os.path.basename(PDF_PATH).encode("utf-8")).hexdigest()[:12]
 ZOOM = 1.5
 TARGET = "en"
 SOURCE = "es"
@@ -60,8 +64,12 @@ def process_page(pg_idx: int) -> dict:
 
     t0 = time.time()
     try:
+        # Fase 4: el default del endpoint es 'fusion' (puede disparar el daemon
+        # U-OCR, ~1-8 min/pág) — el stress test mide MEMORIA, no calidad, así
+        # que fija el modo rápido y determinista para no alargar el run.
         resp = requests.post(f"{API_URL}/api/process-page",
-            json={'image': b64, 'target': TARGET, 'source': SOURCE},
+            json={'image': b64, 'target': TARGET, 'source': SOURCE,
+                  'ocr_mode': 'easyocr', 'doc_id': DOC_ID},
             timeout=TIMEOUT)
         elapsed = time.time() - t0
     except Exception as e:

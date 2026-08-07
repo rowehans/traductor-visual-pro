@@ -27,8 +27,13 @@ sys.stdout.reconfigure(encoding='utf-8')
 import requests
 
 CHECKPOINT_FILE = "resultados_progreso.json"
-PDF_PATH = "Capítulo 43 de Cómo criar villanos correctamente _ Olympus Scanlation_compressed.pdf"
+PDF_PATH = "Capítulo 43 de Cómo criar villanos correctamente.pdf"
 API_URL = "http://127.0.0.1:5174"
+# DOC_ID (sesión 126): scope por documento de los caches de decisión del
+# servidor — mismo hash que process_all_pages.py para que el reproceso del
+# capítulo 43 reutilice las decisiones del run original (y el capítulo 47 no
+# herede las del 43).
+DOC_ID = hashlib.md5(os.path.basename(PDF_PATH).encode("utf-8")).hexdigest()[:12]
 ZOOM = 1.5
 TARGET = "en"
 SOURCE = "es"
@@ -183,7 +188,8 @@ def main():
 
                     t0 = time.time()
                     resp = requests.post(f"{API_URL}/api/process-page",
-                        json={'image': b64, 'target': TARGET, 'source': SOURCE},
+                        json={'image': b64, 'target': TARGET, 'source': SOURCE,
+                              'doc_id': DOC_ID},
                         timeout=TIMEOUT)
                     elapsed = time.time() - t0
                     del b64
