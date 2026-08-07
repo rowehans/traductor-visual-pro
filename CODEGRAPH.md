@@ -5,7 +5,7 @@
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                      server.py                          │
-│  Entry point Flask (port 5174, ~217 líneas)             │
+│  Entry point Flask (port 5174, ~255 líneas)             │
 │  ┌─ Flask app, static routes, DB init, cache init       │
 │  ├─ **CT2 preload en background** (hilo daemon):        │
 │  │   precarga modelos es→en y en→es al arrancar.       │
@@ -15,6 +15,9 @@
 │  │   PYTHONUNBUFFERED=1 + python -u. Todos los prints   │
 │  │   [translate], [OCR], [CT2] se escriben inmediata-   │
 │  │   mente en server_output.log, sin buffer 8KB.        │
+│  ├─ **Preload daemon U-OCR** (_preload_unlimited_daemon,│
+│  │   Ago 2026): lanza uocr_daemon.py en hilo propio     │
+│  │   (paso 3 del preload, independiente de EasyOCR/CT2) │
 │  └─ _translate_one wrapper (inyecta cache en módulo)    │
 ├─────────────────────────────────────────────────────────┤
 │                     config.py                            │
@@ -55,6 +58,14 @@
 │  ├─ _fusionar_blocks (merge EasyOCR+RapidOCR por        │
 │  │                  texto normalizado)                   │
 │  ├─ _get_rapid_engine (RapidOCR lazy, CPU ~1.1-1.5s)   │
+│  ├─ _get_yolo_engine (Fase 6: ultralytics lazy DINÁMICO│
+│  │    → models/comic-speech-bubble-detector.pt, 52MB;  │
+│  │    sin librería/modelo degrada a [] seguro)          │
+│  ├─ _detect_text_regions_in_page (Fase 6: YOLO predict  │
+│  │    → regiones {x,y,w,h,label,cls_conf}; filtra por   │
+│  │    clase keyword + área mínima; device auto: GPU "0"  │
+│  │    si CUDA libre Y daemon no infiere + _gpu_lock no-  │
+│  │    bloqueante (serializa con EasyOCR GPU, Fase 6.5)  │
 │  ├─ _preprocess_rapid (pre_filter + enhance para Rapid) │
 │  ├─ _is_inside_speech_bubble (deteccion de globos)      │
 │  ├─ _build_glyph_mask_for_bubble (mascara solo-glifos)  │
@@ -65,22 +76,59 @@
 │  └─ _filter_watermarks_from_blocks (pre-filtro rapido)  │
 │  **CTD eliminado** (Julio 2026): dependencia externa    │
 │  frágil (~84MB) reemplazada por EasyOCR GPU (~0.88s/pág)│
+│  **Fase 2**: _run_rapidocr acepta box_thresh/unclip_    │
+│  ratio/text_score (params SIEMPRE explícitos: la        │
+│  librería muta postprocess_op). _fusionar_blocks_multi  │
+│  pondera la votación por type semántico (Fase 3).       │
+├─────────────────────────────────────────────────────────┤
+│                  ocr_engine.py (NUEVO, 2026-08-05)      │
+│  OCRManager: orquesta los 3 motores en UNA clase        │
+│  ├─ run_ocr() dispatcher (easyocr/auto/fusion/unlimited)│
+│  ├─ _compute_trigger (trigger v4.2 aislado/testeable)   │
+│  ├─ _reforzar_con_unlimited (+ Ruta C re-OCR globos,    │
+│  │    cls rotación 180° via TextClassifier RapidOCR)    │
+│  ├─ _ruta_c_yolo (Fase 6): YOLO detecta globos/cartelas/│
+│  │    títulos como objetos → Ruta C (upscale 3.5× +     │
+│  │    rotation_info 0/90/180/270). Gate heurístico      │
+│  │    (<3 bloques o conf<0.35); disable_uocr lo apaga.  │
+│  ├─ _reforzar_con_rapid_agresivo (Fase 2, pre-VLM:      │
+│  │    reintento CPU ~1.5s antes del daemon 2-8 min)     │
+│  ├─ cache decisiones negativas §8.4.1 (firma de página, │
+│  │    TTL 1800s, LRU 256)                               │
+│  └─ Acceso a ocr_utils/routes.api EN RUNTIME (mocks de  │
+│       pytest sin romper: self.ou.<fn>, import dentro)   │
+├─────────────────────────────────────────────────────────┤
+│             uocr_daemon.py + uocr_client.py (NUEVO)     │
+│  Daemon persistente (puerto 5177, venv env_uocr_gpu,    │
+│  modelo 3B 4-bit NF4 bitsandbytes, ~2.25GB VRAM):       │
+│  ├─ POST /ocr        (1 página, crop_mode + re-OCR arte)│
+│  ├─ POST /ocr-batch  (Fase 1: _model.infer_multi(),     │
+│  │                    1-4 págs, separador <PAGE> antes   │
+│  │                    de cada página, split [1:])        │
+│  ├─ Salida: <|det|>type [x,y,w,h]<|/det|> por stdout    │
+│  └─ uocr_client: process_page()/process_batch()/health()│
 ├─────────────────────────────────────────────────────────┤
 │                     routes/api.py                        │
-│  ┌─ GET /api/health (estado: memoria, modelos, cache)   │
+│  ┌─ GET /api/health (estado: memoria, modelos, cache,   │
+│  │       unlimited_ocr, uocr_load_s)                    │
 │  ├─ POST /api/translate (texto individual)              │
 │  ├─ POST /api/translate-batch (multiples textos)        │
 │  └─ POST /api/process-page (OCR + inpainting + trad.)   │
-│       ├─ ocr_mode (default "easyocr"): "easyocr" | "auto"            │
-│       │   easyocr: solo EasyOCR GPU (default, ~7.1 min 128 págs)    │
-│       │   auto:    EasyOCR + CLAHE fallback (~72 min)                │
-│       ├─ Modos CTD eliminados: choices ahora ["easyocr", "auto"]     │
+│       ├─ DELEGA en OCRManager (ocr_engine.py) — el      │
+│       │   bloque OCR inline de ~110 líneas se movió     │
+│       ├─ ocr_mode: "easyocr" | "auto" | "fusion" |      │
+│       │   "unlimited" (+ flags force_uocr/disable_uocr/ │
+│       │   pure_easyocr de benchmark)                    │
+│       ├─ fusion (default de trabajo): híbrido siempre +  │
+│       │   U-OCR solo con trigger v4.2 + reintento Fase 2│
+│       └─ _ocr_with_unlimited: propaga type semántico    │
+│           (Fase 3) + conf heurística + image_panels     │
 ├─────────────────────────────────────────────────────────┤
 │                     routes/main.py                       │
 │  └─ GET /, GET /<path> (estaticos con path traversal    │
 │                           protection)                   │
 ├─────────────────────────────────────────────────────────┤
-│                      app.js (~2533 lineas)               │
+│                      app.js (~2898 lineas)               │
 │  State: kind/pdf|image, pdf, page/pageCount, scale=1.8  │
 │         boxesByPage:Map, selectedId, cvLoaded,          │
 │         inpaintedBgByPage:Map, abortTranslation,        │
@@ -92,6 +140,8 @@
 │  PDF:   renderPage -> pdf.js @scale -> cleanBgCanvas     │
 │         -> updateErasedBg -> renderBoxes                  │
 │  OCR:   serverProcessPage (envia cleanBgCanvas->base64) │
+│  Motor: #ocrEngine selector (Automático=fusion default) │
+│         badge daemon #ocrEngineStatus (polling 20s)     │
 │  Editor: renderBoxes, fitTextLayout (CJK char/latin     │
 │          word), selectBox, draw/move/resize              │
 │  Text:  **drawTextOnCanvas()** compartida (unifica      │
@@ -142,7 +192,7 @@
 │       default-src/script-src incluyen docs.opencv.org   │
 │       frame-ancestors solo via HTTP header (config.py)  │
 ├─────────────────────────────────────────────────────────┤
-│              styles.css (~1318 lineas)                   │
+│              styles.css (~1811 lineas)                   │
 │  Tokens: --bg-app #040406, --accent #10b981,            │
 │          --radius-md 12px, --transition 200ms            │
 │  Layout: .app grid minmax(240px,25%) 1fr                │
@@ -168,6 +218,8 @@
 
 **Nota CPU vs GPU**: `onnxruntime-gpu` instalado y probado en GTX 1050 Ti. **GPU NO acelera RapidOCR** (~1.0x speedup) porque los modelos PP-OCRv4 son pequeños (~6.5MB total). El overhead de transferencia PCIe anula cualquier ganancia. `onnxruntime` (CPU) es suficiente y se recomienda como dependencia.
 
+> **Nota 2026-08-03**: la tabla anterior y los benchmarks de Julio usan el PDF viejo (128 págs). El PDF de prueba actual es `Capítulo 43 de Cómo criar villanos correctamente.pdf` (53 págs) — ver `benchmark_overhead_results.json` y AGENTS.md §4 para métricas del PDF nuevo.
+
 ## Flujo de datos: /api/process-page
 
 ```
@@ -176,10 +228,22 @@ Cliente (app.js)                    Servidor
       ├─ canvas.toDataURL("image/png") ─┤
       │    (base64 de cleanBgCanvas)    │
       │                                 ├─ _base64_to_cv2()
-      │                                 ├─ _detect_and_ocr()
-      │                                 │    ├─ Tier 1: EasyOCR directo (~0.88s)
-      │                                 │    ├─ Tier 2: CLAHE+sharpen (~1s)
-      │                                 │    └─ Tier 3: RapidOCR ONNX CPU (~1.1-1.5s)
+      │                                 ├─ OCRManager().run_ocr()  (ocr_engine.py)
+      │                                 │    ├─ _run_hybrid: _detect_and_ocr()
+      │                                 │    │    ├─ Tier 1: EasyOCR directo (~0.88s)
+      │                                 │    │    ├─ Tier 2: CLAHE+sharpen (~1s)
+      │                                 │    │    └─ Tier 3: RapidOCR ONNX CPU (~1.1-1.5s)
+      │                                 │    ├─ _compute_trigger (v4.2): 0 bloques |
+      │                                 │    │    <3 Y conf<0.2 | panel image>15% | force
+      │                                 │    ├─ Fase 2: _reforzar_con_rapid_agresivo
+      │                                 │    │    (box_thresh .30/unclip 2.2/text .40,
+      │                                 │    │     CPU ~1.5s — evita el VLM si resuelve)
+│                                 │    ├─ run_ocr_batch() (Fase 1 ✅): /process-page-batch
+│                                 │    │    híbrido+trigger+Fase 2 por página → las que
+│                                 │    │    requieren VLM van en UN /ocr-batch (infer_multi)
+│                                 │    │    → Ruta C + fusión por página
+│                                 │    └─ _reforzar_con_unlimited → uocr_client
+      │                                 │         → daemon 5177 (U-OCR 3B 4-bit) + Ruta C
       │                                 ├─ _detect_language_robust()
       │                                 ├─ _build_inpaint_mask()
       │                                 │    ├─ _is_inside_speech_bubble()
@@ -188,12 +252,40 @@ Cliente (app.js)                    Servidor
       │                                 ├─ ThreadPool: _translate_one() x N
       │                                 ├─ _sample_bg_color() x N
       │                                 └─ _cv2_to_base64(inpainted)
-      ├─ {inpainted_image, blocks} ─────┤
+      ├─ {inpainted_image, blocks+type} ─┤
       │                                 │
       ├─ loadBase64IntoCanvas()         │
       ├─ filterPageBlocks()             │
       └─ makeAutoTextBox() -> render    │
 ```
+
+**Nota**: el diagrama muestra el pipeline fusion completo; el modo `easyocr`/`auto`
+solo ejecuta `_run_hybrid` (sin daemon). En modo `fusion` el daemon U-OCR solo
+se consulta si el trigger v4.2 lo decide (y el reintento agresivo Fase 2 no
+resuelve la página). El estado del daemon se expone en `/api/health`
+(`unlimited_ocr`, `uocr_load_s`).
+
+### Fase 5 validada (2026-08-04) — capítulo 53 págs en fusion + batch
+
+**Run real**: `--ocr-mode fusion --batch-window 4` → **~22.5 min de pared** (vs ~47 min
+estimados sin batch, **2.1x más rápido**), 53/53 páginas, **0 errores**, 47 páginas con
+texto. Solo 3 lotes disparan U-OCR (p5 y lotes 39-42, 51-53): con `infer_multi` el
+prefill del VLM se comparte (lote de 4 páginas ≈ 671s ≈ **168s/pág** vs 366-592s/pág
+individuales). Páginas normales: ~5-15s (p3 12.2s, p11 14.9s, p12 9.2s).
+
+**Bug fijado durante la validación**: las páginas 19-22 daban 500 (`http_500`) por la
+race window de §8.4.4 en el camino de página COMPLETA: `_run_ocr_on_image` degradaba a
+RapidOCR (dicts) pero `_ocr_results_to_blocks` solo desempaquetaba tuplas
+`(bbox,text,conf)` → `"too many values to unpack"` (un dict itera sus keys). Fix:
+`isinstance(res, dict)` → convierte directo a bloque (filtro `conf<0.08` con paridad,
+code review). El mismo patrón dict/tupla ya existía en la Ruta C; ahora es central en
+`_ocr_results_to_blocks` y cubre tier 1, retry mag_ratio y tier 2 CLAHE. 4 tests nuevos.
+
+**Reporte**: `generate_fusion_report.py` → `reporte_fusion.html` (datos reales del run:
+5.1-331.7s por página artística, CER vs ground truth, distribución de tiempos, imágenes
+con bloques resaltados). Nota: la tasa de traducción (25.2%) fue baja porque el par CT2
+es→en no se descargó (sin internet a HuggingFace en ese run) — la cobertura de detección
+(47/53, 0 errores) es el dato clave.
 
 ## Lanzamiento
 
@@ -232,14 +324,14 @@ main.spec -> PyInstaller -> dist/main/main.exe
 ```powershell
 cd D:\crear traductor
 .\env\Scripts\python.exe -m PyInstaller main.spec --clean --noconfirm
-# Output: dist/main/main.exe (200MB, antes 2.6GB)
+# Output: dist/main/main.exe (360MB, antes 2.6GB)
 ```
 
 **Importante**:
 - Usar `onedir` (no `--onefile`) — las dependencias pesadas se cargan desde `env/`
 - Si se añaden nuevos archivos, actualizar `main.spec: DATAS` y `HIDDEN_IMPORTS`
 - `main.py` acepta `--server` para modo servidor sin launcher: `main.exe --server`
-- Módulos pesados (torch, transformers, ct2, easyocr) **excluidos** del .exe vía `EXCLUDES`. Se cargan desde `env/Lib/site-packages` en runtime via `_fix_cwd()`. Esto reduce el .exe de 2.6GB a 200MB y acelera el arranque de 25s a ~3s.
+- Módulos pesados (torch, transformers, ct2, easyocr) **excluidos** del .exe vía `EXCLUDES`. Se cargan desde `env/Lib/site-packages` en runtime via `_fix_cwd()`. Esto reduce el .exe de 2.6GB a 200MB (360MB con los modelos ONNX de RapidOCR incluidos) y acelera el arranque de 25s a ~3s.
 - `upx=False` en COLLECT (UPX compression deshabilitada — el cuello de botella era UPX en binarios grandes, no la compilación en sí). Build time: ~3.75 min (antes 10+ min).
 
 ## Pipeline CI (Integración Continua)
@@ -251,10 +343,12 @@ Cambio en código
       │
       ▼
 ┌──────────────────────────────────────┐
-│  1. Syntax check (py_compile)        │  ← 13 archivos Python
+│  1. Syntax check (py_compile)        │  ← 16 archivos Python
 │     ├─ server.py / routes/*.py       │
 │     ├─ config.py / translator.py     │
 │     ├─ ocr_utils.py / models.py      │
+│     ├─ ocr_engine.py / uocr_daemon.py│
+│     │   uocr_client.py (Ago 2026)    │
 │     └─ cache.py / ratelimit.py / main.py / process_all_pages.py
 └──────────────────────────────────────┘
       │
@@ -288,7 +382,7 @@ Cambio en código
       ▼  (si todo OK)
 ┌──────────────────────────────────────┐
 │  Compilar .exe (PyInstaller)         │  ← main.spec
-│     └─ dist/main/main.exe (200MB)    │
+│     └─ dist/main/main.exe (360MB)    │
 └──────────────────────────────────────┘
 ```
 
@@ -296,10 +390,10 @@ Cambio en código
 
 | Motor | Cobertura | Tiempo promedio | Modo | Notas |
 |---|---|---|---|---|
-| CT2 (CTranslate2 int8) | 55% | **53ms** | Paralelo 🚀 | 10 pares de idiomas, offline, más rápido |
-| ArgosTranslate | 100% ⚠️ | 2826ms | Paralelo 🚀 | Produce basura en OCR-ruidoso, filtrado por validación |
-| Google Translate | 56% | 1111ms | Paralelo 🚀 | Requiere internet, más natural |
-| **Pipeline combinado** | **~86%** traduce ≠ original | **~53ms** | **Paralelo** | **3 motores simultáneos** + Google retry con backoff (fix SIN_TRAD) |
+| CT2 (CTranslate2 int8) | 55% | **53ms** | 1º (síncrono) | 10 pares de idiomas, offline, más rápido |
+| ArgosTranslate | 100% ⚠️ | 2826ms | — | Produce basura en OCR-ruidoso, filtrado por validación (ya no se usa en el pipeline) |
+| Google Translate | 56% | 1111ms | 2º (fallback) | Requiere internet, más natural |
+| **Pipeline secuencial** | **~86%** traduce ≠ original | **~53ms** | **CT2→Google→SIN_TRAD** | **Desde sesión 68 (2026-07-29) el pipeline es SECUENCIAL** — los porcentajes de motor son del benchmark de 723 bloques (Julio), la orquestación cambió (3 motores en paralelo → CT2 síncrono primero, Google fallback, SIN_TRAD inmediato) |
 
 #### Calidad real de traducción (analisis_calidad.py sobre 723 bloques)
 
@@ -319,8 +413,8 @@ Cambio en código
 
 Métricas obtenidas con profiling standalone directo (sin overhead HTTP) sobre el PDF de prueba (128 págs, manga español→inglés).
 
-| Etapa | Modo CTD | Modo EasyOCR (CPU) | % del pipeline |
-|:------|:--------:|:------------------:|:--------------:|
+| Etapa | EasyOCR GPU | % del pipeline |
+|:------|:-----------:|:--------------:|
 | **OCR** (EasyOCR GPU) | **0.88s**/pág | 70% |
 | **Inpainting** (OpenCV) | 0.15-0.22s/pág | 15% |
 | **Traducción CT2** (GPU int8) | 0.02-0.17s/bloque | 10% |
@@ -339,7 +433,7 @@ Traducción:   519/623 (83.3%)
 Errores:      0
 ```
 
-**Jerarquía de bottlenecks (modo easyocr, default):**
+**Jerarquía de bottlenecks (modo easyocr — ya no es el default desde Fase 4, Ago 2026):**
 
 | # | Bottleneck | Impacto | Estado |
 |:-:|:-----------|:-------:|:-------|
@@ -367,7 +461,11 @@ Errores:      0
 | `test_ci.py` | Test standalone de detección de idioma (sin modelos) |
 | `analisis_calidad.py` | Auditoría de calidad de traducción contra corpus de 221 textos |
 | `stress_test_memory.py` | Test de estrés **paralelo** (50 páginas, 4 workers, ~5 min con -Full) |
-| `process_all_pages.py` | **Procesamiento completo de PDF en paralelo** — 128 páginas, `--workers N` (default 4, punto óptimo), `--ocr-mode easyocr|auto` (default `easyocr`, ~7.1 min), checkpoint cada 10 páginas, productor-consumidor (1 render + N API) |
+| `process_all_pages.py` | **Procesamiento completo de PDF en paralelo** — `--workers N` (default 3, punto óptimo), `--ocr-mode auto|easyocr|fusion` (default `fusion` desde Fase 4 — 2026-08-06), timeout 1800s (páginas U-OCR en cola), checkpoint cada 10 páginas, productor-consumidor (1 render + N API) |
+| `ocr_engine.py` | **OCRManager** (Ago 2026) — orquesta los 3 motores con trigger v4.2, reintento Fase 2 y cache §8.4.1 |
+| `uocr_daemon.py` + `uocr_client.py` | **Daemon Unlimited-OCR persistente** (Ago 2026) — `POST /ocr` y `POST /ocr-batch` (Fase 1, `infer_multi`) en 127.0.0.1:5177 |
+| `benchmark_fusion_overhead.py` | Benchmark de overhead del merge (modos disable_uocr/pure_easyocr sobre el PDF nuevo de 53 págs) |
+| `INVESTIGACION_3_OCR.md` / `PLAN_CODIGO_INTERNO_3_OCR.md` | Investigación del código interno de los 3 motores + plan de fusión por fases |
 | `.github/workflows/ci.yml` | CI en GitHub Actions |
 | `main.spec` | Configuración de PyInstaller para build del .exe |
 

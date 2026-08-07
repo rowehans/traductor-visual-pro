@@ -625,7 +625,7 @@ sys.stdout.reconfigure(encoding='utf-8')
 import requests
 
 CHECKPOINT_FILE = "resultados_progreso.json"
-PDF_PATH = "Capítulo 43 de Cómo criar villanos correctamente _ Olympus Scanlation_compressed.pdf"
+PDF_PATH = "Capítulo 43 de Cómo criar villanos correctamente.pdf"
 API_URL = "http://127.0.0.1:5174"
 ZOOM = 1.5
 TARGET = "en"
