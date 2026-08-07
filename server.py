@@ -27,6 +27,17 @@ from config import (
     TIMEOUT_EXPORT_REVOKE_MS, TIMEOUT_CDN_LOAD_MS,
 )
 
+# ─── Caché de HuggingFace dentro del proyecto ──────────────────
+# Regla "no tocar C:": toda la caché HF (tokenizers OPUS-MT, modelos de
+# transformadores) vive en hf_cache/ del proyecto, igual que hace el daemon
+# U-OCR (uocr_daemon.py:48-50). Sin esto, las descargas de tokenizers de CT2
+# caerían en ~/.cache/huggingface del usuario y no viajarían con el proyecto.
+# setdefault respeta un HF_HOME ya definido por el entorno si existiera.
+import os as _os
+_os.environ.setdefault("HF_HOME", str(ROOT / "hf_cache"))
+_os.environ.setdefault("TRANSFORMERS_CACHE", str(ROOT / "hf_cache" / "hub"))
+_os.environ.setdefault("HF_HUB_CACHE", str(ROOT / "hf_cache" / "hub"))
+
 app = Flask(__name__, static_folder=None)
 app.config["ENV"] = "production" if IS_PRODUCTION else "development"
 app.config["DEBUG"] = not IS_PRODUCTION
@@ -98,6 +109,45 @@ def _preload_background() -> None:
             print(f"[preload] CT2 en→es cargado (device: {translator2.device})")
     except Exception as e:
         print(f"[preload] Error en precarga: {e}")
+
+    # ── Paso 3 (Fase 6): detector YOLO de regiones (CPU, ~1-2s one-time) ──
+    # Se precarga para que la PRIMERA página no pague los ~20s de carga del
+    # modelo. Sin ultralytics/modelo, _get_yolo_engine degrada a None y el
+    # tier YOLO no aporta (el pipeline sigue igual). Se precarga DESPUÉS de
+    # EasyOCR/CT2 (los modelos de ultralytics viven en CPU, sin VRAM).
+    try:
+        from ocr_utils import _get_yolo_engine
+        t0 = time.time()
+        engine = _get_yolo_engine()
+        if engine:
+            print(f"[preload] YOLO regions cargado en {time.time()-t0:.1f}s")
+    except Exception as e:
+        print(f"[preload] YOLO no disponible: {e}")
+
+
+# ─── Daemon Unlimited-OCR (GPU 4-bit): preload independiente ────
+# El modelo (6.78 GB, 3B MoE) corre en env_uocr_gpu (torch cu126 +
+# bitsandbytes), un venv separado del servidor (env/) para evitar el
+# conflicto de DLLs CUDA con EasyOCR/CT2. Se lanza como subproceso
+# persistente que carga el modelo UNA vez (~8 min) y queda escuchando
+# en 127.0.0.1:5177 — así la primera página NO espera la carga.
+#
+# Se arranca en un HILO PROPIO e independiente del preload de
+# EasyOCR/CT2: aunque la carga de EasyOCR tarde (descarga de modelos,
+# primer arranque, etc.), el daemon U-OCR empieza a cargar al instante.
+def _preload_unlimited_daemon() -> None:
+    try:
+        import uocr_client
+        if uocr_client.spawn_daemon():
+            print("[preload] Daemon Unlimited-OCR lanzado (modelo 4-bit cargando en background)")
+        else:
+            print("[preload] Daemon Unlimited-OCR no disponible (venv o script ausente)")
+    except Exception as e:
+        print(f"[preload] Daemon Unlimited-OCR no disponible: {e}")
+
+
+_uocr_thread = threading.Thread(target=_preload_unlimited_daemon, daemon=True)
+_uocr_thread.start()
 
 
 _preload_thread = threading.Thread(target=_preload_background, daemon=True)

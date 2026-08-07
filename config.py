@@ -57,6 +57,258 @@ MAX_BATCH_SIZE: Final[int] = 500               # max textos por batch
 MAX_IMAGE_BYTES: Final[int] = 50 * 1024 * 1024 # 50MB raw base64 (evitar OOM)
 
 
+# ─── Fusión de motores OCR (modo "fusion") ────────────────────────
+# Trigger de refuerzo: se consulta Unlimited-OCR vía daemon solo si la página
+# es difícil para los motores rápidos (EasyOCR+RapidOCR): confianza media baja,
+# pocos bloques, o un bloque image >15% de la página (diálogo en arte).
+# Validado empíricamente (2026-08-03): el re-OCR del panel image completo NO
+# recupera el diálogo; la fusión de bloques sí aporta (pág. 11: U-OCR lee lo que
+# EasyOCR garbea).
+UOCR_TRIGGER_CONF: Final[float] = 0.20          # confianza media mínima del híbrido (v4.2: <0.2 para disparar refuerzo)
+UOCR_TRIGGER_MIN_BLOCKS: Final[int] = 3          # mínimo de bloques para no reforzar
+UOCR_IMAGE_BLOCK_RATIO: Final[float] = 0.15      # bloque image ≥15% de la página
+OCR_ENGINE_WEIGHTS: Final[dict[str, float]] = {
+    "easyocr": 1.0,     # motor base (GPU, fiable)
+    "rapid": 0.9,        # complemento CPU (menos preciso en general)
+    "unlimited": 1.1,    # VLM 3B 4-bit (el más preciso donde detecta)
+    "yolo": 0.9,         # Fase 6: bloques re-OCR de regiones YOLO (EasyOCR sobre
+                          # crops 3.5× — misma fiabilidad que el híbrido, peso rapid)
+}
+
+# ─── Reintento agresivo de RapidOCR (Fase 2) ──────────────────────
+# ANTES de disparar el VLM (daemon U-OCR, ~2-8 min/pág), se reintenta
+# RapidOCR con parámetros de detección más agresivos (CPU, ~1.5s/pág):
+#   box_thresh 0.50→0.30: el detector admite cajas más débiles (texto
+#       artístico/decorativo que el umbral default descarta).
+#   unclip_ratio 1.60→2.20: las cajas crecen más tras la máscara binaria,
+#       recuperando texto partido en glifos sueltos.
+#   text_score 0.50→0.40: el recognizer acepta caracteres menos confiables.
+# Solo se intenta si la confianza media del híbrido es baja (<0.35) y NO
+# hay panel image grande (el diálogo en arte solo lo recupera el VLM). Si
+# el merge resuelve la página según el trigger v4.2 (>=3 bloques Y
+# conf >=0.20), se evita la inferencia VLM completa.
+RAPID_AGGRESSIVE_PARAMS: Final[dict[str, float]] = {
+    "box_thresh": 0.30,
+    "unclip_ratio": 2.2,
+    "text_score": 0.40,
+}
+# Guarda defensiva: con el trigger v4.2, el reintento solo se alcanza con
+# 0 bloques (conf=0.0) o conf<0.2 — ambos < 0.35. Este límite protege ante
+# cambios futuros del trigger (p.ej. si algún día dispara con conf > 0.35,
+# el reintento no añadiría nada: el texto ya se detectó bien).
+RAPID_RETRY_MAX_CONF: Final[float] = 0.35
+
+# ─── Ponderación por tipo semántico en la fusión (Fase 3) ─────────
+# Solo los bloques de Unlimited-OCR llevan "type" (text/title/header/...):
+# el VLM emite el tipo semántico en el stream (<|det|>title [x,y,w,h]<|/det|>)
+# y _ocr_with_unlimited lo propaga a los bloques. En la votación de
+# _fusionar_blocks_multi, el acuerdo entre motores sobre texto con tipo
+# distintivo (title/header) es evidencia más fuerte que sobre diálogo común:
+#   - FUSION_TYPE_REINFORCE: refuerzo de confianza cuando 2+ motores
+#     coinciden en texto/región (base 0.15 para diálogo normal; title/header
+#     refuerzan más).
+#   - FUSION_TYPE_WEIGHTS: peso extra del tipo en _block_score (dedup/NMS:
+#     un bloque tipado del VLM gana empatando contra un bloque sin tipo).
+FUSION_TYPE_REINFORCE: Final[dict[str, float]] = {
+    "title": 0.20,   # títulos (capítulo, portadas): acuerdo = muy fiable
+    "header": 0.18,  # cabeceras/running headers
+    "text": 0.15,    # diálogo normal (comportamiento base actual)
+}
+FUSION_TYPE_WEIGHTS: Final[dict[str, float]] = {
+    "title": 1.15,
+    "header": 1.05,
+}
+
+# El reintento solo se considera "salvado" si el merge supera el trigger
+# v4.2 con margen (conf >= 0.30, no solo >= 0.20): promediar TODOS los
+# bloques (incluidos los híbridos débiles) con un solo bloque fuerte puede
+# cruzar 0.2 con facilidad y saltarse el VLM en páginas que aún lo
+# necesitan. 0.30 exige que la página quedó CLARAMENTE mejor.
+RAPID_RETRY_SALVADO_CONF: Final[float] = 0.30
+
+# ─── TextClassifier de RapidOCR en la Ruta C (Fase 3 punto 3) ─────
+# El Cls de RapidOCR (PP-OCRv4, ONNX CPU) clasifica tiras de texto como
+# 0° o 180°. EasyOCR NO detecta texto girado; el globo rotado se pierde.
+# Con esto, cada crop de globo de la Ruta C pasa por el clasificador y,
+# si sale 180° con confianza suficiente, se rota ANTES del re-OCR.
+RUTA_C_CLS_ENABLED: Final[bool] = True
+# Umbral de confianza del clasificador para aceptar la rotación (el default
+# del modelo es 0.9). Solo rota si score > umbral: rotar con confianza baja
+# pondría el texto cabeza abajo.
+RUTA_C_CLS_THRESH: Final[float] = 0.9
+
+# ─── Detector YOLO de regiones de texto (Fase 6) ──────────────────
+# Tier 3.5 de detección: un YOLO fine-tuned (nano/small, ~3M params) detecta
+# regiones de diálogo — globos (speech bubbles), cartelas narrativas y títulos
+# tipográficos grandes — como OBJETOS (no como texto). Cada región detectada
+# alimenta la Ruta C existente (_recover_regions_with_easyocr, upscale 3.5× +
+# cls de rotación + degradación CPU) — la brecha central: los OCR solo ven
+# "texto" si detectan glifos, pero un globo/título artístico puede no tenerlos
+# detectables. Recupera parte del ~12.2% de bloques perdidos SIN la inferencia
+# VLM (2-8 min/pág).
+#
+# Integración: ultralytics se importa EN RUNTIME (dentro de _get_yolo_engine),
+# no en el import del módulo — el .exe no se infla y el tier degrada a [] si la
+# librería o el modelo no están disponibles.
+#
+# Modelo: colocar un .pt/.onnx fine-tuned en YOLO_MODEL_PATH. Opciones públicas:
+#   - ogkalu/comic-speech-bubble-detector-yolov8m → comic-speech-bubble-detector.pt
+#     (YOLOv8m, 8K+ imágenes manga/webtoon/manhua/comic: globos de diálogo).
+#   - huyvux3005/manga109-segmentation-bubble → weights/best.pt (YOLOv11n-seg).
+#   - kitsumed/yolov8m_seg-speech-bubble → model.pt (YOLOv8m-seg con máscaras).
+# El descargado por defecto es ogkalu (box-based, suficiente para la Ruta C;
+# CPU ~200-400ms/pág, GPU 8-25ms).
+#
+# El Trigger Selectivo v4.2 NO se altera: YOLO corre SIEMPRE en fusion como
+# recuperador de regiones de alto impacto (antes del trigger) — si los bloques
+# recuperados llevan la página por encima del umbral, el VLM no dispara.
+YOLO_ENABLED: Final[bool] = True
+YOLO_MODEL_PATH: Final[str] = str(ROOT / "models" / "comic-speech-bubble-detector.pt")
+# Descarga automática si el archivo no existe (requiere internet a GitHub
+# para yolov8n.pt). False por defecto: sin red, el tier degrada a [] en vez
+# de bloquear el pipeline con un timeout de descarga.
+YOLO_AUTODOWNLOAD: Final[bool] = False
+YOLO_CONF_THRESH: Final[float] = 0.25        # confianza mínima de detección
+YOLO_IOU_THRESH: Final[float] = 0.45         # NMS
+YOLO_IMGSZ: Final[int] = 1280                # tamaño de inferencia (balance velocidad/precisión)
+# device: "cpu" por defecto (200-400ms, compatible con cualquier máquina);
+# "0" (GPU) solo si CUDA está disponible. Se decide en runtime.
+#
+# POLÍTICA DETERMINISTA (sesión 116): "auto" resuelve el device UNA sola vez
+# por proceso (no por llamada) — el resultado del trigger v4.2 no puede
+# depender del estado dinámico de _gpu_lock/_uocr_inferring en cada página
+# (causa raíz del no-determinismo: la misma página disparaba U-OCR en single
+# pero no en batch según si otro worker tenía el lock al correr YOLO, y GPU
+# vs CPU dan detecciones marginalmente distintas que cruzan el umbral 0.25).
+YOLO_DEVICE: Final[str] = "auto"  # 'auto': resuelto UNA vez (GPU si CUDA, si no CPU)
+YOLO_MAX_REGIONS: Final[int] = 40            # límite de regiones → Ruta C (evita saturar el re-OCR)
+YOLO_MIN_AREA_RATIO: Final[float] = 0.0015   # región mínima (0.15% de la página): filtra ruido del detector
+# Gate heurístico (code review Fase 6): YOLO solo corre en páginas que el
+# híbrido detectó DÉBILMENTE (menos bloques que el mínimo del trigger v4.2, o
+# confianza media baja). En páginas normales (bien detectadas) el detector no
+# aporta nada y el re-OCR de hasta 40 crops costaría ~2-6s/pág sin beneficio.
+# NO es el trigger v4.2 (que decide el VLM): es un filtro previo barato que
+# limita el coste del recuperador YOLO a donde tiene impacto (el 12.2% perdido).
+YOLO_GATE_MIN_BLOCKS: Final[int] = UOCR_TRIGGER_MIN_BLOCKS  # <3 bloques → correr
+YOLO_GATE_MAX_CONF: Final[float] = 0.35      # o conf media < 0.35 → correr
+# Substrings de nombres de clase aceptados (independiente del modelo concreto):
+# globos, cartelas narrativas, títulos y cajas de texto. Las clases que no
+# matcheen (p.ej. "person", "face") se ignoran — el tier solo recupera texto.
+YOLO_CLASS_KEYWORDS: Final[tuple[str, ...]] = (
+    "bubble", "balloon", "speech", "caption", "narration",
+    "title", "text", "letter", "sfx", "sound",
+)
+
+# ─── Rotación de texto en la Ruta C (Fase 6) ─────────────────────
+# rotation_info es un kwarg de EasyOCR.readtext(): con él, el reader rota el
+# crop y elige el ángulo con mejor confianza — recupera títulos verticales
+# (tategaki japonés), cartelas rotadas 90°/270° y tipografía estilizada.
+# NO se activa en el tier 1 de página completa (multiplicaría ~4x el tiempo
+# del camino caliente): solo se pasa en los CROPS de la Ruta C, donde vive el
+# texto artístico/vertical que YOLO detecta como región. El cls de 180°
+# (_classify_rotate_crop) sigue complementando para el caso horizontal-invertido.
+#
+# IMPORTANTE: valores ENTEROS (no strings). EasyOCR pasa cada ángulo a
+# scipy.ndimage.rotate y, con numpy 2.5 + scipy 1.17, un ángulo string ('90')
+# rompe el casting de la ufunc 'cosdg' ("not supported for the input types").
+# Con enteros, scipy rota correctamente (verificado empíricamente 2026-08-04).
+EASYOCR_ROTATION_INFO: Final[tuple[int, ...]] = (0, 90, 180, 270)
+
+
+# ─── Cache de decisiones U-OCR (§8.4.1) ───────────────────────────
+# Si una página con una firma de layout concreta ya disparó el refuerzo U-OCR
+# y NO recuperó nada (0 bloques nuevos), las páginas repetitivas del capítulo
+# con la MISMA firma no deben volver a disparar la inferencia VLM (~2-8 min
+# por página). La firma es la distribución espacial de oscuridad (ver
+# _page_signature en ocr_utils.py).
+UOCR_CACHE_TTL_S: Final[float] = 1800.0          # 30 min: ventana en la que se respeta la decisión negativa
+UOCR_CACHE_MAX_ENTRIES: Final[int] = 256         # eviction LRU: capítulos ~5-10 firmas, 256 sobra
+# ── Persistencia de las negativas §8.4.1 (sesión 127) ─────────────────
+# Default True desde la sesión 129: la salvaguarda mucho_mas_debil en la
+# consulta de negativas (misma que _trigger_con_cache) hace SEGURA su
+# persistencia — una página gemela que se detecta MUCHO más débil que la
+# que registró la negativa ignora la supresión y re-dispara el VLM (el
+# diálogo artístico que el híbrido pierde es justo el que el VLM podría
+# recuperar).
+#
+# TRADE-OFF:
+#   Pro: determinismo de EJECUCIÓN completo entre servidores — no solo las
+#        decisiones de trigger (sesión 125) sino también los saltos §8.4.1
+#        de páginas repetitivas se congelan en disco: 2 corridas en procesos
+#        separados hacen EXACTAMENTE las mismas llamadas VLM.
+#   Contra: la salvaguarda solo cubre el caso "detección actual mucho más
+#        débil" — una página gemela con detección COMPARABLE o mejor sigue
+#        honrando la negativa (determinismo), y el scope por doc_id (sesión
+#        126) impide que capítulos de la misma serie (94% colisión de firma,
+#        sesión 124) hereden decisiones entre sí. El coste residual: dentro
+#        del MISMO documento, una página con layout repetido y detección
+#        comparable no re-dispara — el trade-off aceptado del determinismo.
+UOCR_NEG_CACHE_PERSIST: Final[bool] = True
+
+# ─── Salvaguarda de detección débil en las negativas §8.4.1 (sesión 134) ──
+# El caso p5 (sesiones 128-129): el híbrido detecta una página artística con
+# MUY pocos bloques y confianza baja (p5 registró la negativa con 2-3 bloques
+# conf ~0.42; p17 con 1 bloque conf 0.53), el VLM corre y no recupera nada →
+# negativa CONGELADA. La variación cuDNN del híbrido puede hacer que la página
+# GEMELA se detecte igual de pobre (detección COMPARABLE → el much_mas_debil
+# de la sesión 129 no la libera) y la negativa la mata a pesar de tener
+# diálogo artístico que el VLM sí leería.
+#
+# Estas constantes definen cuándo una negativa viene de una detección
+# DEMASIADO POBRE como para congelarla: si el híbrido que la registró detectó
+# < UOCR_NEG_WEAK_MAX_BLOCKS bloques O conf < UOCR_NEG_WEAK_MIN_CONF, la
+# página gemela puede RE-DISPARAR el VLM hasta UOCR_NEG_MAX_REINTENTOS veces
+# (contador por firma) antes de congelarla — si la variación cuDNN era el
+# problema, el diálogo artístico se recupera en el reintento. El contador
+# acota el coste: 1 corrida VLM extra (~2-8 min) por firma débil por TTL,
+# NO infinitas.
+#
+# Sesión 136: las MISMAS constantes aplican al cache de decisión del TRIGGER
+# (_trigger_dec_cache en ocr_engine.py). Ahí el caso análogo es: una decisión
+# NEGATIVA de trigger ("no disparar el VLM") cacheada por firma cuando el
+# híbrido detectó la página con pocos bloques/conf baja se congelaba para
+# gemelas con detección COMPARABLE — si la gemela es artística, la negativa
+# la mataba. Con estas constantes, la gemela puede RECOMPUTAR el trigger una
+# vez por firma (contador re_computes, mismo límite UOCR_NEG_MAX_REINTENTOS)
+# en vez de honrar a ciegas la decisión negativa débil.
+#
+# Efecto amplio acotado: TODA negativa registrada con <3 bloques califica
+# como débil — incluidas las de texto débil que dispararon el trigger v4.2
+# (<3 bloques Y conf <0.2). El coste máximo es ~1 inferencia VLM extra por
+# firma débil por TTL (el contador), no infinitas: páginas repetitivas siguen
+# ahorrando tras el re-disparo fallido.
+#
+# Nota de calibración: el ejemplo del usuario era "<2 bloques o conf <0.3",
+# pero p5 registró la negativa con 2-3 bloques conf 0.42 — con esos umbrales
+# NO se cubriría el caso objetivo. Se usan <3 bloques (cubre 0/1/2) O conf
+# <0.45 (cubre 0.42): p5 y p17 caen dentro; una página con 3 bloques conf 0.9
+# (detección real) NO se considera débil y se congela como antes.
+UOCR_NEG_WEAK_MAX_BLOCKS: Final[int] = 3      # negativa registrada con < 3 bloques → débil
+UOCR_NEG_WEAK_MIN_CONF: Final[float] = 0.45   # o conf < 0.45 → débil
+UOCR_NEG_MAX_REINTENTOS: Final[int] = 1       # re-disparos/recomputes permitidos por firma (por TTL)
+
+# ─── Cache de decisión del TRIGGER por firma (sesión 116) ───────────
+# El trigger v4.2 depende de blocks/avg_conf del híbrido (cuDNN puede dar
+# resultados ligeramente distintos entre corridas) y del device YOLO. Para
+# garantizar que 2 corridas idénticas tomen SIEMPRE la misma decisión por
+# página, la decisión del trigger (disparar/no disparar U-OCR) se cachea por
+# firma de layout (_page_signature) con TTL/LRU — misma imagen → misma firma
+# → misma decisión. No aplica con force_uocr/disable_uocr (modos benchmark).
+TRIGGER_CACHE_TTL_S: Final[float] = 1800.0       # 30 min (mismo que §8.4.1)
+TRIGGER_CACHE_MAX_ENTRIES: Final[int] = 256      # eviction LRU
+
+# YOLO GPU comparte la GTX con EasyOCR GPU (mismo proceso) y el daemon U-OCR:
+# con device resuelto a "0", YOLO adquiere _gpu_lock de forma BLOQUEANTE
+# (espera a EasyOCR de otro worker) en vez de degradar a CPU — el device
+# SIEMPRE es el mismo → detección determinista. La VRAM cabe (benchmark
+# sesión 103: daemon 2.25GB + YOLO ~1GB + EasyOCR 0.13GB < 4GB). Timeout de
+# la espera: EasyOCR por página toma ~0.9-2s, así que 30s es generoso (solo
+# se agota si la GPU está realmente saturada y entonces degrada a CPU, que es
+# el fallback de emergencia, no la política).
+YOLO_GPU_LOCK_BLOQUEANTE: Final[bool] = True
+YOLO_GPU_LOCK_TIMEOUT_S: Final[float] = 30.0
+
+
 # ─── Timeouts (single source of truth — shared via /api/config) ────
 TIMEOUT_OPENCV_INIT_MS: Final[int] = 15000       # app.js: OpenCV init + poll timeout
 TIMEOUT_PDFJS_CDN_MS: Final[int] = 10000          # app.js: PDF.js CDN load (UMD)

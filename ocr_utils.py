@@ -14,7 +14,8 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from config import ROOT, MARGIN_NOISE_PATTERNS, WATERMARK_PATTERNS
+from config import (ROOT, MARGIN_NOISE_PATTERNS, WATERMARK_PATTERNS,
+                    FUSION_TYPE_REINFORCE, FUSION_TYPE_WEIGHTS)
 
 # Type alias for OpenCV images (suppresses overly-strict ndarray checks)
 _Img = np.ndarray
@@ -27,6 +28,27 @@ _ocr_lock: threading.Lock = threading.Lock()
 # porque EasyOCR no es thread-safe y cada reader consume ~1-2GB VRAM/RAM
 _ocr_semaphore: threading.Semaphore = threading.Semaphore(1)
 _rapid_semaphore: threading.Semaphore = threading.Semaphore(1)
+# Benchmark (disable_uocr): apaga el TextClassifier de la Ruta C junto con
+# el VLM — mide el overhead puro de la fusión sin la clasificación de
+# rotación. Mismo patrón que _uocr_inferring (Event global consultado en
+# runtime, seteado por OCRManager).
+_ruta_c_cls_disabled: threading.Event = threading.Event()
+# Benchmark (disable_uocr): también apaga el detector YOLO de regiones (Fase
+# 6) — el overhead puro de la fusión se mide sin el recuperador de regiones
+# (mismo patrón que _ruta_c_cls_disabled, set/clear por request).
+_yolo_disabled: threading.Event = threading.Event()
+# Lock global de GPU (RLock): serializa la inferencia de EasyOCR (server, GPU)
+# con la del daemon U-OCR (proceso separado, mismo GPU). Sin esto, un worker
+# corriendo EasyOCR compite por VRAM con el daemon mientras infiere → el daemon
+# pasa de 83s a 140-1439s por página (benchmark fusion 2026-08-03, §3.6 v4.2).
+_gpu_lock: threading.RLock = threading.RLock()
+
+# Flag global de degradación (v4.2): mientras el daemon U-OCR infiere en GPU
+# (proceso separado que comparte la GTX 1050 Ti de 4GB), los workers que
+# procesan OTRAS páginas en paralelo degradan a RapidOCR CPU en vez de esperar
+# el _gpu_lock — así el daemon tiene la VRAM completa y las páginas normales
+# avanzan en CPU sin bloquearse. Se setea en routes/api._ocr_with_unlimited.
+_uocr_inferring: threading.Event = threading.Event()
 
 
 def _get_ocr_reader(lang: str = "auto") -> Any:
@@ -140,11 +162,240 @@ def _preprocess_rapid(img_bgr: _Img) -> _Img:
     return enhanced
 
 
-def _run_rapidocr(img_bgr: _Img) -> list[dict[str, Any]]:
+# ─── YOLO detector de regiones de texto (Fase 6) ─────────────────
+# Tier 3.5 de detección: un YOLO fine-tuned detecta globos/cartelas/títulos
+# como OBJETOS (no como texto). Cada región alimenta la Ruta C existente
+# (_recover_regions_with_easyocr). ultralytics se importa EN RUNTIME para no
+# inflar el .exe ni romper el import del módulo si no está instalado.
+_yolo_engine: Any = None
+_yolo_lock: threading.Lock = threading.Lock()
+# Device YOLO resuelto UNA sola vez por proceso (sesión 116) — la base de la
+# política determinista del trigger v4.2 (ver _resolver_device_yolo).
+_yolo_device: str | None = None
+_yolo_device_lock: threading.Lock = threading.Lock()
+
+
+def _get_yolo_engine() -> Any:
+    """Lazy-load del detector YOLO (ultralytics) con thread-safety.
+
+    Devuelve None si ultralytics no está instalado, el modelo no existe y
+    YOLO_AUTODOWNLOAD=False, o la carga falla — los callers degradan a [] sin
+    romper el pipeline (mismo patrón que _get_rapid_engine).
+    """
+    global _yolo_engine
+    if _yolo_engine is not None:
+        return _yolo_engine
+    with _yolo_lock:
+        if _yolo_engine is not None:
+            return _yolo_engine
+        try:
+            from config import YOLO_ENABLED, YOLO_MODEL_PATH, YOLO_AUTODOWNLOAD
+            if not YOLO_ENABLED:
+                return None
+            import os
+            if not os.path.exists(YOLO_MODEL_PATH):
+                if YOLO_AUTODOWNLOAD:
+                    print(f"[YOLO] Modelo no existe ({YOLO_MODEL_PATH}); "
+                          "descargando yolov8n.pt (requiere internet)...")
+                else:
+                    print(f"[YOLO] Modelo no existe ({YOLO_MODEL_PATH}) y "
+                          "YOLO_AUTODOWNLOAD=False — tier YOLO degradado a []")
+                    return None
+            # Import DINÁMICO: ultralytics no se importa al cargar ocr_utils
+            # (el .exe no lo necesita; si falta, el tier simplemente no aporta).
+            from ultralytics import YOLO
+            engine = YOLO(YOLO_MODEL_PATH if os.path.exists(YOLO_MODEL_PATH)
+                          else "yolov8n.pt")
+            _yolo_engine = engine
+            print(f"[YOLO] Detector listo (modelo={YOLO_MODEL_PATH})")
+        except Exception as e:
+            print(f"[YOLO] No disponible ({e}); tier YOLO degradado a []")
+            return None
+    return _yolo_engine
+
+
+def _resolver_device_yolo() -> str:
+    """Resuelve el device YOLO UNA sola vez por proceso (sesión 116).
+
+    Política determinista del trigger v4.2: la decisión de disparar el VLM no
+    puede depender del estado dinámico de _gpu_lock/_uocr_inferring en cada
+    página (causa raíz del no-determinismo: la misma p4 disparaba U-OCR en
+    single pero no en batch porque YOLO corría GPU o CPU según quién tuviera
+    el lock, y GPU vs CPU dan detecciones marginalmente distintas que cruzan
+    el umbral YOLO_CONF_THRESH de forma distinta → distinta Ruta C → distinto
+    blocks/avg_conf → distinta decisión v4.2). Con la resolución única, TODAS
+    las páginas del proceso usan el MISMO device → 2 corridas idénticas dan
+    SIEMPRE la misma decisión de trigger por página.
+
+    IMPORTANTE (code review sesión 116): la decisión depende SOLO de
+    torch.cuda.is_available() — NO de _uocr_inferring.is_set(). Si el
+    resolver consultara el flag del daemon en el primer call, un proceso que
+    arrancara justo cuando el daemon infiere resolvería CPU y otro GPU →
+    no-determinismo entre corridas (la misma fuente que se elimina). La
+    sesión 103 ya verificó que YOLO GPU coexiste con el daemon en VRAM
+    (2.25GB + ~1GB + 0.13GB < 4GB), así que el flag no aporta protección y
+    sí introduce azar.
+    """
+    global _yolo_device
+    if _yolo_device is not None:
+        return _yolo_device
+    with _yolo_device_lock:
+        if _yolo_device is not None:
+            return _yolo_device
+        from config import YOLO_DEVICE
+        device = YOLO_DEVICE
+        if device == "auto":
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    device = "0"   # determinista: solo depende de CUDA
+                else:
+                    device = "cpu"
+            except Exception:
+                device = "cpu"
+        elif device != "cpu":
+            try:
+                import torch
+                if not torch.cuda.is_available():
+                    device = "cpu"
+            except Exception:
+                device = "cpu"
+        _yolo_device = device
+        print(f"[YOLO] device fijado UNA vez por proceso: {device}")
+        return _yolo_device
+
+
+def _detect_text_regions_in_page(img_bgr: _Img) -> list[dict[str, Any]]:
+    """Detecta regiones de diálogo (globos, cartelas, títulos) con YOLO.
+
+    Fase 6: reemplaza/complementa los blobs OpenCV de
+    _detect_bubble_regions_in_panel con un detector entrenado. Cada detección
+    se convierte a una región en el MISMO formato que los blobs OpenCV
+    ({x, y, w, h, roundness, ...} en coordenadas de página) para que la Ruta C
+    (_recover_regions_with_easyocr) la consuma sin cambios.
+
+    Device: resuelto UNA sola vez por proceso por _resolver_device_yolo()
+    (sesión 116 — política determinista del trigger v4.2): con YOLO_DEVICE
+    "auto" se fija GPU "0" si CUDA está disponible en el arranque (si no,
+    "cpu"), y TODAS las páginas del proceso usan ese MISMO device. La
+    serialización GPU con EasyOCR (mismo proceso) se hace con _gpu_lock
+    BLOQUEANTE (espera ~0.9-2s) en vez de degradar a CPU por llamada — el
+    device nunca cambia a mitad de proceso, así que 2 corridas idénticas dan
+    la misma detección y la misma decisión de trigger por página.
+
+    Degradación segura: sin ultralytics, sin modelo, o error → [] (el tier
+    simplemente no aporta; el pipeline sigue con los blobs OpenCV).
+    """
+    # Benchmark: disable_uocr apaga el detector YOLO igual que el cls (el
+    # overhead puro de la fusión se mide sin el recuperador de regiones).
+    if _yolo_disabled.is_set():
+        return []
+    engine = _get_yolo_engine()
+    if engine is None:
+        return []
+    device = _resolver_device_yolo()
+    try:
+        from config import (YOLO_CONF_THRESH, YOLO_IOU_THRESH, YOLO_IMGSZ,
+                            YOLO_MAX_REGIONS, YOLO_MIN_AREA_RATIO,
+                            YOLO_CLASS_KEYWORDS, YOLO_GPU_LOCK_BLOQUEANTE,
+                            YOLO_GPU_LOCK_TIMEOUT_S)
+        # Serialización GPU determinista (sesión 116): el device se resuelve
+        # UNA sola vez por proceso (_resolver_device_yolo) y NO vuelve a
+        # depender del estado dinámico de _gpu_lock/_uocr_inferring en cada
+        # llamada — la misma página produce SIEMPRE la misma detección YOLO
+        # (causa raíz del no-determinismo del trigger v4.2: GPU vs CPU dan
+        # detecciones marginalmente distintas que cruzaban el umbral 0.25 de
+        # forma distinta → distinta Ruta C → distinto trigger). Con device
+        # "0" (GPU), YOLO adquiere _gpu_lock de forma BLOQUEANTE (espera a
+        # que EasyOCR de otro worker termine ~0.9-2s) en vez de degradar a
+        # CPU — el device es SIEMPRE el mismo → determinista. Solo si el
+        # timeout se agota (caso extremo) degrada a CPU sin romper el flujo.
+        _gpu_held = False
+        if device == "0":
+            if YOLO_GPU_LOCK_BLOQUEANTE:
+                _gpu_held = _gpu_lock.acquire(timeout=YOLO_GPU_LOCK_TIMEOUT_S)
+            else:
+                _gpu_held = _gpu_lock.acquire(blocking=False)
+            if not _gpu_held:
+                print("[YOLO] _gpu_lock no disponible: degradando a CPU")
+                device = "cpu"
+        try:
+            results = engine.predict(
+                img_bgr,
+                conf=YOLO_CONF_THRESH,
+                iou=YOLO_IOU_THRESH,
+                imgsz=YOLO_IMGSZ,
+                device=device,
+                verbose=False,
+            )
+        finally:
+            if _gpu_held:
+                _gpu_lock.release()
+        if not results or results[0].boxes is None:
+            return []
+        boxes = results[0].boxes
+        names = results[0].names or {}
+        h_page, w_page = img_bgr.shape[:2]
+        min_area = (h_page * w_page) * YOLO_MIN_AREA_RATIO
+        regions: list[dict[str, Any]] = []
+        xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, "cpu") else boxes.xyxy
+        confs = boxes.conf.cpu().numpy() if hasattr(boxes.conf, "cpu") else boxes.conf
+        clss = boxes.cls.cpu().numpy() if hasattr(boxes.cls, "cpu") else boxes.cls
+        for i, box in enumerate(xyxy):
+            x0, y0, x1, y1 = [float(v) for v in box]
+            x, y = int(round(x0)), int(round(y0))
+            w, h = int(round(x1 - x0)), int(round(y1 - y0))
+            if w < 8 or h < 8 or (w * h) < min_area:
+                continue
+            cls_id = int(clss[i]) if i < len(clss) else 0
+            label = str(names.get(cls_id, "")).lower()
+            # Filtrar por tipo: solo regiones que contienen texto (globo,
+            # cartela, título, caja de texto, SFX). Las clases no relevantes
+            # (person, face...) se ignoran.
+            if label and not any(kw in label for kw in YOLO_CLASS_KEYWORDS):
+                continue
+            regions.append({
+                "x": x, "y": y, "w": w, "h": h,
+                "roundness": 0.0,
+                "border_ratio": 0.0,
+                "dark_ratio": 0.0,
+                "source": "yolo",
+                "label": label or "text",
+                "cls_conf": float(confs[i]) if i < len(confs) else 0.0,
+            })
+            if len(regions) >= YOLO_MAX_REGIONS:
+                break
+        if regions:
+            print(f"[YOLO] {len(regions)} regiones de diálogo detectadas "
+                  f"(device={device})")
+        return regions
+    except Exception as e:
+        print(f"[YOLO] Error en detección de regiones: {e}")
+        return []
+
+
+def _run_rapidocr(
+    img_bgr: _Img,
+    box_thresh: float | None = None,
+    unclip_ratio: float | None = None,
+    text_score: float | None = None,
+) -> list[dict[str, Any]]:
     """
     Ejecuta RapidOCR sobre una imagen y retorna bloques en el
     mismo formato que EasyOCR (x, y, w, h, text, confidence, ...).
     Adquiere _rapid_semaphore (ONNX Runtime no es thread-safe).
+
+    Parámetros de detección (Fase 2 — reintento agresivo):
+        box_thresh: umbral del detector DBNet (default 0.5). Menor → acepta
+            cajas más débiles (texto artístico/decorativo).
+        unclip_ratio: expansión de la caja tras la máscara (default 1.6).
+            Mayor → recupera texto partido en glifos sueltos.
+        text_score: umbral del recognizer (default 0.5). Menor → acepta
+            caracteres menos confiables.
+    Los valores SIEMPRE se pasan explícitos (defaults si no se indican): la
+    librería muta postprocess_op.box_thresh/unclip_ratio en la primera
+    llamada con kwargs, así que una llamada agresiva anterior no debe
+    filtrarse a una llamada default posterior.
     """
     engine = _get_rapid_engine()
     if engine is None:
@@ -154,7 +405,12 @@ def _run_rapidocr(img_bgr: _Img) -> list[dict[str, Any]]:
         print("[OCR] Timeout adquiriendo semaforo RapidOCR (120s)")
         return []
     try:
-        result, _ = engine(img_bgr)
+        params = {
+            "box_thresh": box_thresh if box_thresh is not None else 0.5,
+            "unclip_ratio": unclip_ratio if unclip_ratio is not None else 1.6,
+            "text_score": text_score if text_score is not None else 0.5,
+        }
+        result, _ = engine(img_bgr, **params)
         blocks: list[dict[str, Any]] = []
         if result:
             for r in result:
@@ -206,70 +462,163 @@ def _normalize_text(t: str) -> str:
     return t
 
 
+def _block_score(b: dict[str, Any]) -> float:
+    """Score de calidad de un bloque: confianza × factor de longitud × tipo.
+
+    El multiplicador de tipo (Fase 3) aplica SOLO a bloques con "type"
+    semántico del VLM (title/header): en el dedup/NMS de la fusión, un bloque
+    tipado del VLM gana empatando contra un bloque sin tipo (EasyOCR/RapidOCR
+    nunca llevan type → factor 1.0, sin cambio de comportamiento).
+    """
+    text_len = len(str(b.get("text", "")).strip())
+    conf = float(b.get("confidence", 0.5))
+    tw = FUSION_TYPE_WEIGHTS.get(str(b.get("type", "")).lower(), 1.0)
+    return conf * tw * min(2.0, max(0.5, text_len / 5.0))
+
+
+def _overlap_ratio(b1: dict[str, Any], b2: dict[str, Any]) -> float:
+    """Ratio de solapamiento espacial entre dos bloques (inter/min_area)."""
+    x1 = max(b1["x"], b2["x"])
+    y1 = max(b1["y"], b2["y"])
+    x2 = min(b1["x"] + b1["w"], b2["x"] + b2["w"])
+    y2 = min(b1["y"] + b1["h"], b2["y"] + b2["h"])
+    if x2 <= x1 or y2 <= y1:
+        return 0.0
+    inter = (x2 - x1) * (y2 - y1)
+    min_area = min(b1["w"] * b1["h"], b2["w"] * b2["h"])
+    return inter / float(min_area) if min_area > 0 else 0.0
+
+
+def _estimate_confidence_heuristic(block: dict[str, Any], block_type: str | None = None) -> float:
+    """Confianza heurística para bloques de Unlimited-OCR (el modelo no emite confianza).
+
+    Reglas (validado empíricamente: los logits saturan ~0.997 y no diferencian):
+      - Base por tipo: text/title 0.90, header 0.70, resto 0.80.
+      - Calidad del texto: sin letras ×0.5; ≤2 chars ×0.7; ratio vocales ≥0.25 +0.05.
+      - from_art_recrop (re-OCR artístico del daemon): piso 0.80.
+      - fontSize 10-40px (rango natural de diálogo): +0.03.
+    """
+    conf = {"text": 0.90, "title": 0.90, "header": 0.70}.get(block_type or "", 0.80)
+    text = str(block.get("text", ""))
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        conf *= 0.5
+    elif len(text) <= 2:
+        conf *= 0.7
+    else:
+        vocals = sum(c in "aeiouáéíóúAEIOUÁÉÍÓÚ" for c in letters)
+        if vocals / len(letters) >= 0.25:
+            conf += 0.05
+    if block.get("from_art_recrop"):
+        conf = max(conf, 0.80)
+    fs = int(block.get("fontSize", 0) or 0)
+    if 10 <= fs <= 40:
+        conf += 0.03
+    return round(min(1.0, conf), 4)
+
+
+def _fusionar_blocks_multi(
+    sources: list[list[dict[str, Any]]],
+    weights: list[float] | None = None,
+) -> list[dict[str, Any]]:
+    """Fusiona bloques de N motores OCR en una lista unificada.
+
+    sources: una lista de bloques por motor (EasyOCR, RapidOCR, Unlimited-OCR...).
+    weights: peso de calibración por motor (mismo orden; default 1.0).
+
+    Pasos:
+      1. Dedup por texto normalizado idéntico → gana el de mayor score.
+      2. Alineación Levenshtein: bloques con IoU > 0.4 y texto a distancia
+         de edición ≤ 30% de la longitud se consideran el mismo texto.
+      3. Votación: si 2+ motores coinciden en texto/región, la confianza del
+         ganador se refuerza (+0.15).
+      4. NMS espacial: IoU > 0.40 descarta el duplicado de menor score.
+    """
+    if not sources:
+        return []
+    non_empty = [s for s in sources if s]
+    if not non_empty:
+        return []
+    if len(non_empty) == 1:
+        return list(non_empty[0])
+    if weights is None:
+        weights = [1.0] * len(sources)
+
+    # Etiquetar cada bloque con el índice de su motor
+    tagged: list[dict[str, Any]] = []
+    for i, src in enumerate(sources):
+        w = weights[i] if i < len(weights) else 1.0
+        for b in src:
+            if not str(b.get("text", "")).strip():
+                continue
+            tagged.append({**b, "_engine": i, "_weight": w})
+
+    def _score(b: dict[str, Any]) -> float:
+        return _block_score(b) * b.get("_weight", 1.0)
+
+    # 1. Dedup por texto normalizado idéntico
+    by_text: dict[str, dict[str, Any]] = {}
+    for b in tagged:
+        key = _normalize_text(b["text"])
+        if key not in by_text or _score(b) > _score(by_text[key]):
+            by_text[key] = b
+
+    # 2. Alineación Levenshtein entre bloques solapados espacialmente
+    candidates: list[dict[str, Any]] = list(by_text.values())
+    candidates.sort(key=_score, reverse=True)
+    final_result: list[dict[str, Any]] = []
+    for b in candidates:
+        merged = False
+        for existing in final_result:
+            if _overlap_ratio(b, existing) > 0.40:
+                nb = _normalize_text(b["text"])
+                ne = _normalize_text(existing["text"])
+                max_len = max(len(nb), len(ne))
+                if max_len == 0:
+                    continue
+                dist = _levenshtein(nb, ne)
+                same_text = nb == ne or dist / max_len <= 0.30
+                if same_text:
+                    # Votación: motores distintos coinciden → refuerzo.
+                    # Fase 3: el refuerzo se pondera por el tipo semántico
+                    # del bloque implicado (solo los del VLM llevan "type"):
+                    # title/header pesan más que diálogo común — el acuerdo
+                    # entre motores sobre texto distintivo es más fiable.
+                    if b.get("_engine") != existing.get("_engine"):
+                        _t = str(b.get("type", "")).lower()
+                        if _t not in FUSION_TYPE_REINFORCE:
+                            _t = str(existing.get("type", "")).lower()
+                        if _t not in FUSION_TYPE_REINFORCE:
+                            _t = "text"
+                        existing["confidence"] = min(
+                            1.0, float(existing.get("confidence", 0.5))
+                            + FUSION_TYPE_REINFORCE[_t])
+                    merged = True
+                    break
+        if not merged:
+            final_result.append(b)
+
+    # 3. NMS espacial final (IoU > 0.40)
+    final_result.sort(key=_score, reverse=True)
+    nms: list[dict[str, Any]] = []
+    for b in final_result:
+        if any(_overlap_ratio(b, e) > 0.40 for e in nms):
+            continue
+        nms.append(b)
+
+    # Limpiar etiquetas internas
+    for b in nms:
+        b.pop("_engine", None)
+        b.pop("_weight", None)
+    return nms
+
+
 def _fusionar_blocks(
     easy_blocks: list[dict[str, Any]],
     rapid_blocks: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """
-    Fusiona bloques de EasyOCR y RapidOCR eliminando duplicados.
-    - Si ambos detectan el mismo texto, usa el de mayor confianza.
-    - Si solo uno detecta un texto, lo conserva.
-    - Compara textos normalizados (lowercase + sin acentos).
-    """
-    if not easy_blocks:
-        return rapid_blocks
-    if not rapid_blocks:
-        return easy_blocks
-
-    def _block_score(b: dict[str, Any]) -> float:
-        text_len = len(str(b.get("text", "")).strip())
-        conf = float(b.get("confidence", 0.5))
-        return conf * min(2.0, max(0.5, text_len / 5.0))
-
-    def _overlap_ratio(b1: dict[str, Any], b2: dict[str, Any]) -> float:
-        x1 = max(b1["x"], b2["x"])
-        y1 = max(b1["y"], b2["y"])
-        x2 = min(b1["x"] + b1["w"], b2["x"] + b2["w"])
-        y2 = min(b1["y"] + b1["h"], b2["y"] + b2["h"])
-        if x2 <= x1 or y2 <= y1:
-            return 0.0
-        inter = (x2 - x1) * (y2 - y1)
-        min_area = min(b1["w"] * b1["h"], b2["w"] * b2["h"])
-        return inter / float(min_area) if min_area > 0 else 0.0
-
-    # 1. Deduplicación por texto idéntico normalizado
-    easy_by_text: dict[str, dict[str, Any]] = {_normalize_text(b["text"]): b for b in easy_blocks}
-    rapid_by_text: dict[str, dict[str, Any]] = {_normalize_text(b["text"]): b for b in rapid_blocks}
-
-    common = set(easy_by_text.keys()) & set(rapid_by_text.keys())
-    only_easy = set(easy_by_text.keys()) - common
-    only_rapid = set(rapid_by_text.keys()) - common
-
-    candidates: list[dict[str, Any]] = []
-    for t in common:
-        if _block_score(easy_by_text[t]) >= _block_score(rapid_by_text[t]):
-            candidates.append(easy_by_text[t])
-        else:
-            candidates.append(rapid_by_text[t])
-    for t in only_easy:
-        candidates.append(easy_by_text[t])
-    for t in only_rapid:
-        candidates.append(rapid_by_text[t])
-
-    # 2. Deduplicación por solapamiento espacial (IoU / intersección > 40%)
-    # Elimina cajas duplicadas que ambos motores hayan detectado en la misma posición
-    candidates.sort(key=lambda b: _block_score(b), reverse=True)
-    final_result: list[dict[str, Any]] = []
-    for b in candidates:
-        is_duplicate = False
-        for existing in final_result:
-            if _overlap_ratio(b, existing) > 0.40:
-                is_duplicate = True
-                break
-        if not is_duplicate:
-            final_result.append(b)
-
-    return final_result
+    """Fusión 2-vías (EasyOCR + RapidOCR) — delega en _fusionar_blocks_multi."""
+    return _fusionar_blocks_multi([easy_blocks, rapid_blocks], weights=[1.0, 0.9])
 
 
 # ─── Corrector ortografico post-OCR (pyspellchecker) ────────────
@@ -619,7 +968,12 @@ _OCR_MIN_SIZE: int = 6
 _OCR_MAG_RATIO: float = 1.3
 
 
-def _run_ocr_on_image(reader: Any, img_bgr: _Img, mag_ratio: float | None = None) -> list[Any]:
+def _run_ocr_on_image(
+    reader: Any,
+    img_bgr: _Img,
+    mag_ratio: float | None = None,
+    rotation_info: list[str] | tuple[str, ...] | None = None,
+) -> list[Any]:
     """
     Ejecuta EasyOCR sobre una imagen y retorna resultados crudos.
     Adquiere el semáforo OCR (solo una llamada a la vez).
@@ -628,22 +982,45 @@ def _run_ocr_on_image(reader: Any, img_bgr: _Img, mag_ratio: float | None = None
         mag_ratio: Factor de upscaling. Si es None, usa _OCR_MAG_RATIO (1.3).
                    Valores mas altos (1.5-2.0) mejoran deteccion de texto
                    artistico pero anaden mas ruido.
+        rotation_info: Fase 6 — ángulos de rotación que EasyOCR prueba y elige
+            el de mejor confianza. None = comportamiento actual (sin rotación;
+            el tier 1 de página completa NO lo pasa para no multiplicar ~4x el
+            tiempo del camino caliente). Solo la Ruta C (crops de regiones)
+            lo pasa (EASYOCR_ROTATION_INFO), donde vive el texto vertical /
+            estilizado que YOLO detecta como región. Con rotation_info, EasyOCR
+            devuelve las cajas ya en coordenadas del crop ORIGINAL (las rota
+            internamente), así que el mapeo ÷upscale de la Ruta C no cambia.
     """
     mag = mag_ratio if mag_ratio is not None else _OCR_MAG_RATIO
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     acquired = _ocr_semaphore.acquire(blocking=True, timeout=120)
     try:
-        return reader.readtext(
-            img_rgb,
-            detail=1,
-            paragraph=False,
-            min_size=_OCR_MIN_SIZE,
-            text_threshold=_OCR_TEXT_THRESHOLD,
-            low_text=_OCR_LOW_TEXT,
-            link_threshold=0.3,
-            canvas_size=min(max(img_bgr.shape[:2]), _OCR_CANVAS_SIZE),
-            mag_ratio=mag,
-        )
+        # v4.2 race-window fix: si el daemon U-OCR empezó a inferir DESPUÉS de
+        # que _detect_and_ocr chequeara el flag (check-then-act), este worker ya
+        # llegó aquí. En vez de bloquearse en _gpu_lock sin timeout durante toda
+        # la inferencia VLM (2-8 min) reteniendo el semáforo OCR y provocando
+        # timeouts de 120s en los demás workers, degradar a RapidOCR CPU.
+        if _uocr_inferring.is_set():
+            print("[OCR] Daemon U-OCR infiriendo (race window): "
+                  "degradando a RapidOCR CPU")
+            img_rapid_cpu = _preprocess_rapid(img_bgr)
+            return _run_rapidocr(img_rapid_cpu)
+        # v4.2: adquirir el lock GPU para no competir por VRAM con el daemon
+        # U-OCR si está infiriendo (un solo motor GPU a la vez).
+        with _gpu_lock:
+            kwargs: dict[str, Any] = {
+                "detail": 1,
+                "paragraph": False,
+                "min_size": _OCR_MIN_SIZE,
+                "text_threshold": _OCR_TEXT_THRESHOLD,
+                "low_text": _OCR_LOW_TEXT,
+                "link_threshold": 0.3,
+                "canvas_size": min(max(img_bgr.shape[:2]), _OCR_CANVAS_SIZE),
+                "mag_ratio": mag,
+            }
+            if rotation_info is not None:
+                kwargs["rotation_info"] = list(rotation_info)
+            return reader.readtext(img_rgb, **kwargs)
     except Exception as e:
         print(f"[OCR] Error en readtext: {e}")
         return []
@@ -653,9 +1030,42 @@ def _run_ocr_on_image(reader: Any, img_bgr: _Img, mag_ratio: float | None = None
 
 
 def _ocr_results_to_blocks(results: list[Any], img_bgr: _Img) -> list[dict[str, Any]]:
-    """Convierte resultados crudos de EasyOCR al formato interno de bloques."""
+    """Convierte resultados crudos de OCR al formato interno de bloques.
+
+    Acepta AMBOS formatos, porque _run_ocr_on_image puede devolver tuplas
+    crudas de EasyOCR `(bbox, text, conf)` O dicts en formato interno
+    (degradación v4.2: si el daemon U-OCR empezó a inferir en la race
+    window entre el check de _detect_and_ocr y la ejecución, degrada a
+    RapidOCR CPU que devuelve dicts). Antes este camino solo manejaba
+    tuplas → ValueError "too many values to unpack" → 500 en las páginas
+    19-22 del run fusion batch (Fase 5, 2026-08-04). Mismo tratamiento
+    dict/tupla que _recover_regions_with_easyocr (Ruta C).
+    """
     blocks: list[dict[str, Any]] = []
-    for (bbox, text, conf) in results:
+    for res in results:
+        if isinstance(res, dict):
+            # Formato interno (RapidOCR CPU en la race window): bloques ya
+            # formateados con x/y/w/h/text/confidence/fontSize/textColor.
+            text = str(res.get("text", "")).strip()
+            conf = float(res.get("confidence", 0.5))
+            # Paridad con el camino tupla: mismo filtro de confianza mínima.
+            if not text or conf < 0.08:
+                continue
+            x = int(res.get("x", 0))
+            y = int(res.get("y", 0))
+            w = int(res.get("w", 0))
+            h = int(res.get("h", 0))
+            if w < 3 or h < 3:
+                continue
+            blocks.append({
+                "x": x, "y": y, "w": w, "h": h,
+                "text": text,
+                "confidence": conf,
+                "fontSize": int(res.get("fontSize", 0) or max(8, int(h * 0.75))),
+                "textColor": res.get("textColor", "#000000"),
+            })
+            continue
+        bbox, text, conf = res
         text = str(text).strip()
         if not text or conf < 0.08:
             continue
@@ -721,6 +1131,20 @@ def _detect_and_ocr(
         avg_conf_threshold: Si la confianza promedio de EasyOCR es
             menor a este valor, se activa el tier hibrido (RapidOCR + fusión).
     """
+    # ── Degradación v4.2: daemon U-OCR infiriendo → solo RapidOCR CPU ──
+    # Si el daemon (proceso separado) está usando la GTX ahora mismo, NO
+    # cargar/ejecutar EasyOCR GPU: degradar a RapidOCR CPU para no competir
+    # por VRAM (la inferencia VLM del daemon tarda 2-8 min; esperar el
+    # _gpu_lock bloquearía a todos los workers). El flag lo setea
+    # _ocr_with_unlimited. IMPORTANTE: se chequea ANTES de _get_ocr_reader()
+    # — cargar el reader cargaría los modelos de EasyOCR a VRAM mientras el
+    # daemon infiere, que es exactamente la contención que v4.2 elimina.
+    if _uocr_inferring.is_set():
+        print("[OCR] Daemon U-OCR infiriendo: degradando a RapidOCR CPU "
+              "para liberar la GTX")
+        img_rapid_cpu = _preprocess_rapid(img_bgr)
+        return _run_rapidocr(img_rapid_cpu)
+
     reader = _get_ocr_reader(lang_hint)
     if reader is None:
         return []
@@ -788,6 +1212,376 @@ def _detect_and_ocr(
 
     print("[OCR] Todos los fallbacks agotados")
     return []
+
+
+# ─── Ruta C: re-OCR a nivel de globo dentro de paneles image ──
+# El benchmark de la Ruta C (PLAN_FUSION_OCR.md §3.5) demostró que recortar
+# el panel image COMPLETO y re-OCRearlo NO recupera el diálogo — ni con
+# EasyOCR (hasta 3x) ni con U-OCR. La granularidad del recorte es CRÍTICA:
+# el globo individual (411x245 en pág. 12, roundness 0.739) SÍ se recupera
+# con re-OCR (conf 0.96). Estas funciones implementan esa granularidad.
+
+
+def _detect_bubble_regions_in_panel(
+    img_bgr: _Img,
+    panel: dict[str, Any],
+    min_area_ratio: float = 0.004,
+    max_area_ratio: float = 0.60,
+) -> list[dict[str, Any]]:
+    """Detecta globos/regiones de texto dentro de un panel image.
+
+    Heurística OpenCV validada en analizar_dialogo_artistico.py (págs. 3/12):
+      - Blobs de luminancia >200 (interior de globo) con morfología de cierre.
+      - Roundness real 4π·area/perímetro² ≥ 0.30 (elíptico, no línea).
+      - Borde oscuro definido alrededor (border_ratio ≥ 0.08).
+      - Interior con tinta (dark_ratio > 0.02).
+
+    Args:
+        panel: dict con x, y, w, h en coordenadas de PÁGINA.
+
+    Returns:
+        Regiones en coordenadas de PÁGINA: [{x, y, w, h, roundness, ...}].
+    """
+    h_page, w_page = img_bgr.shape[:2]
+    px, py, pw, ph = int(panel["x"]), int(panel["y"]), int(panel["w"]), int(panel["h"])
+    x0, y0 = max(0, px), max(0, py)
+    x1, y1 = min(w_page, px + pw), min(h_page, py + ph)
+    crop = img_bgr[y0:y1, x0:x1]
+    if crop.size == 0 or crop.shape[0] < 20 or crop.shape[1] < 20:
+        return []
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+
+    _, bright = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+    bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    edges = cv2.Canny(gray, 60, 180)
+    edges = cv2.morphologyEx(edges, cv2.MORPH_DILATE, np.ones((3, 3), np.uint8))
+
+    num, labels, stats, _cents = cv2.connectedComponentsWithStats(bright)
+    min_area = (h * w) * min_area_ratio
+    max_area = (h * w) * max_area_ratio
+    regions: list[dict[str, Any]] = []
+    for i in range(1, num):
+        bx, by, bw, bh, area = stats[i]
+        if area < min_area or area > max_area or bw < 40 or bh < 25:
+            continue
+        comp = (labels[by:by + bh, bx:bx + bw] == i).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            continue
+        perim = cv2.arcLength(contours[0], True)
+        roundness = (4.0 * np.pi * area / (perim * perim)) if perim > 0 else 0.0
+        if roundness < 0.30:  # blob demasiado irregular para ser globo
+            continue
+        mask_region = bright[by:by + bh, bx:bx + bw]
+        border_mask = cv2.dilate(mask_region, np.ones((5, 5), np.uint8)) ^ mask_region
+        border_hits = cv2.countNonZero(cv2.bitwise_and(edges[by:by + bh, bx:bx + bw], border_mask))
+        border_ratio = border_hits / max(cv2.countNonZero(border_mask), 1)
+        if border_ratio < 0.08:
+            continue
+        interior = gray[by:by + bh, bx:bx + bw]
+        dark_ratio = float(np.mean(interior[mask_region.astype(bool)] < 100))
+        if dark_ratio < 0.02:  # interior sin tinta → no hay texto
+            continue
+        regions.append({
+            "x": px + int(bx), "y": py + int(by),
+            "w": int(bw), "h": int(bh),
+            "roundness": round(float(roundness), 3),
+            "border_ratio": round(float(border_ratio), 2),
+            "dark_ratio": round(float(dark_ratio), 3),
+        })
+    return regions
+
+
+def _classify_rotate_crop(up_img: _Img) -> tuple[_Img, bool, float]:
+    """Clasifica la rotación (0°/180°) de un crop de texto con el Cls de
+    RapidOCR (Fase 3 punto 3) y lo rota si es necesario.
+
+    El TextClassifier de RapidOCR (PP-OCRv4 cls, ONNX CPU) devuelve por cada
+    imagen un label ("0" o "180") + score. La librería YA rota internamente
+    la imagen cuando detecta "180" con score > cls_thresh (0.9): solo hay
+    que devolver la imagen ya rotada.
+
+    Args:
+        up_img: crop upscaleado (BGR).
+
+    Returns:
+        (img_rotada, se_roto, score): la imagen (rotada si procede), si se
+        aplicó la rotación, y la confianza del clasificador. Degradación
+        segura: si el engine no está o falla, devuelve (up_img, False, 0.0)
+        — la Ruta C sigue con el crop original sin romper.
+    """
+    from config import RUTA_C_CLS_ENABLED, RUTA_C_CLS_THRESH
+    if not RUTA_C_CLS_ENABLED:
+        return up_img, False, 0.0
+    # Benchmark: disable_uocr también apaga el cls (mide el overhead puro de
+    # la fusión sin la clasificación de rotación, igual que sin el VLM).
+    if _ruta_c_cls_disabled.is_set():
+        return up_img, False, 0.0
+    engine = _get_rapid_engine()
+    if engine is None or getattr(engine, "text_cls", None) is None:
+        return up_img, False, 0.0
+    acquired = _rapid_semaphore.acquire(blocking=True, timeout=120)
+    if not acquired:
+        print("[OCR] Timeout adquiriendo semaforo RapidOCR (cls, 120s)")
+        return up_img, False, 0.0
+    try:
+        # engine.text_cls() devuelve (imgs_rotadas, cls_res, elapse); las
+        # imágenes detectadas como 180° con score > thresh ya vienen rotadas.
+        rotated_list, cls_res, _elapse = engine.text_cls([up_img])
+        if not rotated_list or not cls_res:
+            return up_img, False, 0.0
+        label = str(cls_res[0][0]) if isinstance(cls_res[0], (list, tuple)) else ""
+        score = float(cls_res[0][1]) if isinstance(cls_res[0], (list, tuple)) else 0.0
+        if "180" in label and score > RUTA_C_CLS_THRESH:
+            return rotated_list[0], True, score
+        return up_img, False, score
+    except Exception as e:
+        print(f"[OCR] TextClassifier falló ({e}); usando crop sin rotar")
+        return up_img, False, 0.0
+    finally:
+        _rapid_semaphore.release()
+
+
+def _recover_regions_with_easyocr(
+    img_bgr: _Img,
+    regions: list[dict[str, Any]],
+    lang_hint: str = "es",
+    upscale: float = 3.5,
+) -> list[dict[str, Any]]:
+    """Re-OCR de regiones de texto/globos a nivel individual (Ruta C).
+
+    Para cada región (coordenadas de página):
+      1. Recortar con padding.
+      2. Upscale 3-4× (INTER_CUBIC) — la granularidad que el benchmark
+         demostró necesaria para el diálogo artístico.
+      3. OCR sobre el recorte upscaleado.
+      4. Mapear bloques de vuelta a coordenadas de página (÷ upscale).
+
+    Motor (§8.4.4): EasyOCR GPU por defecto; pero si el daemon U-OCR está
+    infiriendo (_uocr_inferring activo, v4.2), NO se carga EasyOCR a VRAM y
+    se degrada a **RapidOCR CPU** sobre el crop upscaleado — así la Ruta C
+    no compite por la GTX con la inferencia VLM en curso (un solo motor GPU
+    a la vez). El chequeo ocurre ANTES de _get_ocr_reader(), igual que en
+    _detect_and_ocr.
+
+    Returns:
+        Bloques en formato interno ({x, y, w, h, text, confidence, fontSize}).
+    """
+    # §8.4.4: si el daemon U-OCR está infiriendo, degradar a RapidOCR CPU.
+    use_rapid = _uocr_inferring.is_set()
+    reader = None if use_rapid else _get_ocr_reader(lang_hint)
+    if reader is None and not use_rapid:
+        return []
+    if not regions:
+        return []
+    # Fase 6: rotation_info (0/90/180/270) para recuperar títulos verticales
+    # y cartelas rotadas que YOLO detecta como región. Fuera del loop (code
+    # review): import cacheado pero feo dentro de cada región.
+    from config import EASYOCR_ROTATION_INFO
+    if use_rapid:
+        print("[OCR] Ruta C degradada a RapidOCR CPU "
+              "(daemon U-OCR infiriendo)")
+    h_page, w_page = img_bgr.shape[:2]
+    recovered: list[dict[str, Any]] = []
+    for r in regions:
+        pad = max(6, int(min(r["w"], r["h"]) * 0.06))
+        x0, y0 = max(0, r["x"] - pad), max(0, r["y"] - pad)
+        x1, y1 = min(w_page, r["x"] + r["w"] + pad), min(h_page, r["y"] + r["h"] + pad)
+        crop = img_bgr[y0:y1, x0:x1]
+        if crop.size == 0 or crop.shape[0] < 8 or crop.shape[1] < 8:
+            continue
+        up_w, up_h = int(crop.shape[1] * upscale), int(crop.shape[0] * upscale)
+        if up_w > 8000 or up_h > 8000:
+            continue
+        up_img = cv2.resize(crop, (up_w, up_h), interpolation=cv2.INTER_CUBIC)
+        if use_rapid:
+            # Degradación §8.4.4: RapidOCR CPU sobre el crop upscaleado.
+            # _run_rapidocr ya devuelve bloques en formato interno.
+            rapid_blocks = _run_rapidocr(up_img)
+            for rb in rapid_blocks:
+                text = str(rb.get("text", "")).strip()
+                if not text:
+                    continue
+                bx = x0 + int(rb.get("x", 0) / upscale)
+                by = y0 + int(rb.get("y", 0) / upscale)
+                bw = int(rb.get("w", 0) / upscale)
+                bh = int(rb.get("h", 0) / upscale)
+                if bw < 3 or bh < 3:
+                    continue
+                recovered.append({
+                    "x": bx, "y": by, "w": bw, "h": bh,
+                    "text": text,
+                    "confidence": float(rb.get("confidence", 0.5)),
+                    "fontSize": max(8, int(bh * 0.75)),
+                    "textColor": rb.get("textColor", "#000000"),
+                    "engine": "rapidocr-region",
+                })
+        else:
+            # Fase 3 punto 3: TextClassifier de RapidOCR (Cls PP-OCRv4) —
+            # detecta si el globo está rotado 180° y lo rota ANTES del re-OCR
+            # (EasyOCR no detecta texto girado; el bloque rotado se pierde).
+            up_img_ocr, se_roto, cls_score = _classify_rotate_crop(up_img)
+            if se_roto:
+                print(f"[OCR] Ruta C: globo rotado 180° "
+                      f"(score {cls_score:.2f}) — corregido")
+            # Fase 6: rotation_info — EasyOCR prueba 0/90/180/270 y elige el
+            # de mejor confianza. Recupera títulos verticales (tategaki) y
+            # cartelas rotadas que YOLO detecta como región. EasyOCR devuelve
+            # las cajas en coords del crop ORIGINAL (rota internamente), así
+            # que el mapeo ÷upscale posterior no cambia. Solo se aplica en los
+            # CROPS de la Ruta C, no en la página completa (costo ~4x).
+            results = _run_ocr_on_image(
+                reader, up_img_ocr, rotation_info=EASYOCR_ROTATION_INFO)
+            for res in results:
+                # Normalizar ambos formatos: si _run_ocr_on_image degradó
+                # internamente a RapidOCR (race window: el daemon empezó a
+                # inferir justo después del chequeo de _uocr_inferring al
+                # inicio de esta función), devuelve bloques en formato interno
+                # (dicts) en vez de tuplas crudas (bbox, text, conf). Tratar
+                # ambos para no perder la recuperación silenciosamente.
+                if isinstance(res, dict):
+                    text = str(res.get("text", "")).strip()
+                    if not text:
+                        continue
+                    bx_u = int(res.get("x", 0))
+                    by_u = int(res.get("y", 0))
+                    bw_u = int(res.get("w", 0))
+                    bh_u = int(res.get("h", 0))
+                    conf = float(res.get("confidence", 0.5))
+                    color = res.get("textColor", "#000000")
+                else:
+                    # Formato crudo estándar de EasyOCR: (bbox, text, conf)
+                    bbox, text, conf = res
+                    text = str(text).strip()
+                    if not text or conf < 0.10:
+                        continue
+                    xs = [p[0] for p in bbox]
+                    ys = [p[1] for p in bbox]
+                    bx_u = int(min(xs))
+                    by_u = int(min(ys))
+                    bw_u = int(max(xs) - min(xs))
+                    bh_u = int(max(ys) - min(ys))
+                    color = "#000000"
+                # Si el cls rotó el crop 180°, las coords del bloque están en
+                # el espacio rotado — des-rotarlas para mapear al crop original.
+                if se_roto:
+                    up_w = int(up_img.shape[1])
+                    up_h = int(up_img.shape[0])
+                    bx_u = up_w - bx_u - bw_u
+                    by_u = up_h - by_u - bh_u
+                bx = x0 + int(bx_u / upscale)
+                by = y0 + int(by_u / upscale)
+                bw = int(bw_u / upscale)
+                bh = int(bh_u / upscale)
+                if bw < 3 or bh < 3:
+                    continue
+                recovered.append({
+                    "x": bx, "y": by, "w": bw, "h": bh,
+                    "text": text,
+                    "confidence": float(conf),
+                    "fontSize": max(8, int(bh * 0.75)),
+                    "textColor": color,
+                    "engine": "easyocr-region",
+                })
+    if not recovered:
+        return []
+    return _group_and_merge_blocks(recovered, h_page)
+
+
+def _page_dark_features(img_bgr: _Img) -> tuple[float, np.ndarray] | None:
+    """Extrae features de oscuridad de una página (barato, ~20ms).
+
+    Downscale a 300px, convierte a gris y cuenta el ratio de píxeles oscuros
+    (<120: arte/tinta vs papel escaneado 220-255). Compartido por
+    _page_has_large_image_panel (trigger v4.2) y _page_signature (cache §8.4.1)
+    para que ambos usen EXACTAMENTE el mismo cómputo.
+
+    Returns:
+        (dark_ratio, gray_small) o None si la imagen no es procesable.
+    """
+    try:
+        h, w = img_bgr.shape[:2]
+        scale = min(1.0, 300.0 / max(h, w))
+        small = cv2.resize(
+            img_bgr,
+            (max(1, int(w * scale)), max(1, int(h * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        dark_ratio = float(np.mean(gray < 120))
+        return dark_ratio, gray
+    except Exception:
+        return None
+
+
+def _page_signature(img_bgr: _Img, grid: int = 8, cell_dark_ratio: float = 0.05) -> str:
+    """Firma del LAYOUT de una página por distribución espacial de oscuridad.
+
+    Divide la página downscaleada (via _page_dark_features) en una cuadrícula
+    grid×grid y marca qué celdas son "oscuras" (arte/tinta dominante). El hash
+    binario resultante identifica páginas con el MISMO layout — la base del
+    cache de decisiones U-OCR (§8.4.1): si una página con esta firma ya disparó
+    el refuerzo y no recuperó nada, las páginas repetitivas del capítulo con la
+    misma firma no deben volver a disparar la inferencia VLM.
+
+    Diseño: la cuadrícula captura la ESTRUCTURA (paneles, márgenes, cabeceras)
+    y es robusta a cambios de texto dentro de los globos — dos páginas del mismo
+    capítulo con diálogo distinto comparten firma; dos layouts distintos no.
+
+    Args:
+        img_bgr: Página en BGR.
+        grid: Celdas por lado (8 → 64 bits de firma).
+        cell_dark_ratio: Fracción de píxeles oscuros para considerar una celda
+            "oscura" (0.05 calibrado en el PDF real: paneles con arte marcan
+            la celda; texto suelto no).
+
+    Returns:
+        str: firma "<dark_ratio 1 decimal>:<bits hex>" o "" si no procesable.
+        El dark_ratio se CUANTIZA a 1 decimal para que páginas casi idénticas
+        (mismo layout, mínima variación de tinta) compartan firma.
+    """
+    feats = _page_dark_features(img_bgr)
+    if feats is None:
+        return ""
+    dark_ratio, gray = feats
+    sh, sw = gray.shape
+    dark = (gray < 120).astype(np.uint8)
+    bits = 0
+    for gy in range(grid):
+        for gx in range(grid):
+            y0, y1 = int(gy * sh / grid), int((gy + 1) * sh / grid)
+            x0, x1 = int(gx * sw / grid), int((gx + 1) * sw / grid)
+            cell = dark[y0:y1, x0:x1]
+            if cell.size and float(cell.mean()) > cell_dark_ratio:
+                bits |= 1 << (gy * grid + gx)
+    return f"{dark_ratio:.1f}:{bits:0{grid * grid}x}"
+
+
+def _page_has_large_image_panel(img_bgr: _Img, min_ratio: float = 0.15) -> bool:
+    """Heurística v4.2: ¿la página contiene un panel image grande (>min_ratio)?
+
+    Barata (~20ms): downscale a 300px, umbral de luminancia (<120 = arte oscuro,
+    no papel blanco) y cuenta el ratio de píxeles oscuros. Un panel image grande
+    (ilustración/arte) domina la página; una página normal de diálogo tiene el
+    ratio de oscuridad bajo. Se usa en el trigger de U-OCR: solo se dispara el
+    refuerzo si hay panel image grande O <3 bloques con confianza <0.2.
+
+    Args:
+        img_bgr: Página en BGR.
+        min_ratio: Fracción mínima de área oscura para considerarla panel grande.
+
+    Returns:
+        True si la página parece tener un panel image grande.
+    """
+    feats = _page_dark_features(img_bgr)
+    if feats is None:
+        return False
+    dark_ratio, _ = feats
+    # Una página normal de manga: paneles con texto sobre papel blanco →
+    # dark_ratio < 10%. Una página con panel image grande (ilustración o
+    # portada) → dark_ratio > 25%. Umbral adaptativo con histéresis.
+    return dark_ratio > 0.18
 
 
 # ─── Filtro de marcas de agua ──────────────────────────────────

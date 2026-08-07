@@ -15,6 +15,18 @@ from typing import Any
 
 from config import GLOSARIO_REGEX, GLOSARIO_POST, REQUEST_TIMEOUT, LANGUAGES, ROOT
 
+# ─── Caché de HuggingFace dentro del proyecto ──────────────────
+# Regla "no tocar C:": la caché HF (tokenizers OPUS-MT, modelos de
+# transformers) vive en hf_cache/ del proyecto (igual que en server.py y
+# en el daemon uocr_daemon.py). Este módulo es quien descarga los modelos,
+# así que también define las variables aquí para cubrir usos directos
+# (tests, tools/) que no pasan por server.py. setdefault respeta un
+# HF_HOME ya definido por el entorno si existiera.
+import os as _os
+_os.environ.setdefault("HF_HOME", str(ROOT / "hf_cache"))
+_os.environ.setdefault("TRANSFORMERS_CACHE", str(ROOT / "hf_cache" / "hub"))
+_os.environ.setdefault("HF_HUB_CACHE", str(ROOT / "hf_cache" / "hub"))
+
 
 # ─── Thread-local langdetect detector ────────────────────────────
 _thread_local: threading.local = threading.local()
@@ -630,12 +642,14 @@ _CT2_MODELS: dict[str, str] = {
     # Inglés ↔ Italiano
     "en|it": "Helsinki-NLP/opus-mt-en-it",
     "it|en": "Helsinki-NLP/opus-mt-it-en",
-    # Japonés ↔ Inglés
+    # Japonés ↔ Inglés (el repo reverso real es opus-mt-en-jap,
+    # opus-mt-en-ja NO existe en HuggingFace)
     "ja|en": "Helsinki-NLP/opus-mt-ja-en",
-    "en|ja": "Helsinki-NLP/opus-mt-en-ja",
-    # Coreano ↔ Inglés
+    "en|ja": "Helsinki-NLP/opus-mt-en-jap",
+    # Coreano ↔ Inglés (el repo reverso real es tc-big-en-ko,
+    # opus-mt-en-ko NO existe en HuggingFace)
     "ko|en": "Helsinki-NLP/opus-mt-ko-en",
-    "en|ko": "Helsinki-NLP/opus-mt-en-ko",
+    "en|ko": "Helsinki-NLP/opus-mt-tc-big-en-ko",
     # Chino ↔ Inglés
     "zh|en": "Helsinki-NLP/opus-mt-zh-en",
     "en|zh": "Helsinki-NLP/opus-mt-en-zh",

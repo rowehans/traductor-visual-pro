@@ -27,6 +27,7 @@ from config import (
     MAX_TEXT_LENGTH,
     MAX_BATCH_SIZE,
     MAX_IMAGE_BYTES,
+    UOCR_IMAGE_BLOCK_RATIO,
 )
 from ratelimit import limiter, RATE_LIMIT_AVAILABLE
 
@@ -388,6 +389,286 @@ def _get_memory_mb() -> float:
         return 0.0
 
 
+def _ocr_with_unlimited(img_bgr: _Img) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float]:
+    """OCR con Unlimited-OCR vía daemon persistente (127.0.0.1:5177).
+
+    El daemon (uocr_daemon.py, venv env_uocr_gpu) ya tiene el modelo 4-bit
+    precargado en background al arrancar — aquí solo se envía la imagen.
+    Retorna (blocks, image_panels, t_ocr_s):
+      - blocks: bloques de texto útiles (ruido de página filtrado).
+      - image_panels: rects de bloques type="image" grandes (≥15% de la
+        página) — la materia prima de la Ruta C (re-OCR a nivel globo).
+    Lanza RuntimeError si el modelo no está listo o el daemon falla.
+    """
+    import tempfile
+    import uocr_client
+
+    h = uocr_client.health()
+    uocr_state = h.get("state")
+    if uocr_state != "ready":
+        if uocr_state == "error":
+            # El daemon arrancó pero falló al cargar el modelo (VRAM insuficiente,
+            # cuDNN, cuantización...): log distinto para que no pase desapercibido.
+            print(f"[unlimited] DAEMON EN ESTADO ERROR: {h.get('error') or 'sin detalle'} "
+                  f"— degradando a EasyOCR permanentemente esta sesión")
+        else:
+            print(f"[unlimited] Daemon no listo (estado: {uocr_state}) — "
+                  f"el modelo se precarga en background (~8 min)")
+        raise RuntimeError(
+            f"Unlimited-OCR no listo (estado: {uocr_state}). "
+            f"El modelo se precarga en background al arrancar (~8 min); reintenta en un momento."
+        )
+
+    fd, tmp = tempfile.mkstemp(suffix=".png", prefix="uocr_page_")
+    os.close(fd)
+    try:
+        cv2.imwrite(tmp, img_bgr)
+        # v4.2: serializar GPU — mientras el daemon U-OCR infiere (60-110s),
+        # ningún EasyOCR del server debe correr (ambos comparten la GTX 1050 Ti
+        # de 4GB). El daemon es un proceso separado; este lock del server hace
+        # que los workers de EasyOCR esperen a que termine la inferencia U-OCR.
+        # Benchmark 2026-08-03: sin esto, el daemon pasaba de 83s a 140-1439s
+        # por contención de VRAM con EasyOCR del server.
+        from ocr_utils import _gpu_lock, _uocr_inferring
+        _uocr_inferring.set()  # v4.2: otros workers degradan a RapidOCR CPU
+        try:
+            with _gpu_lock:
+                res = uocr_client.process_page(tmp)
+        finally:
+            _uocr_inferring.clear()
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+    if res.get("error"):
+        raise RuntimeError(res["error"])
+
+    blocks, image_panels = _parse_daemon_blocks(res.get("blocks", []), img_bgr)
+    return blocks, image_panels, float(res.get("infer_s", 0.0))
+
+
+def _ocr_with_unlimited_batch(
+    img_bgrs: list[_Img],
+) -> tuple[list[tuple[list[dict[str, Any]], list[dict[str, Any]]]], float]:
+    """OCR de VARIAS páginas con Unlimited-OCR en UNA inferencia VLM (Fase 1).
+
+    Usa uocr_client.process_batch() → POST /ocr-batch del daemon, que ejecuta
+    _model.infer_multi() — las N imágenes comparten el prefill del modelo,
+    amortizando el costo por página (~60-110s c/u en individual).
+
+    Retorna (pages, infer_s) donde pages[i] = (blocks, image_panels) de la
+    imagen i (mismo orden de entrada). Lanza RuntimeError si el modelo no
+    está listo o el daemon falla.
+    """
+    import tempfile
+    import uocr_client
+
+    h = uocr_client.health()
+    uocr_state = h.get("state")
+    if uocr_state != "ready":
+        if uocr_state == "error":
+            print(f"[unlimited] DAEMON EN ESTADO ERROR: {h.get('error') or 'sin detalle'} "
+                  f"— degradando a EasyOCR permanentemente esta sesión")
+        else:
+            print(f"[unlimited] Daemon no listo (estado: {uocr_state}) — "
+                  f"el modelo se precarga en background (~8 min)")
+        raise RuntimeError(
+            f"Unlimited-OCR no listo (estado: {uocr_state}). "
+            f"El modelo se precarga en background al arrancar (~8 min); reintenta en un momento."
+        )
+
+    tmp_paths: list[str] = []
+    try:
+        for img_bgr in img_bgrs:
+            fd, tmp = tempfile.mkstemp(suffix=".png", prefix="uocr_batch_")
+            os.close(fd)
+            cv2.imwrite(tmp, img_bgr)
+            tmp_paths.append(tmp)
+        # v4.2: serializar GPU — mientras el daemon U-OCR infiere (60-110s),
+        # ningún EasyOCR del server debe correr (ambos comparten la GTX 1050 Ti
+        # de 4GB). Mismo lock que _ocr_with_unlimited.
+        from ocr_utils import _gpu_lock, _uocr_inferring
+        _uocr_inferring.set()
+        try:
+            with _gpu_lock:
+                res = uocr_client.process_batch(tmp_paths)
+        finally:
+            _uocr_inferring.clear()
+    finally:
+        for tmp in tmp_paths:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    if res.get("error"):
+        raise RuntimeError(res["error"])
+
+    pages_raw = res.get("pages", [])
+    if len(pages_raw) != len(img_bgrs):
+        raise RuntimeError(
+            f"daemon devolvió {len(pages_raw)} páginas, esperaba {len(img_bgrs)}"
+        )
+    pages: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = []
+    for page_raw, img_bgr in zip(pages_raw, img_bgrs):
+        blocks, image_panels = _parse_daemon_blocks(page_raw.get("blocks", []), img_bgr)
+        pages.append((blocks, image_panels))
+    return pages, float(res.get("infer_s", 0.0))
+
+
+def _finalize_page_blocks(
+    img_bgr: _Img,
+    blocks: list[dict[str, Any]],
+    source: str,
+    target: str,
+    scale_x: float,
+    scale_y: float,
+    detected_lang: str,
+) -> tuple[list[dict[str, Any]], str | None, str, float]:
+    """Pipeline post-OCR compartido por /process-page y /process-page-batch:
+    filtro de watermarks → re-detección de idioma → inpainting → traducción →
+    armado de bloques de respuesta.
+
+    Retorna (result_blocks, inpainted_b64, detected_lang_final, t_inpaint).
+    Si no quedan bloques tras filtrar watermarks, devuelve ([], b64 del
+    original, detected_lang, 0.0) — el endpoint decide el jsonify.
+    """
+    from ocr_utils import (
+        _build_inpaint_mask, _inpaint_image, _sample_bg_color,
+        _filter_watermarks_from_blocks, _cv2_to_base64,
+    )
+    from server import _translate_one
+    from translator import _detect_language_robust
+    from server import _get_executor
+
+    blocks = _filter_watermarks_from_blocks(blocks)
+    if not blocks:
+        return [], _cv2_to_base64(img_bgr), detected_lang, 0.0
+
+    # ── Re-detección de idioma post-OCR ────────────────────────
+    if source == "auto" and blocks:
+        try:
+            combined_text = " ".join([str(b.get("text", "")) for b in blocks])
+            detected_lang = _detect_language_robust(combined_text)
+            print(f"[process-page] Idioma detectado post-OCR: {detected_lang}")
+        except Exception:
+            detected_lang = "es"
+
+    # ── Inpainting ─────────────────────────────────────────────
+    inpainted: _Img | None = None
+    inpainted_b64: str | None = None
+    mask: _Img | None = None
+    t_inpaint_before = _time.time()
+    try:
+        mask = _build_inpaint_mask(img_bgr, blocks)
+        inpainted = _inpaint_image(img_bgr, mask, blocks)
+        inpainted_b64 = _cv2_to_base64(inpainted)
+    except Exception as inpaint_err:
+        print(f"[process-page] Inpainting error: {inpaint_err}, usando imagen original")
+        inpainted_b64 = _cv2_to_base64(img_bgr)
+    finally:
+        mask = None
+    t_inpaint = _time.time() - t_inpaint_before
+
+    # ── Traducción ─────────────────────────────────────────────
+    source_texts = [str(b["text"]) for b in blocks]
+    translated_texts = list(source_texts)
+    executor = _get_executor()
+    fut = {
+        executor.submit(_translate_one, t, detected_lang, target): i
+        for i, t in enumerate(source_texts) if t.strip()
+    }
+    for future in as_completed(fut):
+        idx = fut[future]
+        try:
+            translated_texts[idx] = future.result()
+        except Exception as e:
+            print(f"[process-page] Error traduciendo bloque idx={idx}: {e}")
+
+    # ── Armar respuesta ────────────────────────────────────────
+    result_blocks: list[dict[str, Any]] = []
+    ref_img = inpainted if inpainted is not None else img_bgr
+    for i, block in enumerate(blocks):
+        try:
+            bg_color = _sample_bg_color(ref_img, block) if ref_img is not None else "#ffffff"
+        except Exception:
+            bg_color = "#ffffff"
+        bx = int(block["x"] * scale_x) if scale_x != 1.0 else block["x"]
+        by = int(block["y"] * scale_y) if scale_y != 1.0 else block["y"]
+        bw = int(block["w"] * scale_x) if scale_x != 1.0 else block["w"]
+        bh = int(block["h"] * scale_y) if scale_y != 1.0 else block["h"]
+        result_blocks.append({
+            "x": bx, "y": by, "w": bw, "h": bh,
+            "source": source_texts[i],
+            "translated": translated_texts[i],
+            "fontSize": block["fontSize"],
+            "textColor": block["textColor"],
+            "bgColor": bg_color,
+            "confidence": block["confidence"],
+            # Fase 3: tipo semántico (text/title/header) cuando el motor
+            # lo emite (U-OCR); el frontend puede usarlo para filtros.
+            "type": block.get("type", "text"),
+        })
+    return result_blocks, inpainted_b64, detected_lang, t_inpaint
+
+
+def _parse_daemon_blocks(
+    res_blocks: list[dict[str, Any]],
+    img_bgr: _Img,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Convierte bloques crudos del daemon en bloques del servidor.
+
+    Compartido por el camino single (_ocr_with_unlimited) y el batch
+    (_ocr_with_unlimited_batch) — Fase 1. Filtra ruido de página
+    (image/footer/page_number), estima confianza y fontSize, y propaga el
+    type semántico del VLM (Fase 3). Retorna (blocks, image_panels).
+    """
+    # Import local: evita dependencia circular y mantiene el parseo
+    # autocontenido (lo usan también los modos fusion/unlimited).
+    from ocr_utils import _estimate_confidence_heuristic
+
+    # Tipos de bloques que son ruido de página (pie de página, nº de página):
+    # no traducirlos ni crear cajas con ellos. Los "header" se conservan porque
+    # suelen ser títulos de capítulo legítimos; el frontend filtra el margen.
+    _NOISE_TYPES = frozenset({"image", "footer", "page_number"})
+    blocks: list[dict[str, Any]] = []
+    image_panels: list[dict[str, Any]] = []
+    page_area = float(img_bgr.shape[0] * img_bgr.shape[1])
+    for b in res_blocks:
+        try:
+            bx, by, bw, bh = int(b["x"]), int(b["y"]), int(b["w"]), int(b["h"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if b.get("type") == "image":
+            # Conservar paneles artísticos grandes: son la materia prima de la
+            # Ruta C (detección de globos + re-OCR a nivel globo en el server).
+            if bw * bh >= page_area * UOCR_IMAGE_BLOCK_RATIO:
+                image_panels.append({"x": bx, "y": by, "w": bw, "h": bh})
+            continue
+        if not b.get("text") or b.get("type") in _NOISE_TYPES:
+            continue
+        btype = b.get("type", "text")
+        fontSize = max(10, int(bh * 0.8))  # estimado desde altura del bloque
+        blocks.append({
+            "x": bx, "y": by, "w": bw, "h": bh,
+            "text": str(b["text"]).strip(),
+            # Fase 3: propagar el tipo semántico del VLM (text/title/header)
+            # a los bloques — la votación de _fusionar_blocks_multi lo pondera
+            # (title/header pesan más). Sin esto, el type se perdía aquí.
+            "type": btype,
+            # El modelo NO emite confianza (validado empíricamente: logits
+            # saturan ~0.997 sin discriminar). Se estima por heurística.
+            "confidence": _estimate_confidence_heuristic(b, btype),
+            "fontSize": fontSize,
+            "textColor": "#000000",
+            "engine": "unlimited",
+            "from_art_recrop": bool(b.get("from_art_recrop")),
+        })
+    return blocks, image_panels
+
+
 # ════════════════════════════════════════════════════════════════
 # ENDPOINTS
 # ════════════════════════════════════════════════════════════════
@@ -400,6 +681,16 @@ def health() -> Any:
     ready = [f"{s}->{t}" for (s, t), v in _argo_ready.items() if v]
     mem_mb = _get_memory_mb()
     zombie_state = _is_zombie()
+    # Estado del daemon Unlimited-OCR (modelo 4-bit precargado en background)
+    uocr_state = "offline"
+    uocr_load_s: float | None = None
+    try:
+        import uocr_client
+        uh = uocr_client.health()
+        uocr_state = uh.get("state", "offline")
+        uocr_load_s = uh.get("load_s")
+    except Exception:
+        pass
     return jsonify({
         "ok": not zombie_state,
         "zombie": zombie_state,
@@ -413,6 +704,8 @@ def health() -> Any:
         "rate_limiting": RATE_LIMIT_AVAILABLE,
         "offline_models": ready,
         "memory": f"{mem_mb:.0f}MB" if mem_mb else "N/A",
+        "unlimited_ocr": uocr_state,
+        "uocr_load_s": uocr_load_s,
     })
 
 
@@ -525,7 +818,7 @@ def translate_batch() -> Any:
 @profile_endpoint
 def process_page() -> Any:
     from ocr_utils import (
-        _base64_to_cv2, _cv2_to_base64, _detect_and_ocr,
+        _base64_to_cv2, _cv2_to_base64,
         _build_inpaint_mask, _inpaint_image, _sample_bg_color,
         _filter_watermarks_from_blocks,
     )
@@ -568,15 +861,43 @@ def process_page() -> Any:
         )
 
     # ── Validar modo OCR ───────────────────────────────────────
-    ocr_mode = _safe_str(payload.get("ocr_mode"), default="auto").lower()
-    if ocr_mode not in ("easyocr", "auto"):
+    # Fase 4: el default es "fusion" — híbrido EasyOCR+RapidOCR siempre,
+    # Unlimited-OCR (daemon) solo si el trigger v4.2 lo decide.
+    ocr_mode = _safe_str(payload.get("ocr_mode"), default="fusion").lower()
+    if ocr_mode not in ("easyocr", "auto", "unlimited", "fusion"):
         return _error_response(
-            f"Modo OCR no soportado: '{ocr_mode}'. Use 'easyocr' o 'auto'.",
+            f"Modo OCR no soportado: '{ocr_mode}'. "
+            f"Use 'easyocr', 'auto', 'unlimited' o 'fusion'.",
             status_code=400,
         )
 
     # ── Validar prefilter (limpieza morfológica pre-OCR) ───────
     prefilter: bool = bool(payload.get("prefilter", True))
+
+    # ── Validar force_uocr (debug/test: fuerza el refuerzo U-OCR + Ruta C
+    #    en modo fusion aunque el trigger no dispare) ────────────────
+    force_uocr: bool = bool(payload.get("force_uocr", False))
+
+    # ── Validar disable_uocr (benchmark: desactiva el refuerzo U-OCR en
+    #    modo fusion → solo EasyOCR+RapidOCR+merge, para medir el overhead
+    #    puro de la fusión sin el costo de la inferencia VLM) ───────
+    disable_uocr: bool = bool(payload.get("disable_uocr", False))
+
+    # ── Validar pure_easyocr (benchmark: desactiva el tier híbrido RapidOCR
+    #    en el modo easyocr → solo EasyOCR GPU puro. Sin esto, el "modo
+    #    easyocr" de la app YA ejecuta EasyOCR+RapidOCR+_fusionar_blocks,
+    #    por lo que comparar contra él no mide el overhead de la fusión) ──
+    pure_easyocr: bool = bool(payload.get("pure_easyocr", False))
+
+    # ── doc_id (sesión 126): identificador de documento/sesión que escopea
+    #    la firma de los caches de decisión (trigger + §8.4.1). La sesión 124
+    #    midió 94% de colisión de firma entre capítulos de la MISMA serie —
+    #    sin scope, el capítulo 47 heredaría las decisiones del 43. El caller
+    #    (process_all_pages.py, app.js) deriva el doc_id del PDF/archivo;
+    #    vacío → scope legacy compartido (comportamiento previo). Se trunca a
+    #    64 chars y se sanea a [A-Za-z0-9_] para mantener claves canónicas
+    #    (un ":" en doc_id rompería el prefijo "doc_id:firma" de los caches).
+    doc_id: str = re.sub(r"[^A-Za-z0-9_]", "", _safe_str(payload.get("doc_id")))[:64]
 
     scale_x: float = 1.0
     scale_y: float = 1.0
@@ -617,15 +938,24 @@ def process_page() -> Any:
         ocr_lang = "es" if detected_lang in ("es", "spa", "spanish", "espanol") else detected_lang
 
         # ── OCR ────────────────────────────────────────────────
+        # Delega en OCRManager (ocr_engine.py): orquesta EasyOCR + RapidOCR +
+        # Unlimited-OCR con el trigger selectivo v4.2. Retorna
+        # (blocks, ocr_engine_used, engines_used) — el mismo contrato que el
+        # código inline anterior (modos: easyocr, auto, unlimited, fusion).
+        from ocr_engine import OCRManager
         t_ocr_before = _time.time()
-        allow_fallback = ocr_mode != "easyocr"  # auto tiene fallback CLAHE
-        blocks: list[dict[str, Any]] = _detect_and_ocr(
-            img_bgr, ocr_lang,
-            allow_fallback=allow_fallback,
+        blocks, ocr_engine_used, engines_used = OCRManager().run_ocr(
+            img_bgr,
+            ocr_lang,
+            ocr_mode=ocr_mode,
             prefilter=prefilter,
+            force_uocr=force_uocr,
+            disable_uocr=disable_uocr,
+            pure_easyocr=pure_easyocr,
+            doc_id=doc_id,
         )
         t_ocr = _time.time() - t_ocr_before
-        print(f"[process-page] OCR ({ocr_lang}): {len(blocks)} bloques en {t_ocr:.1f}s")
+        print(f"[process-page] OCR ({ocr_engine_used}): {len(blocks)} bloques en {t_ocr:.1f}s")
 
         # ── Watchdog: detección de zombie ──────────────────────
         # Si OCR devuelve 0 bloques en <2s, podría ser un proceso zombie
@@ -649,79 +979,19 @@ def process_page() -> Any:
             # Respuesta normal: resetear contador
             _reset_zombie_counter()
 
-        # ── Filtrar marcas de agua pre-inpainting ──────────────
-        blocks = _filter_watermarks_from_blocks(blocks)
-        if not blocks:
-            inpainted_b64: str | None = _cv2_to_base64(img_bgr)
+        # ── Pipeline post-OCR compartido (single y batch): filtro de
+        #    watermarks → re-detección de idioma → inpainting → traducción →
+        #    armado de bloques de respuesta ────────────────────────────
+        result_blocks, inpainted_b64, detected_lang, t_inpaint = _finalize_page_blocks(
+            img_bgr, blocks, source, target, scale_x, scale_y, detected_lang)
+        if not result_blocks:
             img_bgr = None
-            return jsonify({"inpainted_image": inpainted_b64, "blocks": []})
-
-        # ── Re-detección de idioma post-OCR ────────────────────
-        if source == "auto" and blocks:
-            try:
-                combined_text = " ".join([str(b.get("text", "")) for b in blocks])
-                detected_lang = _detect_language_robust(combined_text)
-                print(f"[process-page] Idioma detectado post-OCR: {detected_lang}")
-            except Exception:
-                detected_lang = "es"
-
-        # ── Inpainting ─────────────────────────────────────────
-        inpainted: _Img | None = None
-        inpainted_b64 = None  # type: ignore[no-redef]
-        mask: _Img | None = None
-        t_inpaint_before = _time.time()
-        try:
-            mask = _build_inpaint_mask(img_bgr, blocks)
-            inpainted = _inpaint_image(img_bgr, mask, blocks)
-            inpainted_b64 = _cv2_to_base64(inpainted)
-        except Exception as inpaint_err:
-            print(f"[process-page] Inpainting error: {inpaint_err}, usando imagen original")
-            inpainted_b64 = _cv2_to_base64(img_bgr)
-        finally:
-            mask = None
-        t_inpaint = _time.time() - t_inpaint_before
-
-        # ── Traducción ─────────────────────────────────────────
-        source_texts = [str(b["text"]) for b in blocks]
-        translated_texts = list(source_texts)
-        executor = _get_executor()
-        fut = {
-            executor.submit(_translate_one, t, detected_lang, target): i
-            for i, t in enumerate(source_texts) if t.strip()
-        }
-        for future in as_completed(fut):
-            idx = fut[future]
-            try:
-                translated_texts[idx] = future.result()
-            except Exception as e:
-                print(f"[process-page] Error traduciendo bloque idx={idx}: {e}")
-
-        # ── Armar respuesta ────────────────────────────────────
-        result_blocks: list[dict[str, Any]] = []
-        ref_img = inpainted if inpainted is not None else img_bgr
-        for i, block in enumerate(blocks):
-            try:
-                bg_color = _sample_bg_color(ref_img, block) if ref_img is not None else "#ffffff"
-            except Exception:
-                bg_color = "#ffffff"
-            bx = int(block["x"] * scale_x) if scale_x != 1.0 else block["x"]
-            by = int(block["y"] * scale_y) if scale_y != 1.0 else block["y"]
-            bw = int(block["w"] * scale_x) if scale_x != 1.0 else block["w"]
-            bh = int(block["h"] * scale_y) if scale_y != 1.0 else block["h"]
-            result_blocks.append({
-                "x": bx, "y": by, "w": bw, "h": bh,
-                "source": source_texts[i],
-                "translated": translated_texts[i],
-                "fontSize": block["fontSize"],
-                "textColor": block["textColor"],
-                "bgColor": bg_color,
-                "confidence": block["confidence"],
-            })
+            return jsonify({"inpainted_image": inpainted_b64, "blocks": [],
+                            "ocr_engine": ocr_engine_used,
+                            "engines_used": engines_used})
 
         # ── Cleanup ────────────────────────────────────────────
         img_bgr = None
-        inpainted = None
-        mask = None
 
         mem_after = _get_memory_mb()
         mem_growth = mem_after - mem_before
@@ -732,6 +1002,8 @@ def process_page() -> Any:
         return jsonify({
             "inpainted_image": inpainted_b64,
             "blocks": result_blocks,
+            "ocr_engine": ocr_engine_used,
+            "engines_used": engines_used,
         })
 
     except MemoryError:
@@ -746,4 +1018,159 @@ def process_page() -> Any:
         traceback.print_exc()
         # NOTA: No hacemos gc.collect() aquí — el GC de Python corre automáticamente.
         # Solo se hace gc.collect() en el MemoryError handler (arriba).
+        return _error_response(str(e), status_code=500)
+
+
+@api_bp.post("/process-page-batch")
+@_validate_payload_fields("images")
+@profile_endpoint
+def process_page_batch() -> Any:
+    """Procesa VARIAS páginas en un solo request (Fase 1 — batch U-OCR).
+
+    Body: {"images": [b64, ...] (1-4 páginas), "target", "source",
+           "ocr_mode" (default fusion), "prefilter", "force_uocr",
+           "disable_uocr", "pure_easyocr", "doc_id" (sesión 126)}.
+
+    Delega en OCRManager.run_ocr_batch(): cada página corre el híbrido + el
+    trigger v4.2 + Fase 2, y TODAS las páginas que necesitan el VLM se envían
+    al daemon en UN solo /ocr-batch (infer_multi) — el prefill del modelo se
+    comparte, amortizando ~60-110s por página.
+
+    Respuesta: {"results": [{inpainted_image, blocks, ocr_engine,
+    engines_used}, ...]} — una entrada por imagen en el MISMO orden.
+    """
+    from ocr_utils import _base64_to_cv2
+    from config import MAX_IMAGE_DIMENSION, LANGUAGES
+
+    payload = request.get_json(silent=True) or {}
+    images_raw = payload.get("images") or []
+    if not isinstance(images_raw, list) or not 1 <= len(images_raw) <= 4:
+        return _error_response(
+            "Se requieren entre 1 y 4 imágenes en 'images'",
+            status_code=400,
+        )
+
+    # ── Validar tamaño de cada imagen (evitar OOM) ────────────
+    for b64_image in images_raw:
+        b64_image = _safe_str(b64_image)
+        if not b64_image:
+            return _error_response("Imagen vacía en 'images'", status_code=400)
+        if len(b64_image) > MAX_IMAGE_BYTES:
+            return _error_response(
+                f"Imagen demasiado grande ({len(b64_image)} bytes base64, "
+                f"max {MAX_IMAGE_BYTES})",
+                status_code=413,
+            )
+
+    # ── Validar idioma destino ─────────────────────────────────
+    target_raw = _safe_str(payload.get("target"), default="en")
+    target = _validate_lang_code(target_raw, allow_auto=False)
+    if target is None:
+        return _error_response(
+            f"Idioma destino no soportado: '{target_raw}'",
+            status_code=400,
+        )
+
+    # ── Validar idioma origen ──────────────────────────────────
+    source_raw = _safe_str(payload.get("source"), default="auto")
+    source = _validate_lang_code(source_raw)
+    if source is None:
+        return _error_response(
+            f"Idioma origen no soportado: '{source_raw}'",
+            status_code=400,
+        )
+
+    # ── Validar modo OCR ───────────────────────────────────────
+    ocr_mode = _safe_str(payload.get("ocr_mode"), default="fusion").lower()
+    if ocr_mode not in ("easyocr", "auto", "unlimited", "fusion"):
+        return _error_response(
+            f"Modo OCR no soportado: '{ocr_mode}'. "
+            f"Use 'easyocr', 'auto', 'unlimited' o 'fusion'.",
+            status_code=400,
+        )
+
+    prefilter: bool = bool(payload.get("prefilter", True))
+    force_uocr: bool = bool(payload.get("force_uocr", False))
+    disable_uocr: bool = bool(payload.get("disable_uocr", False))
+    pure_easyocr: bool = bool(payload.get("pure_easyocr", False))
+
+    # ── doc_id (sesión 126): igual que en /process-page — escopea la firma
+    #    de los caches de decisión por documento para que capítulos de la
+    #    misma serie no hereden decisiones entre sí (94% colisión de layout,
+    #    sesión 124). Vacío → scope legacy compartido. Sanizado igual que en
+    #    el single (claves canónicas [A-Za-z0-9_]).
+    doc_id: str = re.sub(r"[^A-Za-z0-9_]", "", _safe_str(payload.get("doc_id")))[:64]
+
+    # ── Decodificar y normalizar cada imagen ───────────────────
+    imgs: list[tuple[_Img, float, float]] = []  # (img, scale_x, scale_y)
+    for b64_image in images_raw:
+        img_bgr = _base64_to_cv2(_safe_str(b64_image))
+        if img_bgr is None:
+            return _error_response(
+                "No se pudo decodificar una imagen (base64 inválido)",
+                status_code=400,
+            )
+        orig_h, orig_w = img_bgr.shape[:2]
+        if orig_w < 50 or orig_h < 50:
+            return _error_response(
+                f"Imagen demasiado pequeña ({orig_w}x{orig_h}). Mínimo 50x50 px.",
+                status_code=400,
+            )
+        scale_x = 1.0
+        scale_y = 1.0
+        if max(orig_w, orig_h) > MAX_IMAGE_DIMENSION:
+            scale = MAX_IMAGE_DIMENSION / max(orig_w, orig_h)
+            new_w, new_h = int(orig_w * scale), int(orig_h * scale)
+            img_bgr = cv2.resize(img_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            scale_x = float(orig_w) / float(new_w)
+            scale_y = float(orig_h) / float(new_h)
+        imgs.append((img_bgr, scale_x, scale_y))
+
+    detected_lang: str = source if source in LANGUAGES and source != "auto" else "es"
+    ocr_lang = "es" if detected_lang in ("es", "spa", "spanish", "espanol") else detected_lang
+
+    try:
+        t0 = _time.time()
+        from ocr_engine import OCRManager
+        per_page = OCRManager().run_ocr_batch(
+            [img for img, _, _ in imgs],
+            ocr_lang,
+            ocr_mode=ocr_mode,
+            prefilter=prefilter,
+            force_uocr=force_uocr,
+            disable_uocr=disable_uocr,
+            pure_easyocr=pure_easyocr,
+            doc_id=doc_id,
+        )
+        t_ocr = _time.time() - t0
+
+        results: list[dict[str, Any]] = []
+        for (blocks, ocr_engine_used, engines_used), (img_bgr, scale_x, scale_y) in zip(
+                per_page, imgs):
+            result_blocks, inpainted_b64, _, t_inpaint = _finalize_page_blocks(
+                img_bgr, blocks, source, target, scale_x, scale_y, detected_lang)
+            results.append({
+                "inpainted_image": inpainted_b64,
+                "blocks": result_blocks,
+                "ocr_engine": ocr_engine_used,
+                "engines_used": engines_used,
+            })
+
+        total_t = _time.time() - t0
+        n_total = sum(len(r["blocks"]) for r in results)
+        print(f"[process-page-batch] {len(imgs)} páginas, {n_total} bloques, "
+              f"{total_t:.1f}s (OCR:{t_ocr:.1f}s) | "
+              f"engines: {[r['engines_used'] for r in results]}")
+        return jsonify({"results": results, "t_total": round(total_t, 2)})
+
+    except MemoryError:
+        print(f"[process-page-batch] MEMORY ERROR! Forzando limpieza total...")
+        from ocr_utils import _ocr_readers
+        _ocr_readers.clear()
+        gc.collect()
+        return _error_response("Memoria insuficiente. Reintente.", status_code=500)
+
+    except Exception as e:
+        print(f"[process-page-batch] ERROR: {e}")
+        traceback.print_exc()
         return _error_response(str(e), status_code=500)
