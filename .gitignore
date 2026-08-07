@@ -90,3 +90,38 @@ profiles/
 *_compressed.pdf
 *_test.pdf
 
+# ─── Artefactos de medición / benchmark (Agosto 2026) ──
+# Checkpoints de corridas con sufijo temporal y backups
+resultados_progreso_*.json
+run_*.json
+run_*.log
+seed_*.json
+
+# Salidas de corridas y reportes generados
+reporte_fusion*.html
+reporte_pages/
+dialogo_analysis_out/
+
+# Daemon U-OCR: salidas de requests y pesos del modelo (runtime)
+uocr_daemon_out/
+uocr_out/
+uocr_out_*/
+uocr_result.json
+uocr_stream_raw.txt
+uocr_gpu_4bit_benchmark.json
+models_unlimited_patched/
+
+# Caché de modelos HF descargados
+hf_cache/
+
+# Binarios de herramientas en tools/ (uv)
+tools/uv*.exe
+tools/uv*.zip
+tools/uvx.exe
+
+# PNGs de debug/benchmark de páginas
+benchmark_page*.png
+_p12_*.png
+_tmp_p3.png
+_rutac_*.png
+
