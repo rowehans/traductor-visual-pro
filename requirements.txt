@@ -47,5 +47,12 @@ flask-limiter==4.1.1
 # OCR spellchecking (86K palabras, cero mantenimiento)
 pyspellchecker==0.9.0
 
+# Fase 6 — detector YOLO de regiones de texto (globos/cartelas/títulos).
+# Runtime-only: se importa DINÁMICAMENTE dentro de _get_yolo_engine (el .exe
+# no lo incluye; si falta, el tier degrada a [] sin romper el pipeline).
+# Modelo: models/comic-speech-bubble-detector.pt (ogkalu, ~52MB) — descargado
+# con huggingface_hub, NO incluido en el repo.
+ultralytics==8.4.115
+
 # Utilities
 requests==2.34.2

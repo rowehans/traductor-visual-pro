@@ -27,6 +27,23 @@ foreach ($conn in $connections) {
   }
 }
 
+# ─── Limpiar daemon Unlimited-OCR zombi (puerto 5177) ──────────
+# El daemon (uocr_daemon.py) es un subproceso persistente que mantiene el
+# modelo 4-bit en VRAM. Si quedó de una sesión anterior (2.25 GB VRAM),
+# matarlo aquí para liberar la GPU antes de arrancar el servidor.
+$daemonPort = 5177
+Write-Host "Verificando puerto del daemon U-OCR $daemonPort..."
+$dconns = netstat -ano | Select-String ":$daemonPort\s" | Select-String "LISTENING"
+foreach ($conn in $dconns) {
+  $parts = $conn -split '\s+'
+  $dpid = $parts[-1]
+  if ($dpid -and $dpid -ne "0") {
+    Write-Host "Matando daemon U-OCR zombie PID=$dpid en puerto $daemonPort..."
+    taskkill -f -pid $dpid 2>$null
+    Start-Sleep -Milliseconds 300
+  }
+}
+
 # ─── Iniciar servidor ──────────────────────────────────────────
 Write-Host "Iniciando servidor..."
 $proc = Start-Process -FilePath $python -ArgumentList $server -PassThru -NoNewWindow
