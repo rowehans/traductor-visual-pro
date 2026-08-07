@@ -149,6 +149,9 @@ def step_syntax() -> bool:
         "server.py", "config.py", "translator.py", "ocr_utils.py",
         "models.py", "cache.py", "ratelimit.py", "main.py", "launcher.py",
         "routes/__init__.py", "routes/main.py", "routes/api.py",
+        # Módulos de la fusión multi-OCR (Ago 2026): OCRManager + daemon U-OCR
+        "ocr_engine.py", "uocr_daemon.py", "uocr_client.py",
+        "process_all_pages.py",
     ]
     for f in files:
         path = os.path.join(PROJECT_ROOT, f)
@@ -213,6 +216,8 @@ def step_pytest(with_coverage: bool = True) -> bool:
         "tests/test_ocr_utils.py",
         "tests/test_ocr_functions.py",
         "tests/test_api.py",
+        "tests/test_ocr_engine.py",
+        "tests/test_uocr_daemon.py",
     ]
 
     cmd = [PYTHON, "-m", "pytest", *test_files, "-v", "--tb=short"]
@@ -518,6 +523,9 @@ def step_bandit() -> bool:
         "server.py", "config.py", "translator.py", "ocr_utils.py",
         "models.py", "cache.py", "ratelimit.py", "main.py", "launcher.py",
         "routes/__init__.py", "routes/main.py", "routes/api.py",
+        # Módulos de la fusión multi-OCR (Ago 2026): OCRManager + daemon U-OCR
+        "ocr_engine.py", "uocr_daemon.py", "uocr_client.py",
+        "process_all_pages.py",
     ]
 
     try:
@@ -590,7 +598,7 @@ def step_stress_test() -> bool:
 
     pdf_path = os.path.join(
         PROJECT_ROOT,
-        "Capítulo 43 de Cómo criar villanos correctamente _ Olympus Scanlation_compressed.pdf"
+        "Capítulo 43 de Cómo criar villanos correctamente.pdf"
     )
     if not os.path.exists(pdf_path):
         print("  [SKIP] PDF de prueba no encontrado")

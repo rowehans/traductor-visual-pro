@@ -27,6 +27,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from routes.api import api_bp
 
+# Función real capturada a nivel de módulo: el fixture autouse parchea
+# ocr_utils._detect_and_ocr a [] para TODOS los tests; para probar el camino
+# de degradación v4.2 necesitamos la referencia original (capturada aquí,
+# antes de que corra el fixture).
+import ocr_utils as _ocr_utils_mod
+_REAL_DETECT_AND_OCR = _ocr_utils_mod._detect_and_ocr
+
 
 # ─── Helpers ─────────────────────────────────────────────────────
 
@@ -831,6 +838,10 @@ class TestProcessPage:
             {"x": 10, "y": 20, "w": 80, "h": 15, "text": "Hola",
              "confidence": 0.85, "fontSize": 14, "textColor": "#000000"},
         ])
+        # Fase 4 (default=fusion): _has_big_panel corre la heurística real sobre
+        # el MagicMock — mockarla explícitamente hace el test determinista
+        # (1 bloque conf 0.85 → sin trigger, sin daemon).
+        mocker.patch("ocr_utils._page_has_large_image_panel", return_value=False)
         mocker.patch("ocr_utils._build_inpaint_mask", return_value=MagicMock())
         mocker.patch("ocr_utils._inpaint_image", return_value=mock_img)
         mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
@@ -848,12 +859,23 @@ class TestProcessPage:
         assert "inpainted_image" in data
 
     def test_ocr_no_blocks_returns_empty(self, client, mocker):
-        """Sin bloques OCR, inpainted_image y blocks vacío."""
+        """Sin bloques OCR, inpainted_image y blocks vacío.
+
+        Fase 4 (default=fusion): 0 bloques dispara el trigger v4.2 — mockear
+        el camino de refuerzo completo (Fase 2 reintento + daemon caído) para
+        que degrade silenciosamente al híbrido vacío.
+        """
         b64 = _make_small_b64_image()
         mock_img = MagicMock()
         mock_img.shape = (100, 100, 3)
         mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
         mocker.patch("ocr_utils._detect_and_ocr", return_value=[])
+        mocker.patch("ocr_utils._page_has_large_image_panel", return_value=False)
+        mocker.patch("ocr_utils._page_signature", return_value="")
+        mocker.patch("ocr_utils._preprocess_rapid", side_effect=lambda x: x)
+        mocker.patch("ocr_utils._run_rapidocr", return_value=[])
+        mocker.patch("routes.api._ocr_with_unlimited",
+                     side_effect=RuntimeError("daemon no listo (mock)"))
         mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
 
         resp = client.post(
@@ -864,6 +886,40 @@ class TestProcessPage:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["blocks"] == []
+
+    def test_default_ocr_mode_es_fusion(self, client, mocker):
+        """Fase 4: POST sin ocr_mode usa fusion (página fácil → sin daemon,
+        ocr_engine='fusion')."""
+        b64 = _make_small_b64_image()
+        mock_img = MagicMock()
+        mock_img.shape = (100, 100, 3)
+        mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
+        # 3 bloques con conf alta → el trigger v4.2 NO dispara el daemon
+        mocker.patch("ocr_utils._detect_and_ocr", return_value=[
+            {"x": 10, "y": 10, "w": 50, "h": 15, "text": f"t{i}",
+             "confidence": 0.5, "fontSize": 12, "textColor": "#000"}
+            for i in range(3)
+        ])
+        mocker.patch("ocr_utils._page_has_large_image_panel", return_value=False)
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda b: b)
+        uocr_mock = mocker.patch("routes.api._ocr_with_unlimited")
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=mock_img)
+        mocker.patch("ocr_utils._inpaint_image", return_value=mock_img)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
+        mocker.patch("server._translate_one", return_value="TRANSLATED")
+
+        resp = client.post(
+            "/api/process-page",
+            data=json.dumps({"image": b64}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ocr_engine"] == "fusion"
+        assert data.get("engines_used") == ["easyocr+rapid"]
+        uocr_mock.assert_not_called()
 
     def test_invalid_target_lang_returns_400(self, client):
         b64 = _make_small_b64_image()
@@ -892,22 +948,179 @@ class TestProcessPage:
         )
         assert resp.status_code == 400
 
+    def test_doc_id_se_pasa_a_ocrmanager(self, client, mocker):
+        """Sesión 126: el campo opcional doc_id del payload se propaga a
+        OCRManager.run_ocr (escopea los caches de decisión por documento)."""
+        import ocr_engine
+        b64 = _make_small_b64_image()
+        mock_img = MagicMock()
+        mock_img.shape = (100, 100, 3)
+        mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
+        run_ocr_mock = mocker.patch(
+            "ocr_engine.OCRManager.run_ocr",
+            return_value=([], "fusion", ["easyocr+rapid"]),
+        )
+        mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
+
+        resp = client.post(
+            "/api/process-page",
+            data=json.dumps({"image": b64, "doc_id": "cap47"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        assert run_ocr_mock.call_args.kwargs.get("doc_id") == "cap47"
+
+    def test_doc_id_ausente_default_vacio(self, client, mocker):
+        """Sin doc_id en el payload → run_ocr recibe doc_id="" (scope legacy
+        compartido, comportamiento previo intacto)."""
+        b64 = _make_small_b64_image()
+        mock_img = MagicMock()
+        mock_img.shape = (100, 100, 3)
+        mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
+        run_ocr_mock = mocker.patch(
+            "ocr_engine.OCRManager.run_ocr",
+            return_value=([], "fusion", ["easyocr+rapid"]),
+        )
+        mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
+
+        resp = client.post(
+            "/api/process-page",
+            data=json.dumps({"image": b64}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        assert run_ocr_mock.call_args.kwargs.get("doc_id") == ""
+
     def test_valid_ocr_modes_accepted(self, client, mocker):
-        """Modos 'easyocr' y 'auto' deben ser aceptados."""
+        """Modos 'easyocr', 'auto' y 'fusion' deben ser aceptados."""
         b64 = _make_small_b64_image()
         mock_img = MagicMock()
         mock_img.shape = (100, 100, 3)
         mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
         mocker.patch("ocr_utils._detect_and_ocr", return_value=[])
         mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
+        # El modo fusion dispara el refuerzo U-OCR (0 bloques) — mockear el
+        # daemon para que degrade silenciosamente al híbrido (comportamiento real
+        # cuando el daemon no está disponible).
+        mocker.patch("routes.api._ocr_with_unlimited",
+                     side_effect=RuntimeError("daemon no listo (mock)"))
 
-        for mode in ("easyocr", "auto"):
+        for mode in ("easyocr", "auto", "fusion"):
             resp = client.post(
                 "/api/process-page",
                 data=json.dumps({"image": b64, "ocr_mode": mode}),
                 content_type="application/json",
             )
             assert resp.status_code == 200, f"Modo '{mode}' falló"
+
+    def test_fusion_uses_uocr_when_trigger_and_merges(self, client, mocker):
+        """Modo fusion: si la página es difícil (<3 bloques), llama a U-OCR y
+        fusiona bloques híbridos + U-OCR."""
+        b64 = _make_small_b64_image()
+        mock_img = MagicMock()
+        mock_img.shape = (100, 100, 3)
+        mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
+        # Híbrido devuelve 2 bloques con confianza baja (<0.2, v4.2) → dispara refuerzo
+        hybrid_blocks = [
+            {"x": 10, "y": 10, "w": 50, "h": 15, "text": "hola",
+             "confidence": 0.15, "fontSize": 12, "textColor": "#000"},
+            {"x": 70, "y": 10, "w": 50, "h": 15, "text": "mundo",
+             "confidence": 0.15, "fontSize": 12, "textColor": "#000"},
+        ]
+        mocker.patch("ocr_utils._detect_and_ocr", return_value=hybrid_blocks)
+        # U-OCR devuelve un bloque adicional de alta confianza heurística
+        uocr_blocks = [
+            {"x": 200, "y": 50, "w": 80, "h": 20, "text": "título dorado",
+             "confidence": 0.93, "fontSize": 16, "textColor": "#000",
+             "engine": "unlimited"},
+        ]
+        # Firma actual: (blocks, image_panels, t_ocr_s) — los paneles image
+        # son la materia prima de la Ruta C (bubble re-OCR). Sin paneles en
+        # este test, no se dispara la recuperación de globos.
+        mocker.patch("routes.api._ocr_with_unlimited",
+                     return_value=(uocr_blocks, [], 5.0))
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda b: b)
+        # Mocks para inpainting/traducción (lo que sigue tras OCR)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=mock_img)
+        mocker.patch("ocr_utils._inpaint_image", return_value=mock_img)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
+        mocker.patch("server._translate_one", return_value="TRANSLATED")
+
+        resp = client.post(
+            "/api/process-page",
+            data=json.dumps({"image": b64, "ocr_mode": "fusion"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        # 2 híbridos + 1 U-OCR = 3 bloques fusionados
+        assert len(data["blocks"]) == 3
+        assert data["ocr_engine"] == "fusion"
+        assert "unlimited" in data.get("engines_used", [])
+        # El bloque de U-OCR no se descarta (confianza heurística alta)
+        sources = [b["source"] for b in data["blocks"]]
+        assert "título dorado" in sources
+
+    def test_fusion_does_not_trigger_when_conf_high(self, client, mocker):
+        """v4.2: con conf >= 0.2 y >= 3 bloques, el trigger NO dispara U-OCR.
+
+        Frontera del trigger selectivo: antes (0.25) esta página disparaba
+        refuerzo; ahora (0.20 estricto) no debe llamar al daemon.
+        """
+        b64 = _make_small_b64_image()
+        mock_img = MagicMock()
+        mock_img.shape = (100, 100, 3)
+        mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
+        # 3 bloques con conf 0.5 (bien por encima del umbral 0.2)
+        hybrid_blocks = [
+            {"x": 10, "y": 10, "w": 50, "h": 15, "text": f"t{i}",
+             "confidence": 0.5, "fontSize": 12, "textColor": "#000"}
+            for i in range(3)
+        ]
+        mocker.patch("ocr_utils._detect_and_ocr", return_value=hybrid_blocks)
+        mocker.patch("ocr_utils._page_has_large_image_panel", return_value=False)
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda b: b)
+        uocr_mock = mocker.patch("routes.api._ocr_with_unlimited")
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=mock_img)
+        mocker.patch("ocr_utils._inpaint_image", return_value=mock_img)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
+        mocker.patch("server._translate_one", return_value="TRANSLATED")
+
+        resp = client.post(
+            "/api/process-page",
+            data=json.dumps({"image": b64, "ocr_mode": "fusion"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        uocr_mock.assert_not_called()
+        data = resp.get_json()
+        assert "unlimited" not in data.get("engines_used", [])
+
+    def test_detect_and_ocr_degrades_to_rapid_when_daemon_inferring(self, mocker):
+        """v4.2: con _uocr_inferring activo, _detect_and_ocr degrada a RapidOCR
+        CPU SIN cargar el reader de EasyOCR (GPU)."""
+        from ocr_utils import _uocr_inferring
+        mock_img = MagicMock()
+        mock_img.shape = (100, 100, 3)
+        fake_rapid_blocks = [{"x": 0, "y": 0, "w": 10, "h": 10, "text": "cpu",
+                              "confidence": 0.7}]
+        # El fixture autouse parchea _detect_and_ocr a [] — usar la referencia
+        # real capturada a nivel de módulo para probar el código de degradación.
+        reader_mock = mocker.patch("ocr_utils._get_ocr_reader")
+        mocker.patch("ocr_utils._preprocess_rapid", return_value=mock_img)
+        mocker.patch("ocr_utils._run_rapidocr", return_value=fake_rapid_blocks)
+        try:
+            _uocr_inferring.set()
+            blocks = _REAL_DETECT_AND_OCR(mock_img, "es")
+        finally:
+            _uocr_inferring.clear()
+        assert blocks == fake_rapid_blocks
+        # El reader de EasyOCR (GPU) NO debe cargarse durante la degradación
+        reader_mock.assert_not_called()
 
     def test_image_too_small_returns_400(self, client, mocker):
         """Imagen < 50x50 px debe ser rechazada."""
@@ -962,6 +1175,201 @@ class TestProcessPage:
             content_type="application/json",
         )
         assert resp.status_code == 413
+
+    def test_ocr_with_unlimited_propaga_tipo_semantico(self, mocker):
+        """Fase 3: los bloques U-OCR conservan el type semántico
+        (text/title/header) hasta la fusión; image/footer se filtran."""
+        import numpy as np
+        import routes.api
+        import uocr_client
+
+        mocker.patch.object(uocr_client, "health",
+                            return_value={"state": "ready"})
+        mocker.patch.object(uocr_client, "process_page", return_value={
+            "blocks": [
+                {"x": 10, "y": 10, "w": 100, "h": 30, "type": "title",
+                 "text": "CAPITULO 43"},
+                {"x": 50, "y": 100, "w": 80, "h": 20, "type": "text",
+                 "text": "Hola"},
+                {"x": 0, "y": 0, "w": 640, "h": 15, "type": "header",
+                 "text": "4.58 p.m"},
+                {"x": 0, "y": 0, "w": 500, "h": 400, "type": "image",
+                 "text": ""},
+                {"x": 0, "y": 0, "w": 100, "h": 15, "type": "footer",
+                 "text": "p. 12"},
+            ],
+            "infer_s": 5.0,
+        })
+        img = np.zeros((800, 600, 3), dtype=np.uint8)  # 800x600: panel image 500x400 = 41% > 15%
+        blocks, panels, t = routes.api._ocr_with_unlimited(img)
+
+        by_text = {b["text"]: b for b in blocks}
+        assert by_text["CAPITULO 43"]["type"] == "title"
+        assert by_text["Hola"]["type"] == "text"
+        assert by_text["4.58 p.m"]["type"] == "header"
+        # image (panel grande) va a image_panels, no a blocks; footer es ruido
+        assert all(b.get("type") != "image" for b in blocks)
+        assert "p. 12" not in by_text
+        assert len(panels) == 1
+        assert panels[0]["w"] == 500
+
+    def test_ocr_with_unlimited_batch_parsea_multi_imagen(self, mocker):
+        """Fase 1: _ocr_with_unlimited_batch mapea los bloques del batch
+        (infer_multi) por página y propaga type semántico a cada una."""
+        import numpy as np
+        import routes.api
+        import uocr_client
+
+        mocker.patch.object(uocr_client, "health",
+                            return_value={"state": "ready"})
+        mocker.patch.object(uocr_client, "process_batch", return_value={
+            "pages": [
+                {"blocks": [
+                    {"x": 10, "y": 10, "w": 100, "h": 30, "type": "title",
+                     "text": "CAPITULO 43"},
+                    {"x": 0, "y": 0, "w": 500, "h": 400, "type": "image",
+                     "text": ""},
+                ], "recovered_from_art": 0},
+                {"blocks": [
+                    {"x": 50, "y": 100, "w": 80, "h": 20, "type": "text",
+                     "text": "Hola"},
+                ], "recovered_from_art": 0},
+            ],
+            "infer_s": 7.0,
+        })
+        img_a = np.zeros((800, 600, 3), dtype=np.uint8)
+        img_b = np.zeros((800, 600, 3), dtype=np.uint8)
+
+        pages, infer_s = routes.api._ocr_with_unlimited_batch([img_a, img_b])
+
+        assert infer_s == 7.0
+        assert len(pages) == 2
+        blocks_a, panels_a = pages[0]
+        blocks_b, panels_b = pages[1]
+        assert {b["text"]: b["type"] for b in blocks_a} == {"CAPITULO 43": "title"}
+        assert len(panels_a) == 1  # image grande → panel de Ruta C
+        assert blocks_b[0]["text"] == "Hola"
+        assert blocks_b[0]["type"] == "text"
+        assert blocks_b[0]["engine"] == "unlimited"
+
+    def test_process_page_batch_rechaza_fuera_de_rango(self, client):
+        """Menos de 1 o más de 4 imágenes → 400."""
+        resp = client.post(
+            "/api/process-page-batch",
+            data=json.dumps({"images": []}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+        resp = client.post(
+            "/api/process-page-batch",
+            data=json.dumps({"images": ["a", "b", "c", "d", "e"]}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+
+    def test_process_page_batch_devuelve_por_pagina(self, client, mocker):
+        """2 imágenes → 2 resultados en el mismo orden, sin daemon si el
+        híbrido resuelve (conf alta, >=3 bloques)."""
+        b64 = _make_small_b64_image()
+        mock_img = MagicMock()
+        mock_img.shape = (100, 100, 3)
+        mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
+        ok_blocks = [
+            {"x": 10, "y": 20, "w": 80, "h": 15, "text": f"T{i}",
+             "confidence": 0.85, "fontSize": 14, "textColor": "#000000"}
+            for i in range(3)
+        ]
+        mocker.patch("ocr_utils._detect_and_ocr", return_value=ok_blocks)
+        mocker.patch("ocr_utils._page_has_large_image_panel", return_value=False)
+        batch_mock = mocker.patch("routes.api._ocr_with_unlimited_batch")
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=MagicMock())
+        mocker.patch("ocr_utils._inpaint_image", return_value=mock_img)
+        mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+
+        resp = client.post(
+            "/api/process-page-batch",
+            data=json.dumps({"images": [b64, b64]}),
+            content_type="application/json",
+        )
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data is not None
+        batch_mock.assert_not_called()
+        assert len(data["results"]) == 2
+        for r in data["results"]:
+            assert r["ocr_engine"] == "fusion"
+            assert r["engines_used"] == ["easyocr+rapid"]
+            assert len(r["blocks"]) == 3
+            assert "inpainted_image" in r
+
+    def test_process_page_batch_doc_id_se_pasa_a_ocrmanager(self, client, mocker):
+        """Sesión 126: doc_id del payload batch llega a run_ocr_batch."""
+        b64 = _make_small_b64_image()
+        mock_img = MagicMock()
+        mock_img.shape = (100, 100, 3)
+        mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
+        run_batch_mock = mocker.patch(
+            "ocr_engine.OCRManager.run_ocr_batch",
+            return_value=[([], "fusion", ["easyocr+rapid"]),
+                          ([], "fusion", ["easyocr+rapid"])],
+        )
+        mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
+
+        resp = client.post(
+            "/api/process-page-batch",
+            data=json.dumps({"images": [b64, b64], "doc_id": "cap47"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        assert run_batch_mock.call_args.kwargs.get("doc_id") == "cap47"
+
+    def test_process_page_batch_llama_daemon_una_vez(self, client, mocker):
+        """2 páginas difíciles → el daemon batch se llama UNA vez con 2 imgs."""
+        b64 = _make_small_b64_image()
+        mock_img = MagicMock()
+        mock_img.shape = (100, 100, 3)
+        mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
+        bad_blocks = [
+            {"x": 10, "y": 20, "w": 80, "h": 15, "text": "hola",
+             "confidence": 0.15, "fontSize": 14, "textColor": "#000000"}
+        ]
+        mocker.patch("ocr_utils._detect_and_ocr", return_value=bad_blocks)
+        mocker.patch("ocr_utils._page_has_large_image_panel", return_value=False)
+        mocker.patch("ocr_utils._page_signature", return_value="")
+        mocker.patch("ocr_utils._preprocess_rapid", side_effect=lambda x: x)
+        mocker.patch("ocr_utils._run_rapidocr", return_value=[])
+        ublocks = [
+            {"x": 50, "y": 50, "w": 80, "h": 20, "text": "título",
+             "confidence": 0.93, "fontSize": 16, "textColor": "#000000"}
+        ]
+        batch_mock = mocker.patch(
+            "routes.api._ocr_with_unlimited_batch",
+            return_value=([(ublocks, []), (ublocks, [])], 5.0),
+        )
+        mocker.patch("ocr_utils._detect_bubble_regions_in_panel", return_value=[])
+        mocker.patch("ocr_utils._fusionar_blocks_multi",
+                     side_effect=lambda sources, weights:
+                     list(sources[0]) + list(sources[1]))
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=MagicMock())
+        mocker.patch("ocr_utils._inpaint_image", return_value=mock_img)
+        mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+
+        resp = client.post(
+            "/api/process-page-batch",
+            data=json.dumps({"images": [b64, b64]}),
+            content_type="application/json",
+        )
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data is not None
+        assert batch_mock.call_count == 1
+        assert len(batch_mock.call_args.args[0]) == 2
+        engines = data["results"][0]["engines_used"]
+        assert "unlimited-batch" in engines
 
 
 # ═══════════════════════════════════════════════════════════════

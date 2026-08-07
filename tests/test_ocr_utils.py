@@ -15,6 +15,7 @@ Usa imágenes sintéticas numpy y mocks para EasyOCR.
 import sys
 import os
 import base64
+import time
 import numpy as np
 import pytest
 
@@ -334,6 +335,72 @@ class TestOcrResultsToBlocks:
         # El ROI alrededor del centro del bloque tiene fondo claro (200) → brightness > 128 → #000000 (texto negro en fondo claro)
         if blocks:
             assert blocks[0]["textColor"] == "#000000"
+
+    def test_acepta_dicts_de_race_window(self, small_bgr):
+        """Fase 5 bug fix: cuando _run_ocr_on_image degrada internamente a
+        RapidOCR (dicts en formato interno) durante la race window de
+        _uocr_inferring, _ocr_results_to_blocks NO debe explotar con
+        "too many values to unpack" (causaba 500 en las páginas 19-22 del
+        run fusion batch) — debe convertir los dicts directamente a bloques."""
+        from ocr_utils import _ocr_results_to_blocks
+        results = [
+            {"x": 10, "y": 20, "w": 80, "h": 15, "text": "RapidCPU",
+             "confidence": 0.72, "fontSize": 14, "textColor": "#000000"},
+        ]
+        blocks = _ocr_results_to_blocks(results, small_bgr)
+        assert len(blocks) >= 1
+        b = blocks[0]
+        assert b["text"] == "RapidCPU"
+        assert abs(b["confidence"] - 0.72) < 0.01
+        assert b["x"] == 10 and b["y"] == 20
+        assert b["w"] >= 80 and b["h"] >= 15
+
+    def test_dict_y_tupla_mezclados(self, small_bgr):
+        """La lista de resultados puede mezclar tuplas (EasyOCR) y dicts
+        (RapidOCR degradado) — ambos deben procesarse sin crashear."""
+        from ocr_utils import _ocr_results_to_blocks
+        results = [
+            ([[10, 20], [90, 20], [90, 40], [10, 40]], "Hola", 0.85),
+            {"x": 100, "y": 20, "w": 80, "h": 15, "text": "CPU",
+             "confidence": 0.60, "fontSize": 14, "textColor": "#000000"},
+        ]
+        blocks = _ocr_results_to_blocks(results, small_bgr)
+        texts = " ".join(b["text"] for b in blocks)
+        assert "Hola" in texts
+        assert "CPU" in texts
+
+    def test_dict_con_texto_vacio_filtrado(self, small_bgr):
+        """Dicts con texto vacío o bbox diminuto se filtran igual que tuplas."""
+        from ocr_utils import _ocr_results_to_blocks
+        results = [
+            {"x": 10, "y": 20, "w": 80, "h": 15, "text": "  ",
+             "confidence": 0.90, "fontSize": 14, "textColor": "#000000"},
+            {"x": 10, "y": 50, "w": 1, "h": 1, "text": "tiny",
+             "confidence": 0.90, "fontSize": 14, "textColor": "#000000"},
+            {"x": 60, "y": 50, "w": 80, "h": 15, "text": "OK",
+             "confidence": 0.80, "fontSize": 14, "textColor": "#000000"},
+        ]
+        blocks = _ocr_results_to_blocks(results, small_bgr)
+        assert len(blocks) >= 1
+        for b in blocks:
+            assert b["text"].strip() != ""
+            assert b["w"] >= 3 and b["h"] >= 3
+
+    def test_dict_conf_baja_filtrada_paridad_tupla(self, small_bgr):
+        """Paridad con el camino tupla (code review Fase 5): los dicts con
+        confidence < 0.08 se filtran igual que las tuplas — si un emisor
+        futuro manda un dict con conf baja, no entra al pipeline."""
+        from ocr_utils import _ocr_results_to_blocks
+        results = [
+            {"x": 10, "y": 20, "w": 80, "h": 15, "text": "basura",
+             "confidence": 0.03, "fontSize": 14, "textColor": "#000000"},
+            {"x": 60, "y": 50, "w": 80, "h": 15, "text": "OK",
+             "confidence": 0.80, "fontSize": 14, "textColor": "#000000"},
+        ]
+        blocks = _ocr_results_to_blocks(results, small_bgr)
+        assert len(blocks) >= 1
+        for b in blocks:
+            assert b["confidence"] >= 0.08
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -812,3 +879,845 @@ class TestDetectAndOcr:
                     _detect_and_ocr(small_bgr)
                     captured = capsys.readouterr()
                     assert "0 bloques" in captured.out or "Todos los fallbacks" in captured.out
+
+
+class TestBubbleRegionDetection:
+    """Ruta C: detección de globos/regiones de texto dentro de paneles image."""
+
+    def _make_panel_with_bubble(self):
+        """Crea una imagen 400x300 con un panel image (300x240) que contiene
+        un globo de diálogo (elipse blanca con tinta oscura)."""
+        import cv2
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128  # fondo gris (arte)
+        # Panel image: rectángulo oscuro que delimita el panel
+        cv2.rectangle(img, (40, 20), (340, 260), (60, 60, 60), -1)
+        # Globo: elipse blanca con borde oscuro dentro del panel
+        cx, cy, rw, rh = 190, 140, 70, 45
+        cv2.ellipse(img, (cx, cy), (rw, rh), 0, 0, 360, (255, 255, 255), -1)
+        cv2.ellipse(img, (cx, cy), (rw, rh), 0, 0, 360, (0, 0, 0), 3)
+        # Tinta (texto) dentro del globo
+        cv2.putText(img, "HOLA", (cx - 25, cy + 6), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6, (0, 0, 0), 2)
+        panel = {"x": 40, "y": 20, "w": 300, "h": 240}
+        return img, panel
+
+    def test_detects_bubble_inside_panel(self):
+        from ocr_utils import _detect_bubble_regions_in_panel
+        img, panel = self._make_panel_with_bubble()
+        regions = _detect_bubble_regions_in_panel(img, panel)
+        assert regions, "Debe detectar al menos un globo dentro del panel"
+        r = regions[0]
+        # La región debe estar dentro del panel y en coordenadas de página
+        assert r["x"] >= panel["x"] and r["y"] >= panel["y"]
+        assert r["x"] + r["w"] <= panel["x"] + panel["w"] + 5
+        assert r["roundness"] >= 0.30, f"Roundness insuficiente: {r['roundness']}"
+
+    def test_no_regions_on_flat_panel(self):
+        from ocr_utils import _detect_bubble_regions_in_panel
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 100
+        panel = {"x": 40, "y": 20, "w": 300, "h": 240}
+        regions = _detect_bubble_regions_in_panel(img, panel)
+        assert regions == []
+
+    def test_coords_map_back_to_page(self):
+        from ocr_utils import _detect_bubble_regions_in_panel
+        img, panel = self._make_panel_with_bubble()
+        regions = _detect_bubble_regions_in_panel(img, panel)
+        # Las coordenadas devueltas están en espacio de PÁGINA: deben incluir
+        # el offset del panel (el globo vive dentro del rect 40..340 x 20..260).
+        # La detección por blobs puede devolver un fragmento del globo (el
+        # texto "HOLA" perfora el interior claro), así que validamos rango amplio.
+        r = regions[0]
+        assert panel["x"] <= r["x"] <= panel["x"] + panel["w"]
+        assert panel["y"] <= r["y"] <= panel["y"] + panel["h"]
+        # El centro del fragmento debe caer dentro del área del globo (120-260 x 95-185)
+        rcx = r["x"] + r["w"] // 2
+        rcy = r["y"] + r["h"] // 2
+        assert panel["x"] + 100 <= rcx <= panel["x"] + 250
+        assert panel["y"] + 50 <= rcy <= panel["y"] + 200
+
+
+class TestRecoverRegionsWithEasyocr:
+    """Ruta C: re-OCR de regiones con upscale y mapeo de coordenadas."""
+
+    def test_maps_coordinates_back_to_page(self):
+        import cv2
+        from unittest.mock import patch
+        from ocr_utils import _recover_regions_with_easyocr
+
+        # Página 400x300; región del globo en coords de página (180,110,80,50)
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        cv2.rectangle(img, (180, 110), (260, 160), (255, 255, 255), -1)
+        cv2.putText(img, "HOLA", (195, 140), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (0, 0, 0), 1)
+        regions = [{"x": 180, "y": 110, "w": 80, "h": 50}]
+
+        # Mock del reader de EasyOCR: devuelve un bloque en coords del crop
+        # upscaleado 3.5x. El crop es (80+pad, 50+pad) → approx 92x62 → 322x217.
+        mock_reader = MagicMock()
+
+        def fake_readtext(up_img, **kwargs):
+            # Bloque centrado en el crop upscaleado: bbox en coords upscale
+            # El texto original está ~(15,30) en el crop → ~(52,105) upscale
+            return [([[52, 105], [180, 105], [180, 150], [52, 150]], "HOLA", 0.95)]
+
+        mock_reader.readtext.side_effect = fake_readtext
+        with patch("ocr_utils._get_ocr_reader", return_value=mock_reader):
+            with patch("ocr_utils._run_ocr_on_image",
+                       side_effect=lambda reader, up_img, **kw: reader.readtext(up_img)):
+                with patch("ocr_utils._group_and_merge_blocks",
+                           side_effect=lambda b, h: b):
+                    # Fase 3 pt.3: sin rotación (el cls devuelve el crop igual)
+                    with patch("ocr_utils._classify_rotate_crop",
+                               side_effect=lambda x: (x, False, 0.0)):
+                        blocks = _recover_regions_with_easyocr(img, regions, upscale=3.5)
+
+        assert blocks, "Debe recuperar al menos un bloque"
+        b = blocks[0]
+        # bbox upscale (52,105)→page: 180 + 52/3.5 ≈ 195; 110 + 105/3.5 ≈ 140.
+        # El pad del recorte añade ~6px, así que la tolerancia es amplia: lo
+        # importante es que la coordenada se mapee de vuelta cerca del globo.
+        assert 180 <= b["x"] <= 210, f"x={b['x']}"
+        assert 130 <= b["y"] <= 155, f"y={b['y']}"
+        assert b["text"] == "HOLA"
+        assert b["engine"] == "easyocr-region"
+
+    def test_empty_regions_returns_empty(self):
+        from ocr_utils import _recover_regions_with_easyocr
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        assert _recover_regions_with_easyocr(img, []) == []
+
+    def test_degrada_a_rapid_cpu_cuando_daemon_infiere(self):
+        """§8.4.4: con _uocr_inferring activo, la Ruta C usa RapidOCR CPU
+        y NO carga el reader de EasyOCR (GPU)."""
+        from unittest.mock import patch
+        from ocr_utils import _recover_regions_with_easyocr, _uocr_inferring
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        rapid_blocks = [
+            {"x": 30, "y": 40, "w": 120, "h": 50, "text": "CPU GLOBO",
+             "confidence": 0.7, "textColor": "#000000"},
+        ]
+
+        reader_mock = MagicMock()
+        with patch("ocr_utils._get_ocr_reader", return_value=reader_mock) as get_reader:
+            with patch("ocr_utils._run_rapidocr", return_value=rapid_blocks) as run_rapid:
+                with patch("ocr_utils._group_and_merge_blocks",
+                           side_effect=lambda b, h: b):
+                    try:
+                        _uocr_inferring.set()
+                        blocks = _recover_regions_with_easyocr(img, regions, upscale=3.5)
+                    finally:
+                        _uocr_inferring.clear()
+
+        # El reader de EasyOCR (GPU) NO debe cargarse durante la degradación
+        get_reader.assert_not_called()
+        run_rapid.assert_called_once()
+        assert blocks, "Debe recuperar al menos un bloque"
+        b = blocks[0]
+        # bbox upscale (30,40,120,50) → page: 100 + 30/3.5 ≈ 108; 80 + 40/3.5 ≈ 91
+        assert 100 <= b["x"] <= 115, f"x={b['x']}"
+        assert 80 <= b["y"] <= 100, f"y={b['y']}"
+        assert b["text"] == "CPU GLOBO"
+        assert b["engine"] == "rapidocr-region"
+
+    def test_usa_easyocr_gpu_cuando_flag_limpio(self):
+        """§8.4.4: con el flag limpio, la Ruta C sigue usando EasyOCR GPU
+        (reader cargado + _run_ocr_on_image, sin RapidOCR)."""
+        from unittest.mock import patch
+        from ocr_utils import _recover_regions_with_easyocr, _uocr_inferring
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        mock_reader = MagicMock()
+        mock_reader.readtext.return_value = [
+            ([[30, 40], [150, 40], [150, 90], [30, 90]], "HOLA", 0.9)]
+
+        with patch("ocr_utils._get_ocr_reader", return_value=mock_reader) as get_reader:
+            with patch("ocr_utils._run_rapidocr") as run_rapid:
+                with patch("ocr_utils._run_ocr_on_image",
+                           side_effect=lambda reader, up_img, **kw: reader.readtext(up_img)):
+                    with patch("ocr_utils._group_and_merge_blocks",
+                               side_effect=lambda b, h: b):
+                        with patch("ocr_utils._classify_rotate_crop",
+                                   side_effect=lambda x: (x, False, 0.0)):
+                            # Flag limpio por defecto (no se setea)
+                            assert not _uocr_inferring.is_set()
+                            blocks = _recover_regions_with_easyocr(img, regions, upscale=3.5)
+
+        get_reader.assert_called_once()
+        run_rapid.assert_not_called()
+        assert blocks and blocks[0]["text"] == "HOLA"
+        assert blocks[0]["engine"] == "easyocr-region"
+
+    def test_maneja_formato_mixto_de_race_window(self):
+        """Race window: si _run_ocr_on_image degrada internamente a RapidOCR
+        (flag seteado justo después del chequeo inicial), devuelve dicts en
+        vez de tuplas (bbox,text,conf) — el mapeo debe tratarlos igual."""
+        from unittest.mock import patch
+        from ocr_utils import _recover_regions_with_easyocr, _uocr_inferring
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        mock_reader = MagicMock()
+        # _run_ocr_on_image devuelve BLOQUES INTERNOS (dict) — simulando la
+        # degradación interna que ocurre cuando el daemon empieza a inferir
+        # en medio de la llamada (race window).
+        dict_blocks = [
+            {"x": 30, "y": 40, "w": 120, "h": 50, "text": "MIXTO",
+             "confidence": 0.6, "textColor": "#000000"},
+        ]
+        with patch("ocr_utils._get_ocr_reader", return_value=mock_reader):
+            with patch("ocr_utils._run_ocr_on_image", return_value=dict_blocks):
+                with patch("ocr_utils._group_and_merge_blocks",
+                           side_effect=lambda b, h: b):
+                    with patch("ocr_utils._classify_rotate_crop",
+                               side_effect=lambda x: (x, False, 0.0)):
+                        blocks = _recover_regions_with_easyocr(img, regions, upscale=3.5)
+
+        assert blocks, "Debe recuperar el bloque aunque venga en formato dict"
+        assert blocks[0]["text"] == "MIXTO"
+        assert blocks[0]["engine"] == "easyocr-region"
+
+    # ─── Fase 3 pt.3: TextClassifier de RapidOCR (rotación 0°/180°) ──
+
+    def test_cls_detecta_180_y_rota_crop(self):
+        """El cls devuelve label 180° → la imagen se rota y se marca se_roto."""
+        from unittest.mock import patch
+        from ocr_utils import _classify_rotate_crop
+        import cv2
+
+        # Contenido ASIMÉTRICO: un rectángulo en la esquina superior-izquierda
+        # — al rotar 180° el array cambia (si fuera uniforme, la rotación sería
+        # indistinguible y el assert no validaría nada).
+        img = np.ones((50, 200, 3), dtype=np.uint8) * 255
+        img[5:15, 5:40] = 0
+        rotated = cv2.rotate(img, cv2.ROTATE_180)
+        fake_engine = MagicMock()
+        fake_engine.text_cls.return_value = ([rotated], [["180", 0.98]], 0.01)
+
+        with patch("ocr_utils._get_rapid_engine", return_value=fake_engine):
+            out, se_roto, score = _classify_rotate_crop(img)
+
+        assert se_roto is True
+        assert score == 0.98
+        assert out.shape == img.shape
+        # La imagen devuelta es la rotada (la librería rota internamente)
+        assert not np.array_equal(out, img)
+        fake_engine.text_cls.assert_called_once_with([img])
+
+    def test_cls_label_0_no_rota(self):
+        """Label 0° → no se rota, se devuelve el crop original."""
+        from unittest.mock import patch
+        from ocr_utils import _classify_rotate_crop
+
+        img = np.ones((50, 200, 3), dtype=np.uint8) * 255
+        fake_engine = MagicMock()
+        fake_engine.text_cls.return_value = ([img], [["0", 0.99]], 0.01)
+
+        with patch("ocr_utils._get_rapid_engine", return_value=fake_engine):
+            out, se_roto, score = _classify_rotate_crop(img)
+
+        assert se_roto is False
+        assert score == 0.99
+        assert out is img
+
+    def test_cls_score_bajo_no_rota(self):
+        """score <= umbral (0.9) → no rotar (evita texto cabeza abajo)."""
+        from unittest.mock import patch
+        from ocr_utils import _classify_rotate_crop
+
+        img = np.ones((50, 200, 3), dtype=np.uint8) * 255
+        fake_engine = MagicMock()
+        # label 180 pero score 0.5 < 0.9 → la librería NO rota internamente
+        fake_engine.text_cls.return_value = ([img], [["180", 0.5]], 0.01)
+
+        with patch("ocr_utils._get_rapid_engine", return_value=fake_engine):
+            out, se_roto, score = _classify_rotate_crop(img)
+
+        assert se_roto is False
+        assert out is img
+
+    def test_cls_sin_engine_degrada_seguro(self):
+        """Sin engine RapidOCR → devuelve el crop sin tocar, sin error."""
+        from unittest.mock import patch
+        from ocr_utils import _classify_rotate_crop
+
+        img = np.ones((50, 200, 3), dtype=np.uint8) * 255
+        with patch("ocr_utils._get_rapid_engine", return_value=None):
+            out, se_roto, score = _classify_rotate_crop(img)
+
+        assert out is img
+        assert se_roto is False
+        assert score == 0.0
+
+    def test_cls_deshabilitado_por_flag(self):
+        """RUTA_C_CLS_ENABLED=False → el cls no se toca (benchmark/fallback)."""
+        from unittest.mock import patch
+        from ocr_utils import _classify_rotate_crop
+
+        img = np.ones((50, 200, 3), dtype=np.uint8) * 255
+        fake_engine = MagicMock()
+        with patch("ocr_utils._get_rapid_engine", return_value=fake_engine):
+            with patch("config.RUTA_C_CLS_ENABLED", False):
+                out, se_roto, score = _classify_rotate_crop(img)
+
+        fake_engine.text_cls.assert_not_called()
+        assert out is img
+        assert se_roto is False
+
+    def test_cls_falla_degrada_seguro(self):
+        """Excepción en el cls → crop original sin romper la Ruta C."""
+        from unittest.mock import patch
+        from ocr_utils import _classify_rotate_crop
+
+        img = np.ones((50, 200, 3), dtype=np.uint8) * 255
+        fake_engine = MagicMock()
+        fake_engine.text_cls.side_effect = RuntimeError("onnx falló")
+
+        with patch("ocr_utils._get_rapid_engine", return_value=fake_engine):
+            out, se_roto, score = _classify_rotate_crop(img)
+
+        assert out is img
+        assert se_roto is False
+        assert score == 0.0
+
+    def test_ruta_c_rota_crop_antes_del_reocr(self):
+        """Integración: si el cls detecta 180°, la Ruta C rota el crop y el
+        bloque resultante se mapea de vuelta des-rotado a la página."""
+        from unittest.mock import patch
+        from ocr_utils import _recover_regions_with_easyocr
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        mock_reader = MagicMock()
+        # El bloque se detecta en el crop ROTADO: coords del texto en el
+        # espacio rotado. Crop ~72x52 → upscale 3.5 → ~252x182.
+        def fake_readtext(up_img, **kwargs):
+            # bbox en el espacio de la imagen rotada (texto abajo-izquierda)
+            return [([[200, 20], [240, 20], [240, 40], [200, 40]], "ROTADO", 0.92)]
+        mock_reader.readtext.side_effect = fake_readtext
+
+        with patch("ocr_utils._get_ocr_reader", return_value=mock_reader):
+            with patch("ocr_utils._run_ocr_on_image",
+                       side_effect=lambda reader, up_img, **kw: reader.readtext(up_img)):
+                with patch("ocr_utils._group_and_merge_blocks",
+                           side_effect=lambda b, h: b):
+                    # El cls detecta 180°: devuelve el crop rotado (en el test
+                    # el side_effect devuelve el MISMO array para no tocar el
+                    # contenido; el flujo de des-rotación de coords es lo que
+                    # se valida).
+                    with patch("ocr_utils._classify_rotate_crop",
+                               side_effect=lambda x: (x, True, 0.98)):
+                        blocks = _recover_regions_with_easyocr(img, regions, upscale=3.5)
+
+        assert blocks, "Debe recuperar el bloque rotado"
+        b = blocks[0]
+        assert b["text"] == "ROTADO"
+        # Coordenadas des-rotadas: el bloque del texto en el espacio rotado
+        # (x=200..240) → en el crop original (252-200-40=12..52) → página
+        # (94 + 12/3.5 ≈ 97). Sin la des-rotación quedaría en x≈151
+        # (94 + 200/3.5) — el assert en 95..125 distingue ambos casos.
+        assert 95 <= b["x"] <= 125, f"x={b['x']} (debe estar des-rotado)"
+        assert b["engine"] == "easyocr-region"
+
+
+# ─── Parámetros de _run_rapidocr (Fase 2: reintento agresivo) ────
+
+class TestRunRapidocrParams:
+    """Fase 2: _run_rapidocr acepta box_thresh/unclip_ratio/text_score y los
+    pasa al engine. Los valores SIEMPRE se pasan explícitos (defaults si no
+    se indican) para no heredar params agresivos de una llamada anterior —
+    la librería muta postprocess_op en la primera llamada con kwargs."""
+
+    def test_propaga_parametros_agresivos(self):
+        from ocr_utils import _run_rapidocr
+        img = np.ones((200, 300, 3), dtype=np.uint8) * 128
+        engine = MagicMock()
+        engine.return_value = (None, None)
+        with patch("ocr_utils._get_rapid_engine", return_value=engine):
+            _run_rapidocr(img, box_thresh=0.30, unclip_ratio=2.2, text_score=0.40)
+
+        engine.assert_called_once()
+        kwargs = engine.call_args.kwargs
+        assert kwargs["box_thresh"] == 0.30
+        assert kwargs["unclip_ratio"] == 2.2
+        assert kwargs["text_score"] == 0.40
+
+    def test_defaults_se_pasan_explicitos(self):
+        """Una llamada sin parámetros usa los defaults de la librería
+        (0.5/1.6/0.5) — nunca hereda una llamada agresiva previa."""
+        from ocr_utils import _run_rapidocr
+        img = np.ones((200, 300, 3), dtype=np.uint8) * 128
+        engine = MagicMock()
+        engine.return_value = (None, None)
+        with patch("ocr_utils._get_rapid_engine", return_value=engine):
+            _run_rapidocr(img)
+
+        engine.assert_called_once()
+        kwargs = engine.call_args.kwargs
+        assert kwargs["box_thresh"] == 0.5
+        assert kwargs["unclip_ratio"] == 1.6
+        assert kwargs["text_score"] == 0.5
+
+    def test_engine_sin_resultado_devuelve_vacio(self):
+        """Engine que no detecta nada → [] sin crashear (semáforo liberado)."""
+        from ocr_utils import _run_rapidocr
+        img = np.ones((200, 300, 3), dtype=np.uint8) * 128
+        engine = MagicMock()
+        engine.return_value = (None, None)
+        with patch("ocr_utils._get_rapid_engine", return_value=engine):
+            assert _run_rapidocr(img, box_thresh=0.3) == []
+
+
+# ─── Ponderación por tipo semántico en la fusión (Fase 3) ────────
+
+class TestFusionTypeWeighted:
+    """Fase 3: el type semántico del VLM (text/title/header) pondera la
+    votación de _fusionar_blocks_multi. Bloques sin type (EasyOCR/RapidOCR)
+    mantienen el comportamiento base."""
+
+    def _blk(self, text, conf, x=10, y=10, w=50, h=15, type=None):
+        b = {"x": x, "y": y, "w": w, "h": h, "text": text,
+             "confidence": conf, "fontSize": 12, "textColor": "#000"}
+        if type:
+            b["type"] = type
+        return b
+
+    def test_block_score_title_pesa_mas_que_text(self):
+        from ocr_utils import _block_score
+        # Mismo texto y confianza: el bloque title (VLM) gana el dedup/NMS
+        title = self._blk("CAPITULO 43", 0.90, type="title")
+        plain = self._blk("CAPITULO 43", 0.90)
+        assert _block_score(title) > _block_score(plain)
+
+    def test_block_score_sin_type_factor_1(self):
+        from ocr_utils import _block_score
+        plain = self._blk("hola mundo", 0.8)
+        assert _block_score(plain) == 0.8 * min(2.0, max(0.5, len("hola mundo") / 5.0))
+
+    def test_votacion_title_refuerza_0_20(self):
+        from ocr_utils import _fusionar_blocks_multi
+        # Textos casi-idénticos (Levenshtein ≤30%, mismo región): el dedup por
+        # texto exacto no los fusiona → pasan por votación. Gana el title del
+        # VLM (score 0.75×1.15 > 0.60×1.0) y se refuerza +0.20.
+        easy = [self._blk("CAPITULO 43", 0.60)]
+        uocr = [self._blk("CAPITULO 43!", 0.75, x=10, y=10, w=50, h=15, type="title")]
+        merged = _fusionar_blocks_multi([easy, uocr])
+        assert len(merged) == 1
+        assert merged[0]["confidence"] == pytest.approx(0.75 + 0.20, abs=1e-6)
+        assert merged[0]["type"] == "title"
+
+    def test_votacion_header_refuerza_0_18(self):
+        from ocr_utils import _fusionar_blocks_multi
+        easy = [self._blk("4.58 p.m", 0.60)]
+        uocr = [self._blk("4.58 p.m.", 0.70, x=10, y=10, w=50, h=15, type="header")]
+        merged = _fusionar_blocks_multi([easy, uocr])
+        assert len(merged) == 1
+        assert merged[0]["confidence"] == pytest.approx(0.70 + 0.18, abs=1e-6)
+
+    def test_votacion_sin_type_mantiene_0_15(self):
+        """Acuerdo entre motores sin type (EasyOCR+RapidOCR) → +0.15 base
+        (comportamiento previo a Fase 3 intacto)."""
+        from ocr_utils import _fusionar_blocks_multi
+        easy = [self._blk("hola mundo", 0.60)]
+        rapid = [self._blk("hola mundo!", 0.65)]
+        merged = _fusionar_blocks_multi([easy, rapid])
+        assert len(merged) == 1
+        # Gana rapid (0.65) y se refuerza con el base 0.15
+        assert merged[0]["confidence"] == pytest.approx(0.65 + 0.15, abs=1e-6)
+
+    def test_votacion_texto_distinto_no_refuerza(self):
+        from ocr_utils import _fusionar_blocks_multi
+        easy = [self._blk("hola", 0.60)]
+        uocr = [self._blk("mundo", 0.85, x=200, y=50, type="title")]
+        merged = _fusionar_blocks_multi([easy, uocr])
+        assert len(merged) == 2  # sin solape → sin votación
+
+    def test_type_se_propaga_al_resultado_fusionado(self):
+        from ocr_utils import _fusionar_blocks_multi
+        easy = [self._blk("CAPITULO 43", 0.60)]
+        uocr = [self._blk("CAPITULO 43", 0.85, x=10, y=10, w=50, h=15, type="title")]
+        merged = _fusionar_blocks_multi([easy, uocr])
+        assert merged[0].get("type") == "title"
+
+
+# ═══════════════════════════════════════════════════════════════
+# Fase 6: detector YOLO de regiones de texto (_detect_text_regions_in_page)
+# ═══════════════════════════════════════════════════════════════
+
+class _YoloTensor:
+    """Imita Tensor.cpu().numpy() de PyTorch (los tests no cargan torch)."""
+
+    def __init__(self, arr):
+        self._arr = arr
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        return self._arr
+
+
+class _FakeYoloBoxes:
+    """Stub de results[0].boxes de ultralytics: xyxy/conf/cls con .cpu()."""
+
+    def __init__(self, xyxy, confs, clss):
+        self._xyxy = xyxy
+        self._conf = confs
+        self._cls = clss
+
+    @property
+    def xyxy(self):
+        return _YoloTensor(self._xyxy)
+
+    @property
+    def conf(self):
+        return _YoloTensor(self._conf)
+
+    @property
+    def cls(self):
+        return _YoloTensor(self._cls)
+
+
+class _FakeYoloResult:
+    def __init__(self, boxes, names=None):
+        self.boxes = boxes
+        self.names = names or {}
+
+
+class TestDetectTextRegionsYolo:
+    """_detect_text_regions_in_page — mapea detecciones YOLO a regiones en el
+    formato de la Ruta C, filtra por clase/área y degrada seguro."""
+
+    @pytest.fixture(autouse=True)
+    def _limpiar_flags(self):
+        """Limpia los Events globales tras cada test: si uno falla antes del
+        finally, no poluciona los tests siguientes (code review Fase 6.5).
+        También resetea _yolo_device (sesión 116): el device se resuelve UNA
+        vez por proceso, así que cada test debe re-resolverlo para aislarse."""
+        import ocr_utils
+        yield
+        ocr_utils._uocr_inferring.clear()
+        ocr_utils._yolo_disabled.clear()
+        ocr_utils._yolo_device = None
+
+    def test_mapea_boxes_a_regiones_en_coords_de_pagina(self, mocker):
+        from ocr_utils import _detect_text_regions_in_page
+        # Imagen 200x150: un globo (10,20,80,60) y un título (100,5,90,30)
+        img = np.ones((150, 200, 3), dtype=np.uint8) * 200
+        boxes = _FakeYoloBoxes(
+            xyxy=np.array([[10, 20, 90, 80], [100, 5, 190, 35]], dtype=float),
+            confs=np.array([0.92, 0.88], dtype=float),
+            clss=np.array([0, 1], dtype=float),
+        )
+        result = _FakeYoloResult(boxes, {0: "speech bubble", 1: "title"})
+        engine = MagicMock()
+        engine.predict.return_value = [result]
+        mocker.patch("ocr_utils._get_yolo_engine", return_value=engine)
+        # Determinismo: CUDA disponible y daemon U-OCR NO infiere → device "0"
+        import ocr_utils
+        ocr_utils._uocr_inferring.clear()
+        mocker.patch("torch.cuda.is_available", return_value=True)
+
+        regions = _detect_text_regions_in_page(img)
+
+        assert len(regions) == 2
+        r0, r1 = regions[0], regions[1]
+        assert (r0["x"], r0["y"], r0["w"], r0["h"]) == (10, 20, 80, 60)
+        assert r0["source"] == "yolo"
+        assert r0["label"] == "speech bubble"
+        assert abs(r0["cls_conf"] - 0.92) < 1e-6
+        assert (r1["x"], r1["y"], r1["w"], r1["h"]) == (100, 5, 90, 30)
+        # El engine recibe la imagen; con CUDA libre el device es "0"
+        engine.predict.assert_called_once()
+        assert engine.predict.call_args.kwargs["device"] == "0"
+
+    def test_device_auto_ignora_daemon_infiriendo(self, mocker):
+        """Política determinista (sesión 116, code review): YOLO_DEVICE='auto'
+        se resuelve SOLO por CUDA — NO consulta _uocr_inferring. Si el device
+        dependiera del flag del daemon en el primer call del proceso, un
+        proceso que arrancara justo cuando el daemon infiere resolvería CPU y
+        otro GPU → no-determinismo entre corridas (la misma fuente que se
+        elimina). La sesión 103 verificó que YOLO GPU coexiste con el daemon
+        en VRAM (2.25GB + ~1GB + 0.13GB < 4GB)."""
+        from ocr_utils import _detect_text_regions_in_page, _uocr_inferring
+        img = np.ones((150, 200, 3), dtype=np.uint8) * 200
+        boxes = _FakeYoloBoxes(
+            xyxy=np.array([[10, 20, 90, 80]], dtype=float),
+            confs=np.array([0.92], dtype=float),
+            clss=np.array([0], dtype=float),
+        )
+        engine = MagicMock()
+        engine.predict.return_value = [_FakeYoloResult(boxes, {0: "text_bubble"})]
+        mocker.patch("ocr_utils._get_yolo_engine", return_value=engine)
+        mocker.patch("torch.cuda.is_available", return_value=True)
+        _uocr_inferring.set()
+        try:
+            _detect_text_regions_in_page(img)
+        finally:
+            _uocr_inferring.clear()
+        assert engine.predict.call_args.kwargs["device"] == "0"
+
+    def test_device_auto_usa_cpu_sin_cuda(self, mocker):
+        """YOLO_DEVICE='auto': sin CUDA disponible → device 'cpu' (compatibilidad
+        en máquinas sin GPU, el objetivo de los 200-400ms CPU)."""
+        from ocr_utils import _detect_text_regions_in_page
+        img = np.ones((150, 200, 3), dtype=np.uint8) * 200
+        boxes = _FakeYoloBoxes(
+            xyxy=np.array([[10, 20, 90, 80]], dtype=float),
+            confs=np.array([0.92], dtype=float),
+            clss=np.array([0], dtype=float),
+        )
+        engine = MagicMock()
+        engine.predict.return_value = [_FakeYoloResult(boxes, {0: "text_bubble"})]
+        mocker.patch("ocr_utils._get_yolo_engine", return_value=engine)
+        mocker.patch("torch.cuda.is_available", return_value=False)
+        _detect_text_regions_in_page(img)
+        assert engine.predict.call_args.kwargs["device"] == "cpu"
+
+    def test_device_auto_usa_gpu_si_libre(self, mocker):
+        """YOLO_DEVICE='auto': CUDA disponible y daemon sin inferir → '0'."""
+        from ocr_utils import _detect_text_regions_in_page, _uocr_inferring
+        img = np.ones((150, 200, 3), dtype=np.uint8) * 200
+        boxes = _FakeYoloBoxes(
+            xyxy=np.array([[10, 20, 90, 80]], dtype=float),
+            confs=np.array([0.92], dtype=float),
+            clss=np.array([0], dtype=float),
+        )
+        engine = MagicMock()
+        engine.predict.return_value = [_FakeYoloResult(boxes, {0: "text_bubble"})]
+        mocker.patch("ocr_utils._get_yolo_engine", return_value=engine)
+        mocker.patch("torch.cuda.is_available", return_value=True)
+        _uocr_inferring.clear()
+        _detect_text_regions_in_page(img)
+        assert engine.predict.call_args.kwargs["device"] == "0"
+
+    def test_gpu_lock_ocupado_espera_y_usa_gpu(self, mocker):
+        """Política determinista (sesión 116): con device resuelto a GPU, YOLO
+        ESPERA (adquisición bloqueante) a que EasyOCR libere _gpu_lock en vez
+        de degradar a CPU — el device es SIEMPRE el mismo → la detección no
+        puede variar entre corridas (causa raíz del trigger no-determinista)."""
+        from ocr_utils import (_detect_text_regions_in_page, _gpu_lock,
+                               _uocr_inferring)
+        import ocr_utils
+        img = np.ones((150, 200, 3), dtype=np.uint8) * 200
+        boxes = _FakeYoloBoxes(
+            xyxy=np.array([[10, 20, 90, 80]], dtype=float),
+            confs=np.array([0.92], dtype=float),
+            clss=np.array([0], dtype=float),
+        )
+        engine = MagicMock()
+        engine.predict.return_value = [_FakeYoloResult(boxes, {0: "text_bubble"})]
+        mocker.patch("ocr_utils._get_yolo_engine", return_value=engine)
+        mocker.patch("torch.cuda.is_available", return_value=True)
+        _uocr_inferring.clear()
+        # Ocupar el lock GPU desde OTRO hilo (como haría EasyOCR en otro
+        # worker): _gpu_lock es un RLock, reentrante por el mismo hilo, así
+        # que la ocupación debe simularse desde un hilo distinto — y el
+        # release debe hacerlo ESE hilo (un RLock solo lo libera su dueño).
+        import threading
+        ocupado = threading.Event()
+        liberar = threading.Event()
+        resultado: dict = {}
+
+        def _ocupar():
+            _gpu_lock.acquire()
+            ocupado.set()
+            liberar.wait(timeout=10)
+            _gpu_lock.release()
+
+        def _correr_yolo():
+            _detect_text_regions_in_page(img)
+            resultado["device"] = engine.predict.call_args.kwargs["device"]
+
+        h = threading.Thread(target=_ocupar, daemon=True)
+        h.start()
+        ocupado.wait(timeout=10)
+        # YOLO corre en otro hilo: con la política bloqueante NO degrada, se
+        # queda esperando el lock (no hay predict todavía).
+        h2 = threading.Thread(target=_correr_yolo, daemon=True)
+        h2.start()
+        time.sleep(0.3)
+        assert engine.predict.call_count == 0
+        liberar.set()
+        h2.join(timeout=10)
+        h.join(timeout=10)
+        assert resultado.get("device") == "0"
+
+    def test_device_resuelto_una_vez_por_proceso(self, mocker):
+        """Sesión 116: el device se resuelve UNA sola vez; una segunda llamada
+        reutiliza el valor cacheado aunque _uocr_inferring cambie después —
+        la garantía de que 2 corridas idénticas toman la misma decisión."""
+        from ocr_utils import _detect_text_regions_in_page, _uocr_inferring
+        import ocr_utils
+        img = np.ones((150, 200, 3), dtype=np.uint8) * 200
+        boxes = _FakeYoloBoxes(
+            xyxy=np.array([[10, 20, 90, 80]], dtype=float),
+            confs=np.array([0.92], dtype=float),
+            clss=np.array([0], dtype=float),
+        )
+        engine = MagicMock()
+        engine.predict.return_value = [_FakeYoloResult(boxes, {0: "text_bubble"})]
+        mocker.patch("ocr_utils._get_yolo_engine", return_value=engine)
+        mocker.patch("torch.cuda.is_available", return_value=True)
+        _uocr_inferring.clear()
+        # Primera llamada: CUDA libre → resuelve GPU y la cachea
+        _detect_text_regions_in_page(img)
+        assert engine.predict.call_args.kwargs["device"] == "0"
+        assert ocr_utils._yolo_device == "0"
+        # Segunda llamada: aunque el daemon "empiece a inferir" después, el
+        # device cacheado NO cambia → determinismo entre corridas
+        _uocr_inferring.set()
+        try:
+            _detect_text_regions_in_page(img)
+        finally:
+            _uocr_inferring.clear()
+        assert engine.predict.call_args.kwargs["device"] == "0"
+
+    def test_gpu_lock_libre_usa_gpu(self, mocker):
+        """Con _gpu_lock libre, CUDA disponible y daemon sin inferir → '0'
+        y el lock se libera tras la inferencia (no queda retenido)."""
+        from ocr_utils import _detect_text_regions_in_page, _gpu_lock
+        img = np.ones((150, 200, 3), dtype=np.uint8) * 200
+        boxes = _FakeYoloBoxes(
+            xyxy=np.array([[10, 20, 90, 80]], dtype=float),
+            confs=np.array([0.92], dtype=float),
+            clss=np.array([0], dtype=float),
+        )
+        engine = MagicMock()
+        engine.predict.return_value = [_FakeYoloResult(boxes, {0: "text_bubble"})]
+        mocker.patch("ocr_utils._get_yolo_engine", return_value=engine)
+        mocker.patch("torch.cuda.is_available", return_value=True)
+        _detect_text_regions_in_page(img)
+        assert engine.predict.call_args.kwargs["device"] == "0"
+        # El lock se adquirió y liberó correctamente: RLock no expone
+        # .locked(), así que verifico con un acquire no-bloqueante que debe
+        # tener éxito (si quedara retenido, devolvería False).
+        assert _gpu_lock.acquire(blocking=False) is True
+        _gpu_lock.release()
+
+    def test_device_auto_error_torch_degrada_cpu(self, mocker):
+        """YOLO_DEVICE='auto': si la consulta CUDA lanza (driver roto), degrada
+        a 'cpu' sin romper el pipeline (except → device='cpu')."""
+        from ocr_utils import _detect_text_regions_in_page
+        img = np.ones((150, 200, 3), dtype=np.uint8) * 200
+        boxes = _FakeYoloBoxes(
+            xyxy=np.array([[10, 20, 90, 80]], dtype=float),
+            confs=np.array([0.92], dtype=float),
+            clss=np.array([0], dtype=float),
+        )
+        engine = MagicMock()
+        engine.predict.return_value = [_FakeYoloResult(boxes, {0: "text_bubble"})]
+        mocker.patch("ocr_utils._get_yolo_engine", return_value=engine)
+        mocker.patch("torch.cuda.is_available", side_effect=RuntimeError("cuda init failed"))
+        _detect_text_regions_in_page(img)
+        assert engine.predict.call_args.kwargs["device"] == "cpu"
+
+    def test_filtra_clases_no_texto(self, mocker):
+        """Clases como 'person'/'face' se ignoran; solo texto (bubble/caption/title)."""
+        from ocr_utils import _detect_text_regions_in_page
+        img = np.ones((150, 200, 3), dtype=np.uint8) * 200
+        boxes = _FakeYoloBoxes(
+            xyxy=np.array([[10, 20, 90, 80], [30, 90, 120, 140]], dtype=float),
+            confs=np.array([0.92, 0.95], dtype=float),
+            clss=np.array([0, 1], dtype=float),
+        )
+        result = _FakeYoloResult(boxes, {0: "speech bubble", 1: "person"})
+        engine = MagicMock()
+        engine.predict.return_value = [result]
+        mocker.patch("ocr_utils._get_yolo_engine", return_value=engine)
+
+        regions = _detect_text_regions_in_page(img)
+
+        assert len(regions) == 1
+        assert regions[0]["label"] == "speech bubble"
+
+    def test_filtra_region_minima(self, mocker):
+        """Región diminuta (< 0.15% del área de la página) se descarta."""
+        from ocr_utils import _detect_text_regions_in_page
+        img = np.ones((150, 200, 3), dtype=np.uint8) * 200  # área = 30000
+        boxes = _FakeYoloBoxes(
+            xyxy=np.array([[10, 20, 15, 25]], dtype=float),  # 5x5 = 25 < 45 (0.15%)
+            confs=np.array([0.9], dtype=float),
+            clss=np.array([0], dtype=float),
+        )
+        result = _FakeYoloResult(boxes, {0: "speech bubble"})
+        engine = MagicMock()
+        engine.predict.return_value = [result]
+        mocker.patch("ocr_utils._get_yolo_engine", return_value=engine)
+
+        regions = _detect_text_regions_in_page(img)
+        assert regions == []
+
+    def test_sin_engine_devuelve_vacio(self, mocker):
+        """ultralytics/modelo no disponible → degradación segura a [] (el tier
+        simplemente no aporta, el pipeline sigue con blobs OpenCV)."""
+        from ocr_utils import _detect_text_regions_in_page
+        img = np.ones((150, 200, 3), dtype=np.uint8) * 200
+        mocker.patch("ocr_utils._get_yolo_engine", return_value=None)
+        assert _detect_text_regions_in_page(img) == []
+
+    def test_error_de_inferencia_devuelve_vacio(self, mocker):
+        """Excepción en predict → [] sin crashear."""
+        from ocr_utils import _detect_text_regions_in_page
+        img = np.ones((150, 200, 3), dtype=np.uint8) * 200
+        engine = MagicMock()
+        engine.predict.side_effect = RuntimeError("onnx falló")
+        mocker.patch("ocr_utils._get_yolo_engine", return_value=engine)
+        assert _detect_text_regions_in_page(img) == []
+
+
+class TestRotationInfoRutaC:
+    """Fase 6: rotation_info se pasa SOLO en los crops de la Ruta C, no en el
+    tier 1 de página completa (costo ~4x en el camino caliente)."""
+
+    def test_run_ocr_on_image_sin_rotation_por_defecto(self, small_bgr):
+        """Tier 1: sin rotation_info → readtext NO recibe el kwarg."""
+        from ocr_utils import _run_ocr_on_image
+        mock_reader = MagicMock()
+        mock_reader.readtext.return_value = []
+        with patch("ocr_utils._ocr_semaphore.acquire", return_value=True):
+            with patch("ocr_utils._ocr_semaphore.release"):
+                _run_ocr_on_image(mock_reader, small_bgr)
+        _, kwargs = mock_reader.readtext.call_args
+        assert "rotation_info" not in kwargs
+
+    def test_run_ocr_on_image_propaga_rotation(self, small_bgr):
+        """Con rotation_info explícito → readtext lo recibe como lista.
+        Valores ENTEROS: easyocr pasa el ángulo a scipy.ndimage.rotate y un
+        string ('90') rompe el casting de cosdg con numpy 2.5/scipy 1.17."""
+        from ocr_utils import _run_ocr_on_image
+        mock_reader = MagicMock()
+        mock_reader.readtext.return_value = []
+        with patch("ocr_utils._ocr_semaphore.acquire", return_value=True):
+            with patch("ocr_utils._ocr_semaphore.release"):
+                _run_ocr_on_image(mock_reader, small_bgr,
+                                  rotation_info=(0, 90, 180, 270))
+        _, kwargs = mock_reader.readtext.call_args
+        assert kwargs["rotation_info"] == [0, 90, 180, 270]
+
+    def test_ruta_c_pasa_rotation_info(self, mocker):
+        """La Ruta C (camino EasyOCR) llama _run_ocr_on_image CON rotation_info
+        — EasyOCR rota internamente los crops y devuelve coords originales."""
+        from ocr_utils import _recover_regions_with_easyocr
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        mock_reader = MagicMock()
+        mock_reader.readtext.return_value = []
+        run_ocr_mock = mocker.patch("ocr_utils._run_ocr_on_image",
+                                    return_value=[])
+        mocker.patch("ocr_utils._get_ocr_reader", return_value=mock_reader)
+        mocker.patch("ocr_utils._classify_rotate_crop",
+                     side_effect=lambda x: (x, False, 0.0))
+        mocker.patch("ocr_utils._group_and_merge_blocks",
+                     side_effect=lambda b, h: b)
+
+        _recover_regions_with_easyocr(img, regions, upscale=3.5)
+
+        assert run_ocr_mock.called
+        rot = run_ocr_mock.call_args.kwargs.get("rotation_info")
+        # Enteros (no strings): easyocr pasa el ángulo a scipy.ndimage.rotate
+        # y un string rompe el casting de cosdg con numpy 2.5/scipy 1.17
+        assert rot is not None and 90 in rot and 270 in rot
