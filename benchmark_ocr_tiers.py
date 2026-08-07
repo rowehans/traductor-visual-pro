@@ -21,7 +21,7 @@ from ocr_utils import (
     _pre_filter_image, _preprocess_enhanced, _binarize_image,
 )
 
-PDF_PATH = "Capítulo 43 de Cómo criar villanos correctamente _ Olympus Scanlation_compressed.pdf"
+PDF_PATH = "Capítulo 43 de Cómo criar villanos correctamente.pdf"
 PAGES = [3, 11, 12]
 
 SEP = "=" * 70
