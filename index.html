@@ -95,6 +95,17 @@
           <button id="autoDetectPage" class="accent-btn" title="Traducir página actual (T)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10"/><path d="M12 6v6l4 2"/></svg><span>Traducir Página</span></button>
           <button id="autoTranslateAll" class="secondary-btn" title="Traducir todo el documento (Shift+T)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2"/><path d="M8 8h12"/><path d="M8 12h12"/><path d="M8 16h8"/></svg><span>Traducir Todo</span></button>
         </div>
+        <div class="control-grid" style="margin-top: 12px;">
+          <label style="grid-column: 1 / -1;" title="Motor de reconocimiento de texto. Automático (recomendado): híbrido EasyOCR+RapidOCR y Unlimited-OCR (GPU 4-bit) solo cuando la página es difícil (texto artístico, pocos bloques). Unlimited-OCR forzado es más preciso en arte pero mucho más lento (~1-8 min/página). EasyOCR es rápido. Si Unlimited-OCR no está disponible (modelo cargando o VRAM insuficiente) se degrada a EasyOCR automáticamente.">
+            Motor OCR
+            <select id="ocrEngine">
+              <option value="fusion" selected>Automático (recomendado)</option>
+              <option value="unlimited">Fuerza Unlimited-OCR (preciso)</option>
+              <option value="easyocr">EasyOCR (rápido)</option>
+            </select>
+          </label>
+          <span id="ocrEngineStatus" class="ocr-engine-status" style="grid-column: 1 / -1;">U-OCR: verificando…</span>
+        </div>
       </section>
 
       <!-- ESTILOS DE BURBUJA / EDICIÓN DE TEXTO -->

@@ -724,6 +724,50 @@ input[type="number"]::-webkit-inner-spin-button {
 .control-row { display: flex; gap: 14px; }
 .control-row > * { flex: 1; }
 
+/* Estado del motor OCR (Unlimited-OCR daemon) */
+.ocr-engine-status {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--border);
+  background: var(--bg-input);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: var(--transition);
+}
+.ocr-engine-status::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  flex-shrink: 0;
+}
+.ocr-engine-status.ready {
+  color: var(--success, #4ade80);
+  border-color: rgba(74, 222, 128, 0.4);
+}
+.ocr-engine-status.ready::before { background: #4ade80; box-shadow: 0 0 6px rgba(74, 222, 128, 0.8); }
+.ocr-engine-status.loading {
+  color: var(--warning, #fbbf24);
+  border-color: rgba(251, 191, 36, 0.4);
+}
+.ocr-engine-status.loading::before {
+  background: #fbbf24;
+  animation: ocrStatusPulse 1.2s ease-in-out infinite;
+}
+.ocr-engine-status.offline {
+  color: var(--danger, #f87171);
+  border-color: rgba(248, 113, 113, 0.4);
+}
+.ocr-engine-status.offline::before { background: #f87171; }
+@keyframes ocrStatusPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 /* =============================================================================
    BOTONES - Sistema completo
    ============================================================================= */

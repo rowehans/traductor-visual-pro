@@ -135,6 +135,7 @@ const state = {
   inpaintedBgByPage: new Map(), // Caché de imágenes de fondo limpias por página
   abortTranslation: false, // Bandera para cancelar traducción automática
   translationPaused: false, // Bandera para pausar/reanudar traducción
+  ocrFallbackToastShown: false, // Bandera: aviso de fallback Unlimited-OCR ya mostrado (una vez por lote)
   theme: "dark",         // Tema actual: 'dark' o 'light'
 };
 
@@ -1225,8 +1226,75 @@ function showProgress(label, done, total, startedAt) {
 // formatDuration, canvasToBase64, loadBase64IntoCanvas are imported from ./js/utils.js
 
 // Procesar página completa en el servidor (OCR + inpainting + traducción)
-async function serverProcessPage(pageNo = state.page) {
-  console.log(`[serverProcessPage] INICIO page=${pageNo}, cleanBg=${cleanBgCanvas.width}x${cleanBgCanvas.height}`);
+// Motor OCR seleccionado en la UI (selector #ocrEngine)
+function getSelectedOcrMode() {
+  const sel = $("#ocrEngine");
+  if (!sel) return "fusion";
+  return sel.value || "fusion";
+}
+
+// ── doc_id (sesión 126): scope por DOCUMENTO de los caches de decisión ──
+// del servidor (trigger + §8.4.1). La sesión 124 midió 94% de colisión de
+// firma de layout entre capítulos de la MISMA serie — sin scope, abrir el
+// capítulo 47 después del 43 haría que las páginas del 47 hereden las
+// decisiones del 43 (VLM suprimido en diálogo artístico). Prefijar la clave
+// con un hash estable del nombre del archivo aísla cada documento. Se envía
+// como "doc_id" en el payload de /api/process-page.
+function getDocId() {
+  const name = (docName?.textContent || "").trim() || "documento";
+  let h = 0x811c9dc5;
+  for (let i = 0; i < name.length; i++) {
+    h ^= name.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return "ui" + h.toString(16);
+}
+
+// Timer de polling del estado U-OCR (activo solo mientras el modelo carga)
+let _uocrStatusTimer = null;
+function _stopUocrPolling() {
+  if (_uocrStatusTimer) { clearInterval(_uocrStatusTimer); _uocrStatusTimer = null; }
+}
+
+// Actualiza el estado del daemon Unlimited-OCR en la UI (selector + badge)
+async function updateOcrEngineStatus() {
+  const statusEl = $("#ocrEngineStatus");
+  if (!statusEl) return;
+  try {
+    const resp = await fetch("/api/health", { method: "GET", signal: AbortSignal.timeout(5000) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const state = data?.unlimited_ocr || "offline";
+    const loadS = data?.uocr_load_s;
+    if (state === "ready") {
+      _stopUocrPolling();
+      statusEl.textContent = `U-OCR: listo${loadS ? ` (carga ${loadS.toFixed(0)}s)` : ""}`;
+      statusEl.className = "ocr-engine-status ready";
+    } else if (state === "loading") {
+      statusEl.textContent = "U-OCR: cargando modelo en background…";
+      statusEl.className = "ocr-engine-status loading";
+      // Poll cada 20s mientras carga (el modelo tarda ~8 min; el badge se
+      // actualiza solo cuando queda listo, sin que el usuario toque nada)
+      if (!_uocrStatusTimer) {
+        _uocrStatusTimer = setInterval(() => updateOcrEngineStatus(), 20000);
+      }
+    } else if (state === "error") {
+      _stopUocrPolling();
+      statusEl.textContent = "U-OCR: error — se usará EasyOCR";
+      statusEl.className = "ocr-engine-status offline";
+    } else {
+      _stopUocrPolling();
+      statusEl.textContent = "U-OCR: offline (daemon no arrancado)";
+      statusEl.className = "ocr-engine-status offline";
+    }
+  } catch (e) {
+    _stopUocrPolling();
+    statusEl.textContent = "U-OCR: no se pudo verificar";
+    statusEl.className = "ocr-engine-status offline";
+  }
+}
+
+async function serverProcessPage(pageNo = state.page) {  console.log(`[serverProcessPage] INICIO page=${pageNo}, cleanBg=${cleanBgCanvas.width}x${cleanBgCanvas.height}`);
   
   // SIEMPRE re-renderizar la página para garantizar un canvas limpio
   // y evitar enviar al servidor una imagen con artefactos de páginas anteriores
@@ -1260,7 +1328,8 @@ async function serverProcessPage(pageNo = state.page) {
     image: imageB64,
     target: targetLang.value,
     source: srcPage,
-    ocr_mode: "auto",
+    ocr_mode: getSelectedOcrMode(),
+    doc_id: getDocId(),
   };
 
   // Fetch con timeout de 120 segundos
@@ -1296,7 +1365,16 @@ async function serverProcessPage(pageNo = state.page) {
     );
   }
 
-  console.log(`[serverProcessPage] Respuesta: ${result.blocks?.length || 0} bloques, inpainted=${!!result.inpainted_image}`);
+  // Aviso informativo si se pidió Unlimited-OCR pero el servidor degradó a EasyOCR.
+  // Solo una vez por lote (autoTranslateAllPages resetea la bandera al iniciar).
+  if (getSelectedOcrMode() === "unlimited" && result?.ocr_engine && result.ocr_engine !== "unlimited") {
+    if (!state.ocrFallbackToastShown) {
+      state.ocrFallbackToastShown = true;
+      showToast("Unlimited-OCR no disponible (modelo cargando o VRAM insuficiente); se usó EasyOCR", "warn", 5000);
+    }
+  }
+
+  console.log(`[serverProcessPage] Respuesta: ${result.blocks?.length || 0} bloques, inpainted=${!!result.inpainted_image}, ocr_engine=${result?.ocr_engine}`);
   return result; // { inpainted_image, blocks }
 }
 
@@ -1437,6 +1515,7 @@ async function autoTranslateAllPages() {
   
   state.abortTranslation = false;
   state.translationPaused = false;
+  state.ocrFallbackToastShown = false;
   const startedAt = Date.now();
   const originalPage = state.page;
   const total = state.kind === "pdf" ? state.pageCount : 1;
@@ -2617,10 +2696,14 @@ translateBtn.addEventListener("click", async () => {
       const resp = await fetch("/api/process-page", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: cropB64, target: targetLang.value, source: sourceLang.value || "auto", ocr_mode: "auto" })
+        body: JSON.stringify({ image: cropB64, target: targetLang.value, source: sourceLang.value || "auto", ocr_mode: getSelectedOcrMode(), doc_id: getDocId() })
       });
       if (resp.ok) {
         const resData = await resp.json();
+        // Aviso informativo si se pidió Unlimited-OCR pero el servidor degradó a EasyOCR
+        if (getSelectedOcrMode() === "unlimited" && resData?.ocr_engine && resData.ocr_engine !== "unlimited") {
+          showToast("Unlimited-OCR no disponible; se usó EasyOCR", "warn", 5000);
+        }
         if (resData.blocks && resData.blocks.length > 0) {
           const joinedSource = resData.blocks.map(b => b.source || b.text).join(" ");
           const joinedTrans = resData.blocks.map(b => b.translated || b.text).join(" ");
@@ -2809,6 +2892,12 @@ fitPage.addEventListener("click", fitPageToStage);// Reset zoom on double-click 
 function bootApp() {
   overlay.className = "overlay drawing";
   setStatus("Listo para comenzar. Carga un archivo PDF o Imagen.");
+  // Estado del motor Unlimited-OCR (daemon precargado en background)
+  const ocrSel = $("#ocrEngine");
+  if (ocrSel) {
+    ocrSel.addEventListener("change", updateOcrEngineStatus);
+  }
+  updateOcrEngineStatus();
   //console.log("[BOOT] Event listeners attached, fileInput:", !!fileInput);
   if (fileInput) {
     //console.log("[BOOT] fileInput.accept:", fileInput.accept);
