@@ -842,6 +842,14 @@ class OCRManager:
         negativa en el cache §8.4.1 para que páginas repetitivas con la misma
         firma no re-disparen la inferencia VLM.
         """
+        # Gate global UOCR_ENABLED (sesión 143): anula SOLO el refuerzo VLM
+        # (el CLI manga_ocr.py lo desactiva por defecto — extracción pura sin
+        # inferencias de 2-8 min/pág). A diferencia de disable_uocr, YOLO /
+        # Ruta C / cls de rotación siguen activos. Se lee en runtime para que
+        # mutar config desde el caller surta efecto.
+        from config import UOCR_ENABLED
+        if not UOCR_ENABLED:
+            return []
         try:
             ublocks, uimage_panels, _ = self._unlimited_ocr(img_bgr)
             # ── Ruta C: re-OCR a nivel de GLOBO (OpenCV blobs + EasyOCR 3.5x) ──

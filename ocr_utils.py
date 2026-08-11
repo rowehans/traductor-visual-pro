@@ -374,6 +374,384 @@ def _detect_text_regions_in_page(img_bgr: _Img) -> list[dict[str, Any]]:
         return []
 
 
+# ─── Detector de texto de cómic (comic-text-detector ONNX, CPU) ──
+# Tier 3.6 de detección: complementa al YOLO de globos (Fase 6) con dmMaze
+# comic-text-detector (port ONNX de mayocream, GPL-3.0) — detecta REGIONES de
+# texto incluyendo texto SIN globo (flotante sobre el dibujo, pensamientos,
+# títulos artísticos) que los OCR y el detector de globos pierden. Corre 100%
+# en CPU (onnxruntime) → 0 VRAM extra; batch=1 estricto (firma fija 1024²).
+#
+# Post-proceso replicado de dmMaze (inference.py, db_utils.py, yolov5_utils.py):
+#   blk  → conf=obj*cls + NMS por clase + xywh→xyxy (head YOLOv5)
+#   det  → binarizar + contornos + minAreaRect + unclip (head DBNet)
+#   seg  → binarizar + contornos NO cubiertos por blk/det (máscara UNet)
+# Los 3 heads se fusionan en una lista de regiones del formato de la Ruta C.
+#
+# DIFERENCIA deliberada vs dmMaze: la inversa del letterbox aquí es EXACTA
+# (resta el padding superior/izquierdo y escala por el CONTENIDO real). El
+# inference.py original multiplica por resize_ratio sin restar el padding, lo
+# que desplaza las cajas ~15-20% de la página en mangas verticales (los crops
+# alimentarían a la Ruta C con coordenadas erróneas).
+_comic_detector_engine: Any = None
+_comic_detector_lock: threading.Lock = threading.Lock()
+_COMIC_DETECTOR_IMGSZ: int = 1024
+_COMIC_DETECTOR_CLS_NAMES: tuple[str, str] = ("eng", "ja")
+_COMIC_DETECTOR_PAD_COLOR: int = 114
+
+
+def _get_comic_detector_engine() -> Any:
+    """Lazy-load del detector de texto de cómic (onnxruntime, CPU) con
+    thread-safety.
+
+    Devuelve None si onnxruntime no está instalado, el modelo no existe,
+    COMIC_DETECTOR_ENABLED=False, o la carga falla — los callers degradan a []
+    sin romper el pipeline (mismo patrón que _get_yolo_engine).
+    """
+    global _comic_detector_engine
+    if _comic_detector_engine is not None:
+        return _comic_detector_engine
+    with _comic_detector_lock:
+        if _comic_detector_engine is not None:
+            return _comic_detector_engine
+        try:
+            from config import COMIC_DETECTOR_ENABLED, COMIC_DETECTOR_MODEL_PATH
+            if not COMIC_DETECTOR_ENABLED:
+                return None
+            import os
+            if not os.path.exists(COMIC_DETECTOR_MODEL_PATH):
+                print(f"[CTD] Modelo no existe ({COMIC_DETECTOR_MODEL_PATH}); "
+                      "tier comic-text-detector degradado a []")
+                return None
+            # Import DINÁMICO: onnxruntime no se importa al cargar ocr_utils
+            # (el .exe no lo necesita si el tier no aporta; si falta, degrada).
+            import onnxruntime
+            session = onnxruntime.InferenceSession(
+                COMIC_DETECTOR_MODEL_PATH,
+                providers=["CPUExecutionProvider"],
+            )
+            _comic_detector_engine = session
+            print(f"[CTD] Detector de texto de cómic listo "
+                  f"(modelo={COMIC_DETECTOR_MODEL_PATH})")
+        except Exception as e:
+            print(f"[CTD] No disponible ({e}); tier degradado a []")
+            return None
+    return _comic_detector_engine
+
+
+def _comic_detector_letterbox(img_bgr: _Img) -> tuple[_Img, int, int, float, float]:
+    """Letterbox YOLOv5 (auto=False, stride=64, relleno 114) a 1024×1024.
+
+    Devuelve (imagen 1024², left, top, scale_x, scale_y): left/top es el
+    padding superior-izquierdo en el espacio 1024, y scale_x/scale_y mapean el
+    CONTENIDO al tamaño original — x_orig = (x_pad - left) * scale_x. Esta
+    inversa EXACTA del letterbox corrige el desplazamiento que el inference.py
+    de dmMaze omite (multiplica por resize_ratio sin restar el padding).
+    """
+    imgsz = _COMIC_DETECTOR_IMGSZ
+    h, w = img_bgr.shape[:2]
+    r = min(imgsz / h, imgsz / w)
+    new_unpad = (int(round(w * r)), int(round(h * r)))  # (W', H')
+    dw = (imgsz - new_unpad[0]) / 2.0
+    dh = (imgsz - new_unpad[1]) / 2.0
+    resized = img_bgr
+    if (h, w) != (new_unpad[1], new_unpad[0]):
+        resized = cv2.resize(img_bgr, new_unpad,
+                             interpolation=cv2.INTER_LINEAR)
+    left = int(round(dw - 0.1))
+    top = int(round(dh - 0.1))
+    bottom = int(round(dh + 0.1))
+    right = int(round(dw + 0.1))
+    padded = cv2.copyMakeBorder(resized, top, bottom, left, right,
+                                cv2.BORDER_CONSTANT,
+                                value=(_COMIC_DETECTOR_PAD_COLOR,) * 3)
+    scale_x = w / new_unpad[0] if new_unpad[0] else 1.0
+    scale_y = h / new_unpad[1] if new_unpad[1] else 1.0
+    return padded, left, top, scale_x, scale_y
+
+
+def _comic_detector_nms(boxes: np.ndarray, scores: np.ndarray,
+                        classes: np.ndarray, iou_thresh: float) -> list[int]:
+    """NMS por clase sobre cajas xyxy (mismo comportamiento que el
+    non_max_suppression de yolov5_utils.py de dmMaze: solo suprime entre
+    cajas de la MISMA clase). Devuelve índices en orden de confianza
+    descendente."""
+    order = np.argsort(-scores)
+    keep: list[int] = []
+    while order.size:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+        rest = order[1:]
+        same_cls = classes[rest] == classes[i]
+        b = boxes[i]
+        r = boxes[rest]
+        xx1 = np.maximum(b[0], r[:, 0])
+        yy1 = np.maximum(b[1], r[:, 1])
+        xx2 = np.minimum(b[2], r[:, 2])
+        yy2 = np.minimum(b[3], r[:, 3])
+        inter = np.clip(xx2 - xx1, 0, None) * np.clip(yy2 - yy1, 0, None)
+        area_b = max(b[2] - b[0], 0.0) * max(b[3] - b[1], 0.0)
+        area_r = np.clip(r[:, 2] - r[:, 0], 0, None) * np.clip(r[:, 3] - r[:, 1], 0, None)
+        iou = inter / (area_b + area_r - inter + 1e-9)
+        order = rest[~(same_cls & (iou > iou_thresh))]
+    return keep
+
+
+def _comic_detector_box_score(prob_map: np.ndarray,
+                              contour_pts: np.ndarray) -> float:
+    """Media del mapa de probabilidad dentro del contorno (box_score_fast de
+    db_utils.py de dmMaze): máscara binaria del polígono sobre su bbox."""
+    if contour_pts.ndim != 2 or contour_pts.shape[1] != 2 or contour_pts.shape[0] < 3:
+        return 0.0
+    h, w = prob_map.shape[:2]
+    pts = contour_pts.astype(np.float64)
+    xmin = int(np.clip(np.floor(pts[:, 0].min()), 0, w - 1))
+    xmax = int(np.clip(np.ceil(pts[:, 0].max()), 0, w - 1))
+    ymin = int(np.clip(np.floor(pts[:, 1].min()), 0, h - 1))
+    ymax = int(np.clip(np.ceil(pts[:, 1].max()), 0, h - 1))
+    mask = np.zeros((ymax - ymin + 1, xmax - xmin + 1), dtype=np.uint8)
+    shifted = pts.copy()
+    shifted[:, 0] -= xmin
+    shifted[:, 1] -= ymin
+    cv2.fillPoly(mask, shifted.reshape(1, -1, 2).astype(np.int32), 1)
+    if mask.sum() == 0:
+        return 0.0
+    return float(cv2.mean(prob_map[ymin:ymax + 1, xmin:xmax + 1], mask)[0])
+
+
+def _comic_detector_map_box(x0p: float, y0p: float, x1p: float, y1p: float,
+                            left: int, top: int, scale_x: float,
+                            scale_y: float, im_w: int, im_h: int,
+                            min_area: float) -> tuple[int, int, int, int] | None:
+    """Mapea una caja del espacio 1024 (padded) a coordenadas de página con la
+    inversa EXACTA del letterbox, recorta a la página y filtra por tamaño
+    mínimo. Devuelve (x, y, w, h) o None si la caja es inválida/diminuta."""
+    x0o = int(round((x0p - left) * scale_x))
+    y0o = int(round((y0p - top) * scale_y))
+    x1o = int(round((x1p - left) * scale_x))
+    y1o = int(round((y1p - top) * scale_y))
+    x0o, y0o = max(x0o, 0), max(y0o, 0)
+    x1o, y1o = min(x1o, im_w), min(y1o, im_h)
+    w_ = x1o - x0o
+    h_ = y1o - y0o
+    if w_ < 8 or h_ < 8 or (w_ * h_) < min_area:
+        return None
+    return x0o, y0o, w_, h_
+
+
+def _comic_detector_blk_regions(blk: np.ndarray, left: int, top: int,
+                                scale_x: float, scale_y: float,
+                                conf_thresh: float, nms_thresh: float,
+                                max_regions: int, min_area: float,
+                                im_w: int, im_h: int) -> list[dict[str, Any]]:
+    """Head YOLOv5 (blk): [cx,cy,w,h,obj,cls...] → conf=obj*cls → NMS por
+    clase → regiones de BLOQUE de texto en coordenadas de página. Réplica de
+    postprocess_yolo + non_max_suppression de dmMaze (con la inversa del
+    letterbox EXACTA)."""
+    pred = blk[0] if blk.ndim == 3 else blk  # [N, 7]
+    if pred.size == 0:
+        return []
+    obj = pred[:, 4]
+    cls_scores = pred[:, 5:] if pred.shape[1] > 5 else np.zeros_like(obj)
+    scores = obj * cls_scores.max(axis=1)
+    cand = scores >= conf_thresh
+    if not cand.any():
+        return []
+    p = pred[cand]
+    cx, cy, w, h = p[:, 0], p[:, 1], p[:, 2], p[:, 3]
+    boxes = np.stack([cx - w / 2.0, cy - h / 2.0,
+                      cx + w / 2.0, cy + h / 2.0], axis=1)
+    boxes = np.clip(boxes, 0, _COMIC_DETECTOR_IMGSZ)
+    cls = cls_scores[cand].argmax(axis=1)
+    sc = scores[cand]
+    regions: list[dict[str, Any]] = []
+    for i in _comic_detector_nms(boxes, sc, cls, nms_thresh):
+        x0p, y0p, x1p, y1p = boxes[i]
+        mapped = _comic_detector_map_box(x0p, y0p, x1p, y1p, left, top,
+                                         scale_x, scale_y, im_w, im_h,
+                                         min_area)
+        if mapped is None:
+            continue
+        x0o, y0o, w_, h_ = mapped
+        cls_id = int(cls[i])
+        label = (_COMIC_DETECTOR_CLS_NAMES[cls_id]
+                 if cls_id < len(_COMIC_DETECTOR_CLS_NAMES) else "unknown")
+        regions.append({
+            "x": x0o, "y": y0o, "w": w_, "h": h_,
+            "roundness": 0.0, "border_ratio": 0.0, "dark_ratio": 0.0,
+            "source": "ctd", "label": f"ctd_{label}",
+            "cls_conf": float(sc[i]),
+        })
+        if len(regions) >= max_regions:
+            break
+    return regions
+
+
+def _comic_detector_det_regions(det: np.ndarray, left: int, top: int,
+                                scale_x: float, scale_y: float,
+                                mask_thresh: float, score_thresh: float,
+                                unclip_ratio: float, max_regions: int,
+                                min_area: float, im_w: int,
+                                im_h: int) -> list[dict[str, Any]]:
+    """Head DBNet (det): mapa shrink → binarizar → contornos → minAreaRect →
+    unclip → score medio del mapa → regiones de LÍNEA de texto. Réplica del
+    SegDetectorRepresenter de dmMaze (boxes_from_bitmap + unclip con
+    pyclipper), simplificado a cajas axis-aligned — los crops de la Ruta C son
+    axis-aligned de todos modos, y así se evitan las dependencias
+    pyclipper/shapely."""
+    lines_map = det[0, 0] if det.ndim == 4 else det[0]
+    binary = (lines_map > mask_thresh).astype(np.uint8) * 255
+    contours, _ = cv2.findContours(binary, cv2.RETR_LIST,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    regions: list[dict[str, Any]] = []
+    for contour in contours[:1000]:
+        c = contour.squeeze(1)
+        if c.ndim != 2 or c.shape[1] != 2 or c.shape[0] < 3:
+            continue
+        x0p = float(c[:, 0].min())
+        y0p = float(c[:, 1].min())
+        x1p = float(c[:, 0].max())
+        y1p = float(c[:, 1].max())
+        area = (x1p - x0p) * (y1p - y0p)
+        perim = 2.0 * ((x1p - x0p) + (y1p - y0p))
+        if area <= 0 or perim <= 0:
+            continue
+        # Unclip DBNet: expande por distance = area * ratio / perimetro
+        dist = area * unclip_ratio / perim
+        x0p, y0p = max(x0p - dist, 0.0), max(y0p - dist, 0.0)
+        x1p = min(x1p + dist, _COMIC_DETECTOR_IMGSZ)
+        y1p = min(y1p + dist, _COMIC_DETECTOR_IMGSZ)
+        score = _comic_detector_box_score(lines_map, c)
+        if score < score_thresh:
+            continue
+        mapped = _comic_detector_map_box(x0p, y0p, x1p, y1p, left, top,
+                                         scale_x, scale_y, im_w, im_h,
+                                         min_area)
+        if mapped is None:
+            continue
+        x0o, y0o, w_, h_ = mapped
+        regions.append({
+            "x": x0o, "y": y0o, "w": w_, "h": h_,
+            "roundness": 0.0, "border_ratio": 0.0, "dark_ratio": 0.0,
+            "source": "ctd", "label": "ctd_line",
+            "cls_conf": float(score),
+        })
+        if len(regions) >= max_regions:
+            break
+    return regions
+
+
+def _comic_detector_seg_regions(seg: np.ndarray, left: int, top: int,
+                                scale_x: float, scale_y: float,
+                                mask_thresh: float,
+                                existing: list[tuple[int, int, int, int]],
+                                max_regions: int, min_area: float,
+                                im_w: int, im_h: int) -> list[dict[str, Any]]:
+    """Head UNet (seg): máscara de texto → binarizar → contornos → regiones de
+    MÁSCARA. Solo se conservan los blobs cuyo CENTRO no cae dentro de una
+    región blk/det ya detectada (la máscara es el head de mayor cobertura y
+    sirve de red de seguridad para texto decorativo sin caja)."""
+    mask = seg[0, 0] if seg.ndim == 4 else seg[0]
+    binary = (mask > mask_thresh).astype(np.uint8) * 255
+    contours, _ = cv2.findContours(binary, cv2.RETR_LIST,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    regions: list[dict[str, Any]] = []
+    for contour in contours[:1000]:
+        c = contour.squeeze(1)
+        if c.ndim != 2 or c.shape[1] != 2 or c.shape[0] < 3:
+            continue
+        cx = float(c[:, 0].mean())
+        cy = float(c[:, 1].mean())
+        x0o = int(round((cx - left) * scale_x))
+        y0o = int(round((cy - top) * scale_y))
+        if any(x0 <= x0o <= x0 + w_ and y0 <= y0o <= y0 + h_
+               for (x0, y0, w_, h_) in existing):
+            continue
+        x0p = float(c[:, 0].min())
+        y0p = float(c[:, 1].min())
+        x1p = float(c[:, 0].max())
+        y1p = float(c[:, 1].max())
+        score = _comic_detector_box_score(mask, c)
+        mapped = _comic_detector_map_box(x0p, y0p, x1p, y1p, left, top,
+                                         scale_x, scale_y, im_w, im_h,
+                                         min_area)
+        if mapped is None:
+            continue
+        x0o, y0o, w_, h_ = mapped
+        regions.append({
+            "x": x0o, "y": y0o, "w": w_, "h": h_,
+            "roundness": 0.0, "border_ratio": 0.0, "dark_ratio": 0.0,
+            "source": "ctd", "label": "ctd_mask",
+            "cls_conf": float(score),
+        })
+        if len(regions) >= max_regions:
+            break
+    return regions
+
+
+def _detect_text_regions_comic_detector(img_bgr: _Img) -> list[dict[str, Any]]:
+    """Detecta regiones de texto de cómic (texto SIN globo: flotante sobre el
+    dibujo, pensamientos, títulos artísticos) con comic-text-detector ONNX.
+
+    Tier 3.6 de detección — complementa a _detect_text_regions_in_page (YOLO
+    de globos, Fase 6). Corre 100% en CPU (onnxruntime) → 0 VRAM extra; una
+    imagen a la vez (batch=1, firma fija 1024²).
+
+    Usa los 3 heads del modelo (blk/seg/det) con el post-proceso de dmMaze
+    (NMS por clase, DBNet unclip, umbrales por defecto) y devuelve regiones en
+    el MISMO formato que la Ruta C espera ({x, y, w, h, roundness, ...},
+    source='ctd') para que el re-OCR las consuma sin cambios.
+
+    Degradación segura: sin onnxruntime, sin modelo, o error → [] (el tier
+    simplemente no aporta).
+    """
+    engine = _get_comic_detector_engine()
+    if engine is None:
+        return []
+    from config import (COMIC_DETECTOR_CONF_THRESH, COMIC_DETECTOR_NMS_THRESH,
+                        COMIC_DETECTOR_MASK_THRESH,
+                        COMIC_DETECTOR_LINE_SCORE_THRESH,
+                        COMIC_DETECTOR_UNCLIP_RATIO,
+                        COMIC_DETECTOR_MAX_REGIONS,
+                        COMIC_DETECTOR_MIN_AREA_RATIO)
+    try:
+        im_h, im_w = img_bgr.shape[:2]
+        img1024, left, top, scale_x, scale_y = _comic_detector_letterbox(img_bgr)
+        # HWC → CHW y canales BGR tal cual (dmMaze: transposición + reversa =
+        # la red fue entrenada con BGR — el input NO lleva swap a RGB)
+        blob = np.ascontiguousarray(img1024.transpose((2, 0, 1))[::-1])
+        blob = blob[np.newaxis, ...].astype(np.float32) / 255.0
+        input_name = engine.get_inputs()[0].name
+        blk, seg, det = engine.run(None, {input_name: blob})
+        blk = np.asarray(blk)
+        seg = np.asarray(seg)
+        det = np.asarray(det)
+        min_area = (im_h * im_w) * COMIC_DETECTOR_MIN_AREA_RATIO
+        blk_regions = _comic_detector_blk_regions(
+            blk, left, top, scale_x, scale_y, COMIC_DETECTOR_CONF_THRESH,
+            COMIC_DETECTOR_NMS_THRESH, COMIC_DETECTOR_MAX_REGIONS, min_area,
+            im_w, im_h)
+        det_regions = _comic_detector_det_regions(
+            det, left, top, scale_x, scale_y, COMIC_DETECTOR_MASK_THRESH,
+            COMIC_DETECTOR_LINE_SCORE_THRESH, COMIC_DETECTOR_UNCLIP_RATIO,
+            COMIC_DETECTOR_MAX_REGIONS, min_area, im_w, im_h)
+        existing = [(r["x"], r["y"], r["w"], r["h"])
+                    for r in blk_regions + det_regions]
+        seg_regions = _comic_detector_seg_regions(
+            seg, left, top, scale_x, scale_y, COMIC_DETECTOR_MASK_THRESH,
+            existing, COMIC_DETECTOR_MAX_REGIONS, min_area, im_w, im_h)
+        regions = blk_regions + det_regions + seg_regions
+        if regions:
+            print(f"[CTD] {len(regions)} regiones de texto de cómic detectadas "
+                  f"(blk={len(blk_regions)}, línea={len(det_regions)}, "
+                  f"máscara={len(seg_regions)})")
+        return regions
+    except Exception as e:
+        print(f"[CTD] Error en detección de regiones: {e}")
+        return []
+
+
 def _run_rapidocr(
     img_bgr: _Img,
     box_thresh: float | None = None,

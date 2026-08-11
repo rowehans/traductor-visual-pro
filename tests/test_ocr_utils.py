@@ -1721,3 +1721,246 @@ class TestRotationInfoRutaC:
         # Enteros (no strings): easyocr pasa el ángulo a scipy.ndimage.rotate
         # y un string rompe el casting de cosdg con numpy 2.5/scipy 1.17
         assert rot is not None and 90 in rot and 270 in rot
+
+
+# ═══════════════════════════════════════════════════════════════
+# Tier 3.6: detector de texto de cómic (_detect_text_regions_comic_detector)
+# ═══════════════════════════════════════════════════════════════
+
+class TestDetectTextRegionsComicDetector:
+    """Tier 3.6 — comic-text-detector ONNX (CPU): decodifica los 3 heads del
+    modelo (blk/seg/det) con el post-proceso de dmMaze (NMS por clase, DBNet
+    unclip, máscara no cubierta) y mapea a coordenadas de página con la
+    inversa EXACTA del letterbox. onnxruntime se mockea por completo (Paso 2
+    de PLAN_MANGA_OCR): los tests no cargan el modelo real."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_engine(self):
+        """El engine se cachea en el módulo (_comic_detector_engine): cada
+        test debe partir de un estado limpio (patrón _yolo_device de Fase 6)."""
+        import ocr_utils
+        ocr_utils._comic_detector_engine = None
+        yield
+        ocr_utils._comic_detector_engine = None
+
+    @staticmethod
+    def _fake_session(blk, seg, det):
+        """Sesión onnxruntime falsa: get_inputs()[0].name='images' y run()
+        devuelve (blk, seg, det) en el orden real del modelo."""
+        session = MagicMock()
+        entrada = MagicMock()
+        entrada.name = "images"
+        session.get_inputs.return_value = [entrada]
+        session.run.return_value = (blk, seg, det)
+        return session
+
+    @staticmethod
+    def _pagina():
+        # Página vertical 800x1200 (manga): r=0.8533, contenido 683x1024,
+        # padding left=170/top=0, scale=(800/683, 1200/1024)
+        return np.ones((1200, 800, 3), dtype=np.uint8) * 200
+
+    def test_blk_mapea_a_coords_pagina_con_letterbox_exacto(self, mocker):
+        """Una detección blk en el espacio 1024 (padded) se mapea con la
+        inversa EXACTA del letterbox (resta el padding izquierdo): la caja NO
+        se desplaza ~15-20% de la página como en el inference.py de dmMaze."""
+        from ocr_utils import _detect_text_regions_comic_detector
+        img = self._pagina()
+        # Caja en el espacio 1024: cx=341.5, cy=512, w=300, h=200, obj=0.9,
+        # cls_eng=0.8 → x0=191, y0=412, x1=491, y1=612
+        blk = np.zeros((1, 1, 7), dtype=np.float32)
+        blk[0, 0] = [341.5, 512.0, 300.0, 200.0, 0.9, 0.8, 0.1]
+        seg = np.zeros((1, 1, 1024, 1024), dtype=np.float32)
+        det = np.zeros((1, 2, 1024, 1024), dtype=np.float32)
+        session = self._fake_session(blk, seg, det)
+        mocker.patch("ocr_utils._get_comic_detector_engine",
+                     return_value=session)
+
+        regions = _detect_text_regions_comic_detector(img)
+
+        assert len(regions) == 1
+        r = regions[0]
+        # (191.5-170)*800/683 = 25.2 → 25 ; 412*1200/1024 = 482.8 → 483
+        assert (r["x"], r["y"]) == (25, 483)
+        # (491.5-170)*800/683 = 376.6 → 377 ; 612*1200/1024 = 717.2 → 717
+        assert (r["x"] + r["w"], r["y"] + r["h"]) == (377, 717)
+        assert r["source"] == "ctd"
+        assert r["label"] == "ctd_eng"
+        assert abs(r["cls_conf"] - 0.72) < 1e-6  # obj * cls_eng
+        # El blob enviado a la sesión: batch=1, 1024², float32, normalizado
+        feed = session.run.call_args[0][1]
+        assert list(feed.keys()) == ["images"]
+        blob = feed["images"]
+        assert blob.shape == (1, 3, 1024, 1024)
+        assert blob.dtype == np.float32
+
+    def test_nms_suprime_solapados_por_clase(self, mocker):
+        """NMS por clase (yolov5): dos cajas de la MISMA clase muy solapadas
+        dejan solo la de mayor confianza; una de OTRA clase que las cubre se
+        conserva (eng/ja compiten por separado)."""
+        from ocr_utils import _detect_text_regions_comic_detector
+        img = self._pagina()
+        # A: conf 0.9*0.95=0.855 (eng). B: misma clase, solape ~87%,
+        # conf 0.7*0.6=0.42 (eng). C: cubre a A, clase ja, conf 0.8*0.7=0.56.
+        blk = np.zeros((1, 3, 7), dtype=np.float32)
+        blk[0, 0] = [341.5, 512.0, 300.0, 200.0, 0.9, 0.95, 0.05]
+        blk[0, 1] = [350.0, 520.0, 300.0, 200.0, 0.7, 0.6, 0.4]
+        blk[0, 2] = [341.5, 512.0, 300.0, 200.0, 0.8, 0.1, 0.7]
+        seg = np.zeros((1, 1, 1024, 1024), dtype=np.float32)
+        det = np.zeros((1, 2, 1024, 1024), dtype=np.float32)
+        session = self._fake_session(blk, seg, det)
+        mocker.patch("ocr_utils._get_comic_detector_engine",
+                     return_value=session)
+
+        regions = _detect_text_regions_comic_detector(img)
+
+        assert len(regions) == 2  # A (eng) y C (ja); B suprimida por NMS
+        assert sorted(r["label"] for r in regions) == ["ctd_eng", "ctd_ja"]
+
+    def test_det_genera_regiones_linea(self, mocker):
+        """El head DBNet (det) produce regiones ctd_line: blob en el mapa
+        shrink → contorno → bbox + unclip 1.5 → score del mapa > 0.6."""
+        from ocr_utils import _detect_text_regions_comic_detector
+        img = self._pagina()
+        blk = np.zeros((1, 0, 7), dtype=np.float32)  # sin detecciones YOLO
+        seg = np.zeros((1, 1, 1024, 1024), dtype=np.float32)
+        det = np.zeros((1, 2, 1024, 1024), dtype=np.float32)
+        det[0, 0, 300:400, 400:600] = 0.8  # línea de texto en el espacio 1024
+        session = self._fake_session(blk, seg, det)
+        mocker.patch("ocr_utils._get_comic_detector_engine",
+                     return_value=session)
+
+        regions = _detect_text_regions_comic_detector(img)
+
+        assert len(regions) == 1
+        r = regions[0]
+        assert r["label"] == "ctd_line"
+        assert r["source"] == "ctd"
+        assert abs(r["cls_conf"] - 0.8) < 1e-6
+        # bbox 1024 (400,300)-(600,400) + unclip 50 → (350,250)-(650,450)
+        # → página: ((350-170)*800/683, 250*1200/1024) = (211, 293)
+        assert (r["x"], r["y"]) == (211, 293)
+
+    def test_seg_genera_regiones_mascara_no_cubiertas(self, mocker):
+        """La máscara UNet (seg) genera regiones ctd_mask SOLO donde no hay
+        región blk/det previa: el blob cuyo centro cae dentro de una caja
+        existente se suprime (la máscara es la red de seguridad, no un
+        duplicado)."""
+        from ocr_utils import _detect_text_regions_comic_detector
+        img = self._pagina()
+        blk = np.zeros((1, 1, 7), dtype=np.float32)
+        # Caja blk en página: (25, 483, 351, 234) — cubre y 483..717
+        blk[0, 0] = [341.5, 512.0, 300.0, 200.0, 0.9, 0.8, 0.1]
+        seg = np.zeros((1, 1, 1024, 1024), dtype=np.float32)
+        seg[0, 0, 500:550, 200:300] = 0.9   # centro en (94, 615) → cubierto
+        seg[0, 0, 900:950, 600:700] = 0.9   # centro en (575, 1084) → libre
+        det = np.zeros((1, 2, 1024, 1024), dtype=np.float32)
+        session = self._fake_session(blk, seg, det)
+        mocker.patch("ocr_utils._get_comic_detector_engine",
+                     return_value=session)
+
+        regions = _detect_text_regions_comic_detector(img)
+
+        assert len(regions) == 2  # 1 blk + 1 máscara (el cubierto se suprime)
+        masks = [r for r in regions if r["label"] == "ctd_mask"]
+        assert len(masks) == 1
+        m0 = masks[0]
+        # blob (600,900)-(700,950) → página: ((600-170)*800/683=504,
+        # 900*1200/1024=1055)
+        assert (m0["x"], m0["y"]) == (504, 1055)
+
+    def test_blob_formato_bgr_letterbox_normalizado(self, mocker):
+        """El pre-proceso replica a dmMaze: letterbox 1024² (auto=False,
+        stride=64, relleno 114), canales BGR CHW (sin swap a RGB), /255,
+        batch=1."""
+        from ocr_utils import _detect_text_regions_comic_detector
+        # Página BGR con canales distinguibles: B=10, G=20, R=30
+        img = np.zeros((1200, 800, 3), dtype=np.uint8)
+        img[:, :, 0] = 10
+        img[:, :, 1] = 20
+        img[:, :, 2] = 30
+        blk = np.zeros((1, 0, 7), dtype=np.float32)
+        seg = np.zeros((1, 1, 1024, 1024), dtype=np.float32)
+        det = np.zeros((1, 2, 1024, 1024), dtype=np.float32)
+        session = self._fake_session(blk, seg, det)
+        mocker.patch("ocr_utils._get_comic_detector_engine",
+                     return_value=session)
+
+        _detect_text_regions_comic_detector(img)
+
+        blob = session.run.call_args[0][1]["images"]
+        assert blob.shape == (1, 3, 1024, 1024)
+        assert blob.dtype == np.float32
+        # Padding izquierdo (x<170) = relleno 114 → 114/255 ≈ 0.447
+        assert abs(float(blob[0, 0, 500, 100]) - 114 / 255) < 0.01
+        # Contenido (x>170): canal 0 = R de la página (30), 1 = G (20),
+        # 2 = B (10) — el modelo fue entrenado con BGR CHW
+        assert abs(float(blob[0, 0, 500, 200]) - 30 / 255) < 0.01
+        assert abs(float(blob[0, 1, 500, 200]) - 20 / 255) < 0.01
+        assert abs(float(blob[0, 2, 500, 200]) - 10 / 255) < 0.01
+
+    def test_max_regions_limita(self, mocker):
+        """COMIC_DETECTOR_MAX_REGIONS limita las regiones devueltas (evita
+        saturar el re-OCR de la Ruta C)."""
+        from ocr_utils import _detect_text_regions_comic_detector
+        img = self._pagina()
+        blk = np.zeros((1, 3, 7), dtype=np.float32)
+        # 3 cajas separadas, misma clase, sin solape → 3 candidatas
+        blk[0, 0] = [341.5, 256.0, 300.0, 100.0, 0.9, 0.8, 0.1]
+        blk[0, 1] = [341.5, 512.0, 300.0, 100.0, 0.9, 0.8, 0.1]
+        blk[0, 2] = [341.5, 768.0, 300.0, 100.0, 0.9, 0.8, 0.1]
+        seg = np.zeros((1, 1, 1024, 1024), dtype=np.float32)
+        det = np.zeros((1, 2, 1024, 1024), dtype=np.float32)
+        session = self._fake_session(blk, seg, det)
+        mocker.patch("ocr_utils._get_comic_detector_engine",
+                     return_value=session)
+        mocker.patch("config.COMIC_DETECTOR_MAX_REGIONS", 2)
+
+        regions = _detect_text_regions_comic_detector(img)
+
+        assert len(regions) == 2
+
+    def test_sin_engine_devuelve_vacio(self, mocker):
+        """onnxruntime/modelo no disponible → degradación segura a [] (el
+        tier simplemente no aporta, el pipeline sigue con YOLO + blobs)."""
+        from ocr_utils import _detect_text_regions_comic_detector
+        mocker.patch("ocr_utils._get_comic_detector_engine", return_value=None)
+        assert _detect_text_regions_comic_detector(self._pagina()) == []
+
+    def test_error_de_inferencia_devuelve_vacio(self, mocker):
+        """Excepción en run() → [] sin crashear."""
+        from ocr_utils import _detect_text_regions_comic_detector
+        session = MagicMock()
+        session.get_inputs.return_value = [MagicMock()]
+        session.run.side_effect = RuntimeError("onnx falló")
+        mocker.patch("ocr_utils._get_comic_detector_engine",
+                     return_value=session)
+        assert _detect_text_regions_comic_detector(self._pagina()) == []
+
+    def test_modelo_inexistente_engine_none(self, mocker, tmp_path):
+        """_get_comic_detector_engine: modelo inexistente → None (el tier
+        degrada a [] sin bloquear). COMIC_DETECTOR_MODEL_PATH se lee en
+        runtime (patrón YOLO), así que parchear el módulo config funciona."""
+        from ocr_utils import _get_comic_detector_engine
+        mocker.patch("config.COMIC_DETECTOR_MODEL_PATH",
+                     str(tmp_path / "no_existe.onnx"))
+        assert _get_comic_detector_engine() is None
+
+    def test_carga_lazy_con_onnxruntime_mockeado(self, mocker, tmp_path):
+        """Carga lazy con onnxruntime mockeado: la sesión se crea UNA vez con
+        CPUExecutionProvider y se cachea (segunda llamada sin re-crear)."""
+        from ocr_utils import _get_comic_detector_engine
+        modelo = tmp_path / "comic-text-detector.onnx"
+        modelo.write_bytes(b"fake")
+        mocker.patch("config.COMIC_DETECTOR_MODEL_PATH", str(modelo))
+        fake_session = MagicMock()
+        session_cls = mocker.patch("onnxruntime.InferenceSession",
+                                   return_value=fake_session)
+
+        e1 = _get_comic_detector_engine()
+        e2 = _get_comic_detector_engine()
+
+        assert e1 is fake_session and e2 is fake_session
+        session_cls.assert_called_once()
+        assert session_cls.call_args.kwargs["providers"] == [
+            "CPUExecutionProvider"]

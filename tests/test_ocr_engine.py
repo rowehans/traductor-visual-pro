@@ -1348,6 +1348,36 @@ class TestUnlimited:
         assert engines == ["easyocr"]
         assert blocks == hybrid
 
+    def test_uocr_enabled_false_anula_refuerzo_sin_daemon(self, mocker):
+        """Gate UOCR_ENABLED (sesión 143, PLAN_MANGA_OCR Paso 3): con False el
+        refuerzo se anula POR COMPLETO — ni se llama al daemon ni se registra
+        la negativa §8.4.1. Es el mecanismo que usa manga_ocr.py (extracción
+        pura sin VLM) y anula SOLO el VLM: YOLO/Ruta C/cls siguen activos (a
+        diferencia de disable_uocr). Con True (default) el flujo histórico
+        sigue intacto."""
+        mgr = OCRManager()
+        img = _make_img()
+        ublocks = [_block("texto daemon", 0.9)]
+        mocker.patch.object(mgr, "_unlimited_ocr",
+                            return_value=(ublocks, [], 4.0))
+        mocker.patch.object(mgr, "_ruta_c_globos", return_value=[])
+        mocker.patch.object(mgr, "_registrar_decision_negativa")
+
+        # Gate apagado → ni daemon ni negativa
+        mocker.patch("config.UOCR_ENABLED", False)
+        engines = mgr._reforzar_con_unlimited(
+            img, "es", [], 0.0, firma="firma-test")
+        assert engines == []
+        mgr._unlimited_ocr.assert_not_called()
+        mgr._registrar_decision_negativa.assert_not_called()
+
+        # Gate encendido (default True) → flujo histórico (daemon + fusión)
+        mocker.patch("config.UOCR_ENABLED", True)
+        engines = mgr._reforzar_con_unlimited(
+            img, "es", [], 0.0, firma="firma-test")
+        assert engines == ["unlimited"]
+        mgr._unlimited_ocr.assert_called_once()
+
 
 # ─── Modo hybrid (easyocr/auto) ──────────────────────────────────
 

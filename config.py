@@ -199,6 +199,35 @@ YOLO_CLASS_KEYWORDS: Final[tuple[str, ...]] = (
     "title", "text", "letter", "sfx", "sound",
 )
 
+# ─── Detector de texto de cómic (comic-text-detector ONNX, CPU) ─
+# Tier 3.6 de detección (complementa al YOLO de globos de la Fase 6): dmMaze
+# comic-text-detector (port ONNX de mayocream, GPL-3.0) detecta REGIONES de
+# texto — globos sin borde, texto flotante sobre el dibujo, pensamientos,
+# títulos y tipografías de arte — que los OCR y el detector de globos pierden.
+#
+# Modelo: models/comic-text-detector.onnx (94.7 MB). Firma verificada:
+#   IN  images[1,3,1024,1024] float  (letterbox 1024², BGR CHW, /255)
+#   OUT blk[1,64512,7]  YOLOv5 decodificado: cx,cy,w,h,obj,cls_eng,cls_ja
+#       seg[1,1,1024,1024]  máscara de texto (UNet, sigmoide)
+#       det[1,2,1024,1024]  líneas (DBNet: shrink + threshold maps)
+# Corre 100% en CPU (onnxruntime) → 0 VRAM extra; batch=1 estricto.
+#
+# Post-proceso replicado de dmMaze (inference.py / db_utils.py /
+# yolov5_utils.py): blk → conf=obj*cls ≥ CONF_THRESH + NMS por clase;
+# det → binarizar > MASK_THRESH + contornos + unclip + score > LINE_SCORE;
+# seg → binarizar > MASK_THRESH + contornos NO cubiertos por blk/det.
+# Los umbrales por defecto son los de dmMaze (conf 0.4, NMS 0.35, mask 0.3,
+# score línea 0.6, unclip 1.5).
+COMIC_DETECTOR_ENABLED: Final[bool] = True
+COMIC_DETECTOR_MODEL_PATH: Final[str] = str(ROOT / "models" / "comic-text-detector.onnx")
+COMIC_DETECTOR_CONF_THRESH: Final[float] = 0.4      # YOLO blk: obj*cls (dmMaze)
+COMIC_DETECTOR_NMS_THRESH: Final[float] = 0.35      # NMS por clase (dmMaze)
+COMIC_DETECTOR_MASK_THRESH: Final[float] = 0.3      # binarización seg/det (dmMaze)
+COMIC_DETECTOR_LINE_SCORE_THRESH: Final[float] = 0.6  # score DBNet (inference.py)
+COMIC_DETECTOR_UNCLIP_RATIO: Final[float] = 1.5     # expansión DBNet (dmMaze)
+COMIC_DETECTOR_MAX_REGIONS: Final[int] = 60         # límite regiones → Ruta C
+COMIC_DETECTOR_MIN_AREA_RATIO: Final[float] = 0.0005  # región mínima (0.05% página)
+
 # ─── Rotación de texto en la Ruta C (Fase 6) ─────────────────────
 # rotation_info es un kwarg de EasyOCR.readtext(): con él, el reader rota el
 # crop y elige el ángulo con mejor confianza — recupera títulos verticales
@@ -216,6 +245,16 @@ EASYOCR_ROTATION_INFO: Final[tuple[int, ...]] = (0, 90, 180, 270)
 
 
 # ─── Cache de decisiones U-OCR (§8.4.1) ───────────────────────────
+# Gate global del refuerzo VLM (daemon U-OCR, puerto 5177) dentro de la
+# fusión. True = comportamiento histórico: el trigger v4.2 puede disparar la
+# inferencia VLM si el daemon responde. False = el refuerzo se anula por
+# completo (solo el VLM; YOLO/Ruta C/cls de rotación SIGUEN activos — a
+# diferencia de disable_uocr que apaga todo el pipeline de recuperación).
+# El CLI manga_ocr.py (extracción pura) lo desactiva por defecto para no
+# disparar inferencias de 2-8 min/pág sin pedirlo (--vlm). Se lee en runtime
+# dentro de _reforzar_con_unlimited (mutar config desde el CLI surte efecto).
+UOCR_ENABLED: Final[bool] = True
+
 # Si una página con una firma de layout concreta ya disparó el refuerzo U-OCR
 # y NO recuperó nada (0 bloques nuevos), las páginas repetitivas del capítulo
 # con la MISMA firma no deben volver a disparar la inferencia VLM (~2-8 min
