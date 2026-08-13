@@ -125,3 +125,29 @@ _p12_*.png
 _tmp_p3.png
 _rutac_*.png
 
+
+# manga_ocr: datasets generados y carpetas de trabajo del CLI
+input_manga/
+output_texto/
+train_data/
+
+# ─── Trabajo temporal / paquetes de Colab (Agosto 2026) ──
+_tmp/
+
+# Entornos U-OCR (runtime)
+env_uocr/
+env_uocr_gpu/
+
+# Modelos sueltos de descarga
+yolo26n.pt
+
+# Capítulos de manga (material con copyright)
+Capítulo*.pdf
+Cap*.pdf
+
+# Scripts de diagnóstico local con rutas personales de la máquina
+analizar.bat
+buscar.bat
+buscar.py
+buscar_herramientas.ps1
+_run_*.bat

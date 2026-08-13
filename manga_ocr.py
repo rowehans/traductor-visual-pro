@@ -3,6 +3,12 @@
 
     input_manga/  →  output_texto/<archivo>.json  +  <archivo>.txt
 
+Escaneo recursivo (sesión 148): además de PDFs e imágenes sueltas, cada
+carpeta que contiene imágenes directamente (p.ej. input_manga/…/serie/cap/
+0.webp …) es UN documento con N páginas en orden natural (0,1,2,…,10,11).
+--solo '<subcadena>' filtra por nombre de documento para procesar un
+capítulo concreto sin recorrer todo; --pages sigue aplicando al documento.
+
 Paso 3 de PLAN_MANGA_OCR.md. Reutiliza la maquinaria del proyecto:
   - OCRManager (ocr_engine.py) en modo fusion: EasyOCR GPU + RapidOCR +
     fusión multi-motor + YOLO de globos (Fase 6).
@@ -28,8 +34,10 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -52,15 +60,89 @@ def _doc_id(nombre_archivo: str) -> str:
     return hashlib.md5(nombre_archivo.encode("utf-8", "ignore")).hexdigest()[:12]  # nosec B324
 
 
-def _escaneo_archivos(input_dir: Path) -> list[Path]:
-    """Archivos de manga soportados (PDF e imágenes), ordenados por nombre."""
-    archivos: list[Path] = []
-    for p in sorted(input_dir.iterdir()):
-        if not p.is_file():
-            continue
-        if p.suffix.lower() == ".pdf" or p.suffix.lower() in _EXT_IMAGENES:
-            archivos.append(p)
-    return archivos
+def _orden_natural(nombre: str) -> list[Any]:
+    """Clave de orden natural: '2.webp' < '10.webp' (numérico, no léxico).
+    Divide el nombre en trozos de dígitos y no-dígitos y compara cada trozo
+    como int cuando es numérico."""
+    return [int(t) if t.isdigit() else t.lower()
+            for t in re.split(r"(\d+)", nombre)]
+
+
+@dataclass
+class _Documento:
+    """Un manga procesable: PDF o una carpeta de imágenes (páginas).
+
+    - PDF: path apunta al .pdf; las páginas se renderizan con fitz.
+    - Carpeta: path apunta a la carpeta; las páginas son sus imágenes
+      (recursivas) ordenadas naturalmente (0.webp, 1.webp, …, 10.webp).
+    - Imagen suelta: path apunta al archivo; es un documento de 1 página.
+    """
+    path: Path
+    nombre: str          # nombre de salida (stem del archivo o carpeta)
+    tipo: str            # "pdf" | "carpeta" | "imagen"
+    paginas: list[Path] = field(default_factory=list)
+
+
+def _escaneo_documentos(input_dir: Path) -> list[_Documento]:
+    """Documentos de manga en input_dir, escaneando recursivamente.
+
+    - Archivos (PDF/imagen) sueltos en el nivel superior → un documento cada
+      uno (compatibilidad con el comportamiento original).
+    - Carpetas que CONTIENEN imágenes directamente (p.ej. cada carpeta de
+      capítulo en una estructura anidada tipo
+      input_manga/…/serie/capitulo/0.webp) → un documento por carpeta: sus
+      imágenes, ordenadas naturalmente, son las páginas.
+    - Las carpetas que solo contienen subcarpetas (el contenedor de la serie)
+      no generan documento: se recorren para encontrar los capítulos.
+    - Colisiones de nombre entre capítulos de distintas series: si dos
+      carpetas comparten stem, el nombre de salida se prefija con la serie
+      ('serie_capitulo') para no sobrescribirse.
+    """
+    docs: list[_Documento] = []
+    usados: dict[str, Path] = {}
+
+    def _add(doc: _Documento) -> None:
+        prev = usados.get(doc.nombre)
+        if prev is not None and prev != doc.path:
+            # Colisión: prefijar con el nombre de la carpeta padre (la serie)
+            doc.nombre = f"{doc.path.parent.name}_{doc.nombre}"
+        usados[doc.nombre] = doc.path
+        docs.append(doc)
+
+    for p in sorted(input_dir.iterdir(), key=lambda x: _orden_natural(x.name)):
+        if p.is_file():
+            if p.suffix.lower() == ".pdf" or p.suffix.lower() in _EXT_IMAGENES:
+                tipo = "pdf" if p.suffix.lower() == ".pdf" else "imagen"
+                _add(_Documento(p, p.stem, tipo, [p]))
+        elif p.is_dir():
+            _agregar_carpetas_con_imagenes(p, _add)
+    return docs
+
+
+def _agregar_carpetas_con_imagenes(carpeta: Path,
+                                   add) -> None:
+    """Recorre `carpeta` recursivamente y añade como documento cada
+    subcarpeta que contenga imágenes directamente (patrón walk: no mezcla
+    niveles — un capítulo con páginas en subcarpetas más profundas se
+    agrupa en su propio documento)."""
+    # 1) Esta carpeta, si tiene imágenes directas → documento
+    paginas = _imagenes_directas(carpeta)
+    if paginas:
+        add(_Documento(carpeta, carpeta.stem, "carpeta", paginas))
+    # 2) Recursión en subcarpetas (un contenedor con imágenes Y subcarpetas
+    #    aporta ambas: las suyas + las de sus hijos)
+    for sub in sorted(carpeta.iterdir(), key=lambda x: _orden_natural(x.name)):
+        if sub.is_dir():
+            _agregar_carpetas_con_imagenes(sub, add)
+
+
+def _imagenes_directas(carpeta: Path) -> list[Path]:
+    """Imágenes soportadas directamente en `carpeta` (sin recursión),
+    orden natural."""
+    return sorted(
+        (p for p in carpeta.iterdir() if p.is_file()
+         and p.suffix.lower() in _EXT_IMAGENES),
+        key=lambda p: _orden_natural(p.name))
 
 
 def _render_paginas_pdf(path: Path, zoom: float,
@@ -186,8 +268,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--vlm", action="store_true",
                         help="permitir el refuerzo VLM (requiere daemon U-OCR en 5177)")
     parser.add_argument("--pages", default="",
-                        help="rango de páginas por PDF, ej. '3-5' (1-indexado); "
-                             "vacío = todas")
+                        help="rango de páginas por documento, ej. '3-5' "
+                             "(1-indexado); vacío = todas")
+    parser.add_argument("--solo", default="",
+                        help="procesar solo documentos cuyo nombre contenga "
+                             "esta subcadena (p.ej. un ID de capítulo)")
     parser.add_argument("--force", action="store_true",
                         help="reprocesar aunque el .json de salida ya exista")
     args = parser.parse_args(argv)
@@ -197,9 +282,12 @@ def main(argv: list[str] | None = None) -> int:
     if not input_dir.is_dir():
         print(f"[manga_ocr] ERROR: la carpeta de entrada no existe: {input_dir}")
         return 1
-    archivos = _escaneo_archivos(input_dir)
-    if not archivos:
-        print(f"[manga_ocr] No hay PDF/imágenes en {input_dir}")
+    documentos = _escaneo_documentos(input_dir)
+    if args.solo:
+        documentos = [d for d in documentos if args.solo in d.nombre]
+    if not documentos:
+        print(f"[manga_ocr] No hay PDF/imágenes en {input_dir}"
+              + (f" (ni con --solo '{args.solo}')" if args.solo else ""))
         return 0
 
     import config
@@ -212,39 +300,48 @@ def main(argv: list[str] | None = None) -> int:
 
     rango = _parse_rango(args.pages)
     manager = OCRManager()
-    total = len(archivos)
-    for idx, path in enumerate(archivos, 1):
-        stem = path.stem
+    total = len(documentos)
+    for idx, doc in enumerate(documentos, 1):
+        stem = doc.nombre
         if stem in _STEM_EN_USO:
             print(f"[manga_ocr] AVISO: '{stem}' ya se usó (colisión de nombre "
-                  f"{path.name}); la salida se sobrescribirá")
+                  f"{doc.path.name}); la salida se sobrescribirá")
         _STEM_EN_USO.add(stem)
         json_path = output_dir / f"{stem}.json"
         if json_path.exists() and not args.force:
-            print(f"[manga_ocr] {path.name}: ya existe {json_path.name} "
+            print(f"[manga_ocr] {stem}: ya existe {json_path.name} "
                   f"(--force para reprocesar)")
             continue
-        print(f"[manga_ocr] [{idx}/{total}] {path.name}", flush=True)
+        print(f"[manga_ocr] [{idx}/{total}] {stem}"
+              f" ({len(doc.paginas)} páginas)", flush=True)
         meta = {
-            "archivo": path.name,
+            "archivo": doc.path.name,
+            "tipo": doc.tipo,
             "generado": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "ocr_mode": args.ocr_mode,
             "detectores": _detectores_disponibles(),
-            "zoom": args.zoom if path.suffix.lower() == ".pdf" else None,
+            "zoom": args.zoom if doc.tipo == "pdf" else None,
         }
         paginas: list[dict[str, Any]] = []
         t_archivo = time.time()
         n_procesadas = 0
         try:
-            if path.suffix.lower() == ".pdf":
-                iterador = _render_paginas_pdf(path, args.zoom, rango)
+            if doc.tipo == "pdf":
+                iterador = _render_paginas_pdf(doc.path, args.zoom, rango)
             else:
-                iterador = [(1, _cargar_imagen(path))]
+                # Carpeta/imagen: cada archivo es una página, en orden natural.
+                # --pages filtra por índice dentro del documento.
+                lista = doc.paginas
+                if rango:
+                    lista = [p for i, p in enumerate(lista, 1)
+                             if rango[0] <= i <= rango[1]]
+                iterador = ((i, _cargar_imagen(p))
+                            for i, p in enumerate(lista, 1))
             for n, img_bgr in iterador:
                 t0 = time.time()
                 blocks, engine_used, engines = manager.run_ocr(
                     img_bgr, args.lang, args.ocr_mode,
-                    doc_id=_doc_id(path.name))
+                    doc_id=_doc_id(doc.nombre))
                 bloques = [_bloque_a_schema(b) for b in blocks
                            if str(b.get("text", "")).strip()]
                 bloques.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
@@ -262,9 +359,9 @@ def main(argv: list[str] | None = None) -> int:
                       f"({engine_used}, {t_pag:.1f}s)", flush=True)
                 _escribir_salida(output_dir, stem, meta, paginas)
         except Exception as e:
-            print(f"[manga_ocr] ERROR en {path.name}: {e}")
+            print(f"[manga_ocr] ERROR en {stem}: {e}")
             return 1
-        print(f"[manga_ocr] {path.name}: {n_procesadas} páginas en "
+        print(f"[manga_ocr] {stem}: {n_procesadas} páginas en "
               f"{time.time() - t_archivo:.1f}s → "
               f"{output_dir / (stem + '.json')}", flush=True)
     return 0

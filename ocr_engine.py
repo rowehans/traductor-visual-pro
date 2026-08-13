@@ -445,10 +445,12 @@ class OCRManager:
                 for img in images
             ]
 
-        # Benchmark: disable_uocr también apaga el cls de rotación y el
-        # detector YOLO de regiones (mismo patrón que _run_fusion).
+        # Benchmark: disable_uocr también apaga el cls de rotación, el
+        # detector YOLO y el detector comic-text-detector de regiones (mismo
+        # patrón que _run_fusion).
         self.ou._ruta_c_cls_disabled.set() if disable_uocr else self.ou._ruta_c_cls_disabled.clear()
         self.ou._yolo_disabled.set() if disable_uocr else self.ou._yolo_disabled.clear()
+        self.ou._ctd_disabled.set() if disable_uocr else self.ou._ctd_disabled.clear()
 
         # ── Fase A: híbrido + trigger + Fase 2 por página ──
         per_page_blocks: list[list[dict[str, Any]]] = [None] * n
@@ -475,7 +477,8 @@ class OCRManager:
             # Mismo recuperador de regiones que _run_fusion (con gate
             # heurístico): si YOLO recupera globos/cartelas/títulos, se
             # fusionan y el trigger v4.2 puede no disparar (menos VLM).
-            yolo_blocks = self._ruta_c_yolo(img, ocr_lang, blocks, avg_conf)
+            yolo_blocks, yolo_regiones = self._ruta_c_yolo(
+                img, ocr_lang, blocks, avg_conf)
             if yolo_blocks:
                 merged = self.ou._fusionar_blocks_multi(
                     [blocks, yolo_blocks],
@@ -486,6 +489,21 @@ class OCRManager:
                       f"híbrido + {len(yolo_blocks)} YOLO → {len(merged)}")
                 blocks[:] = merged
                 engines.append("yolo+rutac")
+            # ── Fase 6.5 (batch): comic-text-detector → Ruta C ──
+            # Mismo pase aditivo que _run_fusion (gate en cascada + dedup de
+            # regiones vs YOLO): los bloques recuperados pueden evitar el VLM.
+            ctd_blocks = self._ruta_c_ctd(
+                img, ocr_lang, blocks, avg_conf, yolo_regiones)
+            if ctd_blocks:
+                merged = self.ou._fusionar_blocks_multi(
+                    [blocks, ctd_blocks],
+                    weights=[OCR_ENGINE_WEIGHTS["easyocr"],
+                             OCR_ENGINE_WEIGHTS["yolo"]],
+                )
+                print(f"[fusion-batch] Página {i}: Fase 6.5 {len(blocks)} "
+                      f"híbrido+YOLO + {len(ctd_blocks)} CTD → {len(merged)}")
+                blocks[:] = merged
+                engines.append("ctd+rutac")
             has_big_panel = self._has_big_panel(img)
             # Sesión 116: firma computada SIEMPRE — la decisión del trigger
             # (positiva O negativa) se cachea por firma para que 2 corridas
@@ -581,7 +599,7 @@ class OCRManager:
         ocr_lang: str,
         blocks: list[dict[str, Any]],
         avg_conf: float,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Recupera diálogo/títulos artísticos con el detector YOLO (Fase 6).
 
         YOLO detecta regiones de texto como OBJETOS (globos, cartelas,
@@ -601,6 +619,11 @@ class OCRManager:
         (que decide el VLM): es un filtro previo barato que limita el coste
         del recuperador a donde tiene impacto (el 12.2% perdido).
 
+        Retorna (bloques_recuperados, regiones_utilizadas) — las regiones se
+        pasan al tier CTD (Fase 6.5) para que deduplique por overlap ANTES de
+        su propia Ruta C (Paso 4, PLAN_MANGA_OCR): no re-OCRear la misma zona
+        dos veces.
+
         Degradación segura: sin ultralytics/modelo (→ []) o error → la página
         sigue con el pipeline estándar (blobs OpenCV de la Ruta C existente).
         """
@@ -609,16 +632,17 @@ class OCRManager:
         # chequea aquí (además de dentro de _detect_text_regions_in_page)
         # para que los tests que mockean la función del detector lo respeten.
         if self.ou._yolo_disabled.is_set():
-            return []
+            return [], []
         # Gate: página bien detectada → YOLO no aporta (el texto ya está).
         if (len(blocks) >= YOLO_GATE_MIN_BLOCKS
                 and avg_conf >= YOLO_GATE_MAX_CONF):
-            return []
+            return [], []
         yolo_blocks: list[dict[str, Any]] = []
+        regiones_utilizadas: list[dict[str, Any]] = []
         try:
             regions = self.ou._detect_text_regions_in_page(img_bgr)
             if not regions:
-                return []
+                return [], []
             # Descartar regiones ya cubiertas por bloques híbridos: solo
             # re-OCR las que representan diálogo perdido (mismo patrón que
             # _ruta_c_globos).
@@ -627,6 +651,7 @@ class OCRManager:
                     r for r in regions
                     if not any(self.ou._overlap_ratio(r, b) > 0.5 for b in blocks)
                 ]
+            regiones_utilizadas = list(regions)
             if regions:
                 yolo_blocks = self.ou._recover_regions_with_easyocr(
                     img_bgr, regions, ocr_lang, upscale=3.5)
@@ -635,7 +660,76 @@ class OCRManager:
                       f"recuperados")
         except Exception as yerr:
             print(f"[process-page] Fase 6 (YOLO → Ruta C) falló: {yerr}")
-        return yolo_blocks
+        return yolo_blocks, regiones_utilizadas
+
+    # ─── Tier 3.6 (Fase 6.5): comic-text-detector → Ruta C ──────
+    def _ruta_c_ctd(
+        self,
+        img_bgr: Any,
+        ocr_lang: str,
+        blocks: list[dict[str, Any]],
+        avg_conf: float,
+        yolo_regions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Recupera texto SIN globo con comic-text-detector (Fase 6.5, Tier 3.6).
+
+        Complementa a YOLO (Fase 6): detecta texto flotante sobre el dibujo,
+        pensamientos y tipografías de arte que ni el híbrido ni el detector de
+        globos ven. Cada región se envía a la Ruta C existente (mismo camino
+        que YOLO: _recover_regions_with_easyocr, upscale 3.5× + cls/rotación).
+
+        Lección del benchmark (Paso 5, PLAN_MANGA_OCR): la detección cuesta
+        ~0.8s CPU pero el re-OCR de crops 2-4s, y la mayoría de regiones CTD
+        DUPLICA a YOLO (85 regiones → 21 recuperados → solo 5 nuevos en 5
+        págs). Por eso: (1) gate tipo YOLO evaluado con los bloques POST-YOLO
+        (si YOLO ya resolvió la página, CTD no corre — cascada); (2) dedup de
+        regiones CTD vs yolo_regions por overlap ANTES de la Ruta C (una zona
+        que YOLO ya va a re-OCRear no se paga dos veces); (3) además, el
+        filtro de regiones cubiertas por bloques existentes (híbrido + YOLO).
+
+        Degradación segura: sin modelo/onnxruntime (→ []) o error → la página
+        sigue igual (el tier simplemente no aporta).
+        """
+        from config import (COMIC_DETECTOR_GATE_MIN_BLOCKS,
+                            COMIC_DETECTOR_GATE_MAX_CONF,
+                            COMIC_DETECTOR_DEDUP_IOU)
+        # Benchmark: disable_uocr apaga el tier (mismo patrón que YOLO). Se
+        # chequea aquí (además de dentro de _detect_text_regions_comic_detector)
+        # para que los tests que mockean el detector lo respeten.
+        if self.ou._ctd_disabled.is_set():
+            return []
+        # Gate (cascada): página bien detectada TRAS YOLO → CTD no aporta.
+        if (len(blocks) >= COMIC_DETECTOR_GATE_MIN_BLOCKS
+                and avg_conf >= COMIC_DETECTOR_GATE_MAX_CONF):
+            return []
+        ctd_blocks: list[dict[str, Any]] = []
+        try:
+            regions = self.ou._detect_text_regions_comic_detector(img_bgr)
+            if not regions:
+                return []
+            # Dedup 1: regiones CTD que duplican a YOLO (lección del
+            # benchmark Paso 5) — YOLO ya cubre esa zona.
+            if yolo_regions:
+                regions = [
+                    r for r in regions
+                    if not any(self.ou._overlap_ratio(r, yr)
+                               > COMIC_DETECTOR_DEDUP_IOU for yr in yolo_regions)
+                ]
+            # Dedup 2: regiones cubiertas por bloques ya detectados (híbrido
+            # + YOLO recuperado) — solo diálogo perdido (patrón de YOLO).
+            if blocks:
+                regions = [
+                    r for r in regions
+                    if not any(self.ou._overlap_ratio(r, b) > 0.5 for b in blocks)
+                ]
+            if regions:
+                ctd_blocks = self.ou._recover_regions_with_easyocr(
+                    img_bgr, regions, ocr_lang, upscale=3.5)
+                print(f"[process-page] Fase 6.5 (CTD): {len(regions)} regiones "
+                      f"(texto sin globo) → {len(ctd_blocks)} bloques recuperados")
+        except Exception as cerr:
+            print(f"[process-page] Fase 6.5 (CTD → Ruta C) falló: {cerr}")
+        return ctd_blocks
 
     # ─── Tier 1+2: híbrido EasyOCR + RapidOCR ───────────────────
     def _run_hybrid(
@@ -707,7 +801,8 @@ class OCRManager:
         # Fase 6: YOLO → Ruta C con gate heurístico (páginas débilmente
         # detectadas) + disable_uocr apaga el detector (benchmark de overhead).
         self.ou._yolo_disabled.set() if disable_uocr else self.ou._yolo_disabled.clear()
-        yolo_blocks = self._ruta_c_yolo(img_bgr, ocr_lang, blocks, avg_conf)
+        yolo_blocks, yolo_regiones = self._ruta_c_yolo(
+            img_bgr, ocr_lang, blocks, avg_conf)
         if yolo_blocks:
             merged = self.ou._fusionar_blocks_multi(
                 [blocks, yolo_blocks],
@@ -718,6 +813,27 @@ class OCRManager:
                   f"{len(yolo_blocks)} YOLO → {len(merged)}")
             blocks[:] = merged
             engines_used.append("yolo+rutac")
+        # ── Fase 6.5: comic-text-detector → Ruta C (texto SIN globo) ──
+        # Tier 3.6 (PLAN_MANGA_OCR Paso 4): detecta texto flotante sobre el
+        # dibujo, pensamientos y tipografías de arte que híbrido y YOLO
+        # pierden. Misma posición pre-trigger que YOLO (si los bloques
+        # recuperados elevan la página, el VLM no dispara), con gate en
+        # cascada (solo si YOLO no resolvió la página) y dedup de regiones vs
+        # YOLO por overlap (lección del benchmark Paso 5: no re-OCRear la
+        # misma zona dos veces). disable_uocr lo apaga (mismo patrón).
+        self.ou._ctd_disabled.set() if disable_uocr else self.ou._ctd_disabled.clear()
+        ctd_blocks = self._ruta_c_ctd(
+            img_bgr, ocr_lang, blocks, avg_conf, yolo_regiones)
+        if ctd_blocks:
+            merged = self.ou._fusionar_blocks_multi(
+                [blocks, ctd_blocks],
+                weights=[OCR_ENGINE_WEIGHTS["easyocr"],
+                         OCR_ENGINE_WEIGHTS["yolo"]],
+            )
+            print(f"[process-page] Fase 6.5: {len(blocks)} híbrido+YOLO + "
+                  f"{len(ctd_blocks)} CTD → {len(merged)}")
+            blocks[:] = merged
+            engines_used.append("ctd+rutac")
         has_big_panel = self._has_big_panel(img_bgr)
         # Sesión 116: la firma se computa SIEMPRE (no solo con trigger) para
         # que la decisión NEGATIVA también quede cacheada y sea determinista

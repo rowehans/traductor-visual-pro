@@ -37,6 +37,10 @@ _ruta_c_cls_disabled: threading.Event = threading.Event()
 # 6) — el overhead puro de la fusión se mide sin el recuperador de regiones
 # (mismo patrón que _ruta_c_cls_disabled, set/clear por request).
 _yolo_disabled: threading.Event = threading.Event()
+# Benchmark (disable_uocr): también apaga el detector comic-text-detector
+# (Tier 3.6, Fase 6.5 — PLAN_MANGA_OCR Paso 4). Mismo patrón que
+# _yolo_disabled: el overhead puro de la fusión se mide sin recuperadores.
+_ctd_disabled: threading.Event = threading.Event()
 # Lock global de GPU (RLock): serializa la inferencia de EasyOCR (server, GPU)
 # con la del daemon U-OCR (proceso separado, mismo GPU). Sin esto, un worker
 # corriendo EasyOCR compite por VRAM con el daemon mientras infiere → el daemon
@@ -706,6 +710,11 @@ def _detect_text_regions_comic_detector(img_bgr: _Img) -> list[dict[str, Any]]:
     Degradación segura: sin onnxruntime, sin modelo, o error → [] (el tier
     simplemente no aporta).
     """
+    # Benchmark: disable_uocr apaga el detector (mismo patrón que YOLO — se
+    # chequea aquí y en _ruta_c_ctd para que los tests que mockean la función
+    # del detector lo respeten).
+    if _ctd_disabled.is_set():
+        return []
     engine = _get_comic_detector_engine()
     if engine is None:
         return []

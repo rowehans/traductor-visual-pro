@@ -1604,6 +1604,226 @@ class TestRutaCYolo:
         assert "yolo+rutac" in engines
 
 
+# ─── Fase 6.5: comic-text-detector → Ruta C (texto SIN globo) ───
+
+class TestRutaCCTD:
+    """_ruta_c_ctd — el tier comic-text-detector detecta texto flotante /
+    pensamientos / tipografías de arte que híbrido y YOLO pierden, y lo
+    re-OCRea por la Ruta C. Gate en cascada (solo si YOLO no resolvió la
+    página) + dedup de regiones vs YOLO (lección del benchmark Paso 5)."""
+
+    def test_ctd_recupera_y_fusiona_con_hibrido(self, mocker):
+        """Página débil (1 bloque) → YOLO no aporta ([]), CTD corre, recupera
+        1 región de texto sin globo, se fusiona y el engine registra
+        'ctd+rutac' — sin disparar el VLM (conf media alta)."""
+        mgr = OCRManager()
+        img = _make_img()
+        hybrid = [_block("hola", 0.6)]
+        region = {"x": 300, "y": 300, "w": 60, "h": 40, "source": "ctd",
+                  "label": "ctd_eng", "cls_conf": 0.9}
+        ctd = [_block("TEXTO FLOTANTE", 0.85, x=300, y=300)]
+
+        mocker.patch("ocr_utils._detect_and_ocr", return_value=hybrid)
+        mocker.patch("ocr_utils._detect_text_regions_in_page", return_value=[])
+        mocker.patch("ocr_utils._detect_text_regions_comic_detector",
+                     return_value=[region])
+        mocker.patch("ocr_utils._overlap_ratio", return_value=0.0)
+        mocker.patch("ocr_utils._recover_regions_with_easyocr",
+                     return_value=ctd)
+        mocker.patch("ocr_utils._fusionar_blocks_multi",
+                     side_effect=lambda sources, weights: list(sources[0]) + list(sources[1]))
+
+        blocks, engine, engines = mgr.run_ocr(img, "es", ocr_mode="fusion")
+
+        texts = [b["text"] for b in blocks]
+        assert "TEXTO FLOTANTE" in texts
+        assert "hola" in texts
+        assert "ctd+rutac" in engines
+        # Trigger v4.2 intacto: 1 bloque conf 0.6 no cumple (len<3 Y conf<0.2)
+        assert "unlimited" not in engines
+
+    def test_ctd_cascada_tras_yolo(self, mocker):
+        """YOLO recupera una cartela y CTD añade su propio bloque (región NO
+        duplicada): ambos tiers conviven en cascada pre-trigger."""
+        mgr = OCRManager()
+        img = _make_img()
+        hybrid = [_block("hola", 0.6)]
+        r_yolo = {"x": 300, "y": 300, "w": 60, "h": 40, "source": "yolo"}
+        r_ctd = {"x": 200, "y": 500, "w": 50, "h": 30, "source": "ctd"}
+        yolo_b = [_block("CARTELA", 0.8, x=300, y=300)]
+        ctd_b = [_block("PENSAMIENTO", 0.9, x=200, y=500)]
+
+        mocker.patch("ocr_utils._detect_and_ocr", return_value=hybrid)
+        mocker.patch("ocr_utils._detect_text_regions_in_page",
+                     return_value=[r_yolo])
+        mocker.patch("ocr_utils._detect_text_regions_comic_detector",
+                     return_value=[r_ctd])
+        mocker.patch("ocr_utils._overlap_ratio", return_value=0.0)
+        mocker.patch("ocr_utils._recover_regions_with_easyocr",
+                     side_effect=[[yolo_b[0]], [ctd_b[0]]])
+        mocker.patch("ocr_utils._fusionar_blocks_multi",
+                     side_effect=lambda sources, weights: list(sources[0]) + list(sources[1]))
+
+        blocks, engine, engines = mgr.run_ocr(img, "es", ocr_mode="fusion")
+
+        texts = [b["text"] for b in blocks]
+        assert {"hola", "CARTELA", "PENSAMIENTO"} <= set(texts)
+        assert "yolo+rutac" in engines
+        assert "ctd+rutac" in engines
+
+    def test_ctd_gate_no_corre_en_pagina_bien_detectada(self, mocker):
+        """Página con >= GATE_MIN_BLOCKS y conf >= gate → CTD NO corre (el
+        texto ya está; el re-OCR de crops no aporta). El gate se evalúa con
+        los bloques POST-YOLO (cascada)."""
+        mgr = OCRManager()
+        img = _make_img()
+        hybrid = [_block(f"hola{i}", 0.7) for i in range(4)]  # 4 bloques conf 0.7
+
+        mocker.patch("ocr_utils._detect_and_ocr", return_value=hybrid)
+        detect_yolo = mocker.patch("ocr_utils._detect_text_regions_in_page")
+        detect_ctd = mocker.patch("ocr_utils._detect_text_regions_comic_detector")
+
+        blocks, engine, engines = mgr.run_ocr(img, "es", ocr_mode="fusion")
+
+        detect_yolo.assert_not_called()
+        detect_ctd.assert_not_called()
+        assert blocks == hybrid
+        assert "ctd+rutac" not in engines
+
+    def test_ctd_disable_uocr_apaga_detector(self, mocker):
+        """disable_uocr (benchmark) apaga CTD igual que YOLO/cls: el detector
+        no se consulta y no se recupera nada."""
+        mgr = OCRManager()
+        img = _make_img()
+        hybrid = [_block("hola", 0.15)]  # débil → gate pasaría
+
+        mocker.patch("ocr_utils._detect_and_ocr", return_value=hybrid)
+        detect_yolo = mocker.patch("ocr_utils._detect_text_regions_in_page")
+        detect_ctd = mocker.patch("ocr_utils._detect_text_regions_comic_detector")
+
+        blocks, engine, engines = mgr.run_ocr(
+            img, "es", ocr_mode="fusion", disable_uocr=True)
+
+        detect_yolo.assert_not_called()
+        detect_ctd.assert_not_called()
+        assert blocks == hybrid
+
+    def test_ctd_sin_modelo_degrada_a_pipeline_normal(self, mocker):
+        """Sin onnxruntime/modelo → _detect_text_regions_comic_detector
+        devuelve [] → la página sigue igual (trigger v4.2 intacto)."""
+        mgr = OCRManager()
+        img = _make_img()
+        hybrid = [_block("hola", 0.6)]
+
+        mocker.patch("ocr_utils._detect_and_ocr", return_value=hybrid)
+        mocker.patch("ocr_utils._detect_text_regions_in_page", return_value=[])
+        mocker.patch("ocr_utils._detect_text_regions_comic_detector",
+                     return_value=[])
+
+        blocks, engine, engines = mgr.run_ocr(img, "es", ocr_mode="fusion")
+
+        assert blocks == hybrid
+        assert "ctd+rutac" not in engines
+
+    def test_ctd_descarta_regiones_duplicadas_de_yolo(self, mocker):
+        """Región CTD con overlap > DEDUP_IOU con una región YOLO NO se
+        re-OCRea (lección del benchmark: no pagar 2 veces la misma zona).
+        El detector CTD SÍ corre (gate pasado) pero no recupera nada."""
+        mgr = OCRManager()
+        img = _make_img()
+        hybrid = [_block("hola", 0.6)]  # x=10: fuera de la zona YOLO/CTD
+        r_yolo = {"x": 300, "y": 300, "w": 60, "h": 40, "source": "yolo"}
+        r_ctd = {"x": 310, "y": 310, "w": 50, "h": 30, "source": "ctd"}  # duplica r_yolo
+        yolo_b = [_block("CARTELA", 0.8, x=300, y=300)]
+
+        mocker.patch("ocr_utils._detect_and_ocr", return_value=hybrid)
+        mocker.patch("ocr_utils._detect_text_regions_in_page",
+                     return_value=[r_yolo])
+        detect_ctd = mocker.patch("ocr_utils._detect_text_regions_comic_detector",
+                                  return_value=[r_ctd])
+
+        # overlap 0.0 contra bloques híbridos (x<100), 0.9 entre regiones
+        # YOLO/CTD (misma zona del dibujo) → el dedup 1 descarta r_ctd.
+        def ov(a, b):
+            return 0.0 if (a["x"] < 100 or b["x"] < 100) else 0.9
+        mocker.patch("ocr_utils._overlap_ratio", side_effect=ov)
+        recover = mocker.patch("ocr_utils._recover_regions_with_easyocr",
+                               return_value=yolo_b)
+        mocker.patch("ocr_utils._fusionar_blocks_multi",
+                     side_effect=lambda sources, weights: list(sources[0]) + list(sources[1]))
+
+        blocks, engine, engines = mgr.run_ocr(img, "es", ocr_mode="fusion")
+
+        detect_ctd.assert_called_once()
+        # Solo la Ruta C de YOLO corrió: la región CTD duplicada no se pagó.
+        assert recover.call_count == 1
+        assert "CARTELA" in [b["text"] for b in blocks]
+        assert "ctd+rutac" not in engines
+
+    def test_ctd_descarta_regiones_cubiertas_por_bloques(self, mocker):
+        """Región CTD con overlap > 0.5 con un bloque ya detectado NO se
+        re-OCRea (solo diálogo perdido) — mismo patrón que YOLO."""
+        mgr = OCRManager()
+        img = _make_img()
+        hybrid = [_block("hola", 0.6)]  # ocupa (10,10,50,15)
+        r_ctd = {"x": 10, "y": 10, "w": 50, "h": 15, "source": "ctd"}
+
+        mocker.patch("ocr_utils._detect_and_ocr", return_value=hybrid)
+        mocker.patch("ocr_utils._detect_text_regions_in_page", return_value=[])
+        mocker.patch("ocr_utils._detect_text_regions_comic_detector",
+                     return_value=[r_ctd])
+        mocker.patch("ocr_utils._overlap_ratio", return_value=0.9)
+        recover = mocker.patch("ocr_utils._recover_regions_with_easyocr")
+
+        blocks, engine, engines = mgr.run_ocr(img, "es", ocr_mode="fusion")
+
+        recover.assert_not_called()
+        assert blocks == hybrid
+        assert "ctd+rutac" not in engines
+
+    def test_ctd_error_no_tumba_la_pagina(self, mocker):
+        """Si el detector CTD lanza excepción, se degrada silenciosamente:
+        la página sigue con el pipeline estándar."""
+        mgr = OCRManager()
+        img = _make_img()
+        hybrid = [_block("hola", 0.6)]
+
+        mocker.patch("ocr_utils._detect_and_ocr", return_value=hybrid)
+        mocker.patch("ocr_utils._detect_text_regions_in_page", return_value=[])
+        mocker.patch("ocr_utils._detect_text_regions_comic_detector",
+                     side_effect=RuntimeError("onnxruntime falló"))
+
+        blocks, engine, engines = mgr.run_ocr(img, "es", ocr_mode="fusion")
+
+        assert blocks == hybrid
+        assert "ctd+rutac" not in engines
+
+    def test_ctd_batch_recupera_en_fase_a(self, mocker):
+        """En run_ocr_batch, la Fase 6.5 corre por página antes del trigger
+        (página débil: 1 bloque → gate permite; YOLO no aportó → CTD sí)."""
+        mgr = OCRManager()
+        img = _make_img()
+        hybrid = [_block("hola", 0.6)]
+        region = {"x": 300, "y": 300, "w": 60, "h": 40, "source": "ctd"}
+        ctd = [_block("TEXTO SIN GLOBO", 0.85, x=300, y=300)]
+
+        mocker.patch("ocr_utils._detect_and_ocr", return_value=hybrid)
+        mocker.patch("ocr_utils._detect_text_regions_in_page", return_value=[])
+        mocker.patch("ocr_utils._detect_text_regions_comic_detector",
+                     return_value=[region])
+        mocker.patch("ocr_utils._overlap_ratio", return_value=0.0)
+        mocker.patch("ocr_utils._recover_regions_with_easyocr",
+                     return_value=ctd)
+        mocker.patch("ocr_utils._fusionar_blocks_multi",
+                     side_effect=lambda sources, weights: list(sources[0]) + list(sources[1]))
+
+        out = mgr.run_ocr_batch([img], "es", ocr_mode="fusion")
+
+        blocks, engine, engines = out[0]
+        assert "TEXTO SIN GLOBO" in [b["text"] for b in blocks]
+        assert "ctd+rutac" in engines
+
+
 # ─── Batch multi-página (Fase 1: infer_multi) ────────────────────
 
 class TestRunOcrBatch:

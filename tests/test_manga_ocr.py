@@ -91,12 +91,33 @@ class TestEscaneoYRango:
     def test_escaneo_filtra_y_ordena(self, tmp_path):
         for nombre in ("b.png", "a.pdf", "z.txt", "README.md", "c.JPG"):
             (tmp_path / nombre).write_bytes(b"x")
-        archivos = manga_ocr._escaneo_archivos(tmp_path)
-        assert [p.name for p in archivos] == ["a.pdf", "b.png", "c.JPG"]
+        docs = manga_ocr._escaneo_documentos(tmp_path)
+        assert [(d.tipo, d.nombre) for d in docs] == [
+            ("pdf", "a"), ("imagen", "b"), ("imagen", "c")]
 
-    def test_escaneo_solo_archivos(self, tmp_path):
-        (tmp_path / "carpeta").mkdir()
-        assert manga_ocr._escaneo_archivos(tmp_path) == []
+    def test_escaneo_agrupa_carpetas(self, tmp_path):
+        # Carpeta anidada con webp → UN documento, páginas en orden natural
+        cap = tmp_path / "BookDownloads" / "serie" / "cap1"
+        cap.mkdir(parents=True)
+        for nombre in ("1.webp", "10.webp", "2.webp", "0.webp"):
+            (cap / nombre).write_bytes(b"x")
+        docs = manga_ocr._escaneo_documentos(tmp_path)
+        assert len(docs) == 1
+        d = docs[0]
+        assert d.tipo == "carpeta" and d.nombre == "cap1"
+        assert [p.name for p in d.paginas] == ["0.webp", "1.webp", "2.webp",
+                                               "10.webp"]
+
+    def test_escaneo_ignora_carpetas_sin_imagenes(self, tmp_path):
+        (tmp_path / "vacia").mkdir()
+        (tmp_path / "nota.txt").write_bytes(b"x")
+        assert manga_ocr._escaneo_documentos(tmp_path) == []
+
+    def test_orden_natural(self):
+        clave = manga_ocr._orden_natural
+        assert clave("2.webp") < clave("10.webp")
+        assert clave("0.webp") < clave("1.webp")
+        assert clave("a2.webp") < clave("a10.webp")
 
     def test_parse_rango(self):
         assert manga_ocr._parse_rango("") is None

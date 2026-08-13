@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Corrector ORO — globos y texto libre</title>
+<style>
+  :root{
+    --bg:#14161c; --panel:#1d212b; --borde:#2c3240; --txt:#e8eaf0; --mut:#9aa3b5;
+    --globo:#2ecc71; --libre:#e84393; --alerta:#e74c3c; --ambar:#f1c40f;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--txt);font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif}
+  header{position:sticky;top:0;z-index:10;background:var(--panel);border-bottom:1px solid var(--borde);padding:8px 12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  h1{font-size:15px;margin:0 8px 0 0;white-space:nowrap}
+  .grupo{display:flex;gap:6px;align-items:center;white-space:nowrap}
+  button{border:1px solid var(--borde);background:#262b37;color:var(--txt);border-radius:6px;padding:5px 10px;cursor:pointer;font-size:13px}
+  button:hover{background:#2f3542}
+  button:disabled{opacity:.4;cursor:default}
+  button.activo{box-shadow:inset 0 0 0 2px currentColor}
+  button.clase-globo{color:var(--globo)}
+  button.clase-libre{color:var(--libre)}
+  button.primario{background:#1d6f4f;border-color:#1d6f4f;color:#fff;font-weight:600}
+  button.primario:hover{background:#238560}
+  select{background:#262b37;color:var(--txt);border:1px solid var(--borde);border-radius:6px;padding:5px}
+  .estado{color:var(--mut);font-size:12px}
+  .estado b{color:var(--txt)}
+  #bannerGig{display:none;background:#4a1d22;border:1px solid var(--alerta);color:#ffd7d7;padding:8px 12px;font-size:13px}
+  #bannerGig button{margin-left:8px}
+  #ayuda{display:none;background:var(--panel);border:1px solid var(--borde);border-radius:8px;margin:10px 12px 0;padding:10px 14px;font-size:13px;color:var(--mut)}
+  #ayuda kbd{background:#262b37;border:1px solid var(--borde);border-radius:4px;padding:1px 5px;font-size:12px}
+  #stage{overflow:auto;padding:12px;text-align:center}
+  canvas{display:block;margin:0 auto;background:#000;box-shadow:0 4px 20px rgba(0,0,0,.5);cursor:crosshair;max-width:none}
+  #toast{position:fixed;right:14px;bottom:14px;z-index:50;background:#1d6f4f;color:#fff;padding:9px 14px;border-radius:8px;opacity:0;transition:opacity .25s;pointer-events:none;font-size:13px;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+  #toast.err{background:#7a2430}
+  #pie{color:var(--mut);font-size:12px;padding:6px 14px 16px;text-align:center}
+  #pie kbd{background:#262b37;border:1px solid var(--borde);border-radius:4px;padding:0 4px}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;vertical-align:middle;margin-right:4px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>✏️ Corrector ORO</h1>
+  <span class="estado" id="estadoPest">cargando…</span>
+  <div class="grupo">
+    <button id="bPrev" title="Anterior (A/←)">◀</button>
+    <select id="selPag"></select>
+    <button id="bNext" title="Siguiente (D/→)">▶</button>
+    <button id="bGig" title="Saltar a la siguiente página con cajas gigantes">⚠ gigante</button>
+    <button id="bSinRev" title="Saltar a la siguiente página sin revisar (N)">○ sin revisar</button>
+  </div>
+  <div class="grupo">
+    <button id="bClase0" class="clase-globo" title="Clase para dibujar (G)"><span class="dot" style="background:var(--globo)"></span>Globo</button>
+    <button id="bClase1" class="clase-libre" title="Clase para dibujar (L)"><span class="dot" style="background:var(--libre)"></span>Libre</button>
+  </div>
+  <div class="grupo">
+    <button id="bZoomOut" title="Alejar (-)">−</button>
+    <span class="estado" id="lblZoom">100%</span>
+    <button id="bZoomIn" title="Acercar (+)">+</button>
+  </div>
+  <div class="grupo">
+    <label style="font-size:13px"><input type="checkbox" id="chkRev"> ✓ Revisada</label>
+    <label style="font-size:13px"><input type="checkbox" id="chkAuto"> Avanzar al guardar</label>
+    <label style="font-size:13px"><input type="checkbox" id="chkFiltro" checked> solo sin revisar</label>
+  </div>
+  <div class="grupo">
+    <button class="primario" id="bGuardar" title="Guardar como ORO (Ctrl+S)">💾 Guardar</button>
+    <button id="bAyuda" title="Mostrar/ocultar ayuda">?</button>
+  </div>
+</header>
+
+<div id="bannerGig"></div>
+<div id="ayuda">
+  <b>Atajos</b> — <kbd>A</kbd>/<kbd>D</kbd> o <kbd>←</kbd>/<kbd>→</kbd> cambiar página · <kbd>N</kbd> siguiente sin revisar · <kbd>G</kbd> clase <b style="color:var(--globo)">Globo</b>,
+  <kbd>L</kbd> clase <b style="color:var(--libre)">Libre</b> · <kbd>Supr</kbd> borrar la caja seleccionada · <kbd>Esc</kbd> deseleccionar ·
+  <kbd>Ctrl+S</kbd> guardar.<br>
+  <b>Ratón</b> — arrastra en vacío para <b>dibujar</b> una caja (usa la clase activa) · arrastra dentro de una caja para <b>moverla</b> ·
+  arrastra una <b>esquina</b> de la seleccionada para <b>redimensionar</b> · clic derecho borra.
+  Las cajas <b style="color:var(--alerta)">rojas discontinuas</b> son gigantes (&gt;50% de la página): divídelas o bórralas.
+  El número de cada caja te sirve para referirte a ella ("borra la 3", "el 5 es globo").
+</div>
+
+<div id="stage"><canvas id="cv"></canvas></div>
+<div id="toast"></div>
+<div id="pie">Arrastra para dibujar · G/L clase · mover desde dentro · redimensionar por esquinas · Supr borra · Ctrl+S guarda · A/D página</div>
+
+<script>
+"use strict";
+const CLS = [
+  {id:0, nombre:"Globo", color:"#2ecc71"},
+  {id:1, nombre:"Libre", color:"#e84393"},
+];
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const $ = id => document.getElementById(id);
+
+let paginas = [], todas = [], idx = 0, cajas = [], sel = null;
+let claseNueva = 0, zoom = 100, revisada = false, dirty = false, autosig = false, soloSinRevisar = true;
+let imgCache = {}, imgAct = null, paginaToken = 0;
+let drag = null;   // {tipo:'dibujar'|'mover'|'redim', ...}
+
+// ── utilidades ─────────────────────────────────────────────────────
+function esGigante(c){ return c[3] > 0.5 || c[4] > 0.5 || c[3]*c[4] > 0.25; }
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+function natPunto(e){
+  const r = cv.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * (cv.width / r.width),
+           y: (e.clientY - r.top)  * (cv.height / r.height) };
+}
+function toast(msg, err){
+  const t = $("toast"); t.textContent = msg; t.className = err ? "err" : "";
+  t.style.opacity = 1;
+  clearTimeout(toast._h); toast._h = setTimeout(() => t.style.opacity = 0, 2200);
+}
+
+// ── carga de datos ─────────────────────────────────────────────────
+async function cargarTodo(){
+  const r = await fetch("/api/paginas");
+  const d = await r.json();
+  todas = d.paginas || [];
+  if (!todas.length){ toast("No hay páginas en el workspace", true); return; }
+  aplicarFiltro();
+  const e = await (await fetch("/api/estado")).json();
+  if (e.paginas_con_gigantes && e.paginas_con_gigantes.length){
+    const b = $("bannerGig");
+    b.style.display = "block";
+    b.innerHTML = "⚠ <b>" + e.paginas_con_gigantes.length + " páginas</b> tienen cajas gigantes (cajas que tapan la página). " +
+      "Empieza por ahí para que el oro sirva. <button id='bIrGig'>Ir a la primera ⚠</button>";
+    $("bIrGig").onclick = () => { const i = todas.findIndex(p => p.gigantes.length); if (i >= 0){
+      const vi = paginas.indexOf(todas[i]); irPagina(vi >= 0 ? vi : 0); } };
+  }
+}
+
+function aplicarFiltro(){
+  paginas = soloSinRevisar ? todas.filter(p => !p.revisada) : todas.slice();
+  if (!paginas.length){
+    // si con el filtro no queda nada (todo revisado), volvemos a mostrar todo
+    paginas = todas.slice();
+    soloSinRevisar = false;
+    $("chkFiltro").checked = false;
+    if (!paginas.length){ toast("No hay páginas en el workspace", true); return; }
+  }
+  idx = 0;
+  irPagina(0);
+}
+
+function llenarSelect(){
+  const s = $("selPag"); s.innerHTML = "";
+  paginas.forEach((p, i) => {
+    const o = document.createElement("option");
+    o.value = i; o.textContent = p.nombre + (p.revisada ? " ✓" : "");
+    s.appendChild(o);
+  });
+  s.onchange = () => { const i = +s.value; if (i !== idx) irPagina(i); };
+}
+
+
+
+// ── página actual ──────────────────────────────────────────────────
+function irPagina(i){
+  if (dirty && !confirm("Hay cambios sin guardar en esta página. ¿Descartarlos y pasar a otra?")) return;
+  idx = (i + paginas.length) % paginas.length;
+  cajas = JSON.parse(JSON.stringify(paginas[idx].cajas || []));
+  sel = null; revisada = !!paginas[idx].revisada; dirty = false;
+  $("chkRev").checked = revisada;
+  $("selPag").value = idx;
+  $("bPrev").disabled = paginas.length < 2;
+  $("bNext").disabled = paginas.length < 2;
+  actualizarBotonClase();
+  const token = ++paginaToken;
+  const im = imgCache[paginas[idx].nombre];
+  if (im){ imgAct = im; aplicarTamaño(); pintar(); }
+  else {
+    const n = new Image();
+    n.onload = () => { if (token !== paginaToken) return; imgCache[paginas[idx].nombre] = n; imgAct = n; ajustarZoomInicial(); pintar(); };
+    n.src = paginas[idx].img;
+  }
+  pintarEstado();
+}
+
+function pintarEstado(){
+  const rev = todas.filter(p=>p.revisada).length;
+  const cj = todas.reduce((a,p)=>a+p.cajas.length,0);
+  const gig = todas.filter(p=>p.gigantes.length).length;
+  $("estadoPest").innerHTML =
+    "Página <b>" + (idx+1) + "/" + paginas.length + "</b> (" + todas.length + " total) · " +
+    "<b>" + rev + "</b> revisadas · <b>" + cj + "</b> cajas oro · " +
+    (gig ? "⚠ <b style='color:var(--alerta)'>" + gig + "</b> con gigantes" : "sin cajas gigantes ✓") +
+    (dirty ? " · <b style='color:var(--ambar)'>● sin guardar</b>" : "");
+  llenarSelect();
+}
+
+function irSiguienteGigante(){
+  for (let k = 1; k <= paginas.length; k++){
+    const i = (idx + k) % paginas.length;
+    if (paginas[i].gigantes.length){ irPagina(i); return; }
+  }
+  toast("No quedan páginas con cajas gigantes");
+}
+
+function irSiguienteSinRevisar(){
+  for (let k = 1; k <= paginas.length; k++){
+    const i = (idx + k) % paginas.length;
+    if (!paginas[i].revisada){ irPagina(i); return; }
+  }
+  toast("¡Todas las páginas están revisadas!");
+}
+
+// ── zoom / tamaño del canvas ───────────────────────────────────────
+function ajustarZoomInicial(){
+  const anchoDisp = Math.max(300, $("stage").clientWidth - 24);
+  zoom = clamp(Math.floor(anchoDisp / imgAct.naturalWidth * 100), 20, 100);
+  aplicarTamaño();
+}
+function aplicarTamaño(){
+  cv.width = imgAct.naturalWidth; cv.height = imgAct.naturalHeight;
+  cv.style.width = Math.round(imgAct.naturalWidth * zoom / 100) + "px";
+  cv.style.height = "auto";
+  $("lblZoom").textContent = zoom + "%";
+  pintar();
+}
+function cambiarZoom(dz){ zoom = clamp(zoom + dz, 10, 400); aplicarTamaño(); }
+
+// ── dibujo ─────────────────────────────────────────────────────────
+function pintar(){
+  if (!imgAct) return;
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.drawImage(imgAct, 0, 0);
+  // vista previa de dibujo en curso
+  if (drag && drag.tipo === "dibujar" && drag.dibujando){
+    const x = Math.min(drag.x0, drag.x1), y = Math.min(drag.y0, drag.y1);
+    const w = Math.abs(drag.x1 - drag.x0), h = Math.abs(drag.y1 - drag.y0);
+    ctx.strokeStyle = CLS[claseNueva].color; ctx.lineWidth = 2; ctx.setLineDash([6,4]);
+    ctx.strokeRect(x, y, w, h); ctx.setLineDash([]);
+  }
+  cajas.forEach((c, i) => dibujarCaja(c, i, i === sel));
+}
+
+function dibujarCaja(c, i, seleccionada){
+  const W = cv.width, H = cv.height;
+  const x = (c[1] - c[3]/2) * W, y = (c[2] - c[4]/2) * H, w = c[3]*W, h = c[4]*H;
+  const col = CLS[c[0]].color, gig = esGigante(c);
+  ctx.fillStyle = col + "2e";                       // relleno translúcido
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = gig ? "#e74c3c" : (seleccionada ? "#ffffff" : col);
+  ctx.lineWidth = seleccionada ? 4 : 2.5;
+  ctx.setLineDash(gig ? [8,6] : []);
+  ctx.strokeRect(x, y, w, h);
+  ctx.setLineDash([]);
+  // número identificador
+  const etiqueta = String(i + 1);
+  ctx.font = "bold 13px system-ui, sans-serif";
+  const tw = ctx.measureText(etiqueta).width;
+  const ly = y - 17 >= 0 ? y - 17 : y + 2;
+  ctx.fillStyle = "rgba(0,0,0,.72)";
+  ctx.fillRect(x, ly, tw + 10, 15);
+  ctx.fillStyle = "#fff";
+  ctx.fillText(etiqueta, x + 5, ly + 12);
+  // tiradores de esquina
+  if (seleccionada){
+    ctx.fillStyle = "#fff"; ctx.strokeStyle = "#111"; ctx.lineWidth = 1;
+    for (const [hx, hy] of [[x,y],[x+w,y],[x,y+h],[x+w,y+h]]){
+      ctx.beginPath(); ctx.arc(hx, hy, 5, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    }
+  }
+}
+
+function cajaEn(p){
+  const W = cv.width, H = cv.height;
+  for (let i = cajas.length - 1; i >= 0; i--){
+    const c = cajas[i];
+    if (Math.abs(p.x - c[1]*W) <= c[3]*W/2 && Math.abs(p.y - c[2]*H) <= c[4]*H/2) return i;
+  }
+  return null;
+}
+function esquinaCerca(c, p){
+  const r = cv.getBoundingClientRect();
+  const tol = 16 * cv.width / r.width;
+  const W = cv.width, H = cv.height;
+  const x = (c[1]-c[3]/2)*W, y = (c[2]-c[4]/2)*H, w = c[3]*W, h = c[4]*H;
+  const esq = [[x,y],[x+w,y],[x,y+h],[x+w,y+h]];
+  for (let k = 0; k < 4; k++)
+    if (Math.hypot(esq[k][0]-p.x, esq[k][1]-p.y) < tol) return k;
+  return null;
+}
+
+// ── interacción ────────────────────────────────────────────────────
+cv.addEventListener("mousedown", e => {
+  e.preventDefault();
+  const p = natPunto(e);
+  if (e.button === 2){
+    const i = cajaEn(p);
+    if (i !== null){ cajas.splice(i, 1); if (sel === i) sel = null; else if (sel > i) sel--; marcaCambio(); pintar(); }
+    return;
+  }
+  if (sel !== null && cajas[sel]){
+    const esq = esquinaCerca(cajas[sel], p);
+    if (esq !== null){ drag = {tipo:"redim", idx: sel, esq}; return; }
+  }
+  const i = cajaEn(p);
+  if (i !== null){
+    sel = i; drag = {tipo:"mover", idx: i, dx: p.x - cajas[i][1]*cv.width, dy: p.y - cajas[i][2]*cv.height};
+    actualizarBotonClase(); pintar(); return;
+  }
+  sel = null; actualizarBotonClase();
+  drag = {tipo:"dibujar", x0: p.x, y0: p.y, x1: p.x, y1: p.y, dibujando: false};
+});
+cv.addEventListener("mousemove", e => {
+  if (!drag) return;
+  const p = natPunto(e);
+  const W = cv.width, H = cv.height;
+  if (drag.tipo === "dibujar"){
+    drag.x1 = p.x; drag.y1 = p.y;
+    if (Math.hypot(p.x-drag.x0, p.y-drag.y0) > 5) drag.dibujando = true;
+  } else if (drag.tipo === "mover"){
+    const c = cajas[drag.idx];
+    c[1] = clamp((p.x - drag.dx)/W, c[3]/2, 1 - c[3]/2);
+    c[2] = clamp((p.y - drag.dy)/H, c[4]/2, 1 - c[4]/2);
+    marcaCambio();
+  } else if (drag.tipo === "redim"){
+    redimensionar(cajas[drag.idx], p, drag.esq);
+    marcaCambio();
+  }
+  pintar();
+});
+cv.addEventListener("mouseup", e => {
+  if (drag && drag.tipo === "dibujar"){
+    const w = Math.abs(drag.x1 - drag.x0), h = Math.abs(drag.y1 - drag.y0);
+    if (w > 8 && h > 8){
+      const x = Math.min(drag.x0, drag.x1), y = Math.min(drag.y0, drag.y1);
+      cajas.push([claseNueva, (x + w/2)/cv.width, (y + h/2)/cv.height, w/cv.width, h/cv.height]);
+      sel = cajas.length - 1;
+      marcaCambio();
+      pintar();
+    }
+  }
+  drag = null;
+});
+cv.addEventListener("mouseleave", () => { drag = null; });
+cv.addEventListener("contextmenu", e => e.preventDefault());
+cv.addEventListener("dblclick", e => {
+  const i = cajaEn(natPunto(e));
+  if (i !== null){ cajas[i][0] = cajas[i][0] === 0 ? 1 : 0; sel = i; actualizarBotonClase(); marcaCambio(); pintar(); }
+});
+
+function redimensionar(c, p, esq){
+  const W = cv.width, H = cv.height;
+  let x1 = (c[1]-c[3]/2)*W, y1 = (c[2]-c[4]/2)*H, x2 = x1 + c[3]*W, y2 = y1 + c[4]*H;
+  const px = clamp(p.x, 0, W), py = clamp(p.y, 0, H);
+  if (esq === 0){ x1 = px; y1 = py; }      // TL → ancla BR
+  if (esq === 1){ x2 = px; y1 = py; }      // TR → ancla BL
+  if (esq === 2){ x1 = px; y2 = py; }      // BL → ancla TR
+  if (esq === 3){ x2 = px; y2 = py; }      // BR → ancla TL
+  if (x2 - x1 < 8 || y2 - y1 < 8) return;
+  c[1] = (x1 + x2)/2/W; c[2] = (y1 + y2)/2/H; c[3] = (x2 - x1)/W; c[4] = (y2 - y1)/H;
+}
+
+// ── acciones ───────────────────────────────────────────────────────
+function marcaCambio(){ dirty = true; pintarEstado(); }
+function borrarSel(){
+  if (sel === null || !cajas[sel]) return;
+  cajas.splice(sel, 1); sel = null; marcaCambio(); pintar();
+}
+async function guardar(){
+  if (!paginas[idx]) return;
+  $("bGuardar").disabled = true;
+  try {
+    const res = await fetch("/api/guardar", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({nombre: paginas[idx].nombre, cajas, revisada})});
+    const d = await res.json();
+    if (d.ok){
+      paginas[idx].cajas = JSON.parse(JSON.stringify(cajas));
+      paginas[idx].revisada = revisada;
+      paginas[idx].gigantes = cajas.map((c,i)=>esGigante(c)?i:null).filter(x=>x!==null);
+      dirty = false;
+      toast("Guardado: " + d.cajas + " cajas en " + paginas[idx].nombre + (d.gigantes ? " · ⚠ " + d.gigantes + " gigantes" : ""));
+      // con el filtro "solo sin revisar" activo, la página guardada sale de la lista
+      if (soloSinRevisar && revisada){
+        paginas.splice(idx, 1);
+        if (!paginas.length){ aplicarFiltro(); return; }
+        if (idx >= paginas.length) idx = paginas.length - 1;
+        irPagina(idx);
+        return;
+      }
+      pintarEstado(); pintar();
+      if (autosig) setTimeout(() => irPagina(idx + 1), 250);
+    } else toast("Error: " + (d.error || "desconocido"), true);
+  } catch (err){ toast("Error de red: " + err.message, true); }
+  $("bGuardar").disabled = false;
+}
+
+function actualizarBotonClase(){
+  const b0 = $("bClase0"), b1 = $("bClase1");
+  const activa = (sel !== null && cajas[sel]) ? cajas[sel][0] : claseNueva;
+  b0.classList.toggle("activo", activa === 0);
+  b1.classList.toggle("activo", activa === 1);
+}
+
+// ── eventos de la UI ───────────────────────────────────────────────
+$("bPrev").onclick = () => irPagina(idx - 1);
+$("bNext").onclick = () => irPagina(idx + 1);
+$("bGig").onclick = irSiguienteGigante;
+$("bSinRev").onclick = irSiguienteSinRevisar;
+$("bZoomIn").onclick = () => cambiarZoom(20);
+$("bZoomOut").onclick = () => cambiarZoom(-20);
+$("bGuardar").onclick = guardar;
+$("chkRev").onchange = e => { revisada = e.target.checked; marcaCambio(); };
+$("chkAuto").onchange = e => { autosig = e.target.checked; };
+$("chkFiltro").onchange = e => {
+  if (dirty && !confirm("Hay cambios sin guardar. ¿Aplicar el filtro y descartarlos?")){
+    e.target.checked = soloSinRevisar; return;
+  }
+  soloSinRevisar = e.target.checked; aplicarFiltro();
+};
+$("bAyuda").onclick = () => { const a = $("ayuda"); a.style.display = a.style.display === "block" ? "none" : "block"; };
+$("bClase0").onclick = () => { if (sel !== null && cajas[sel]){ cajas[sel][0] = 0; marcaCambio(); } claseNueva = 0; actualizarBotonClase(); pintar(); };
+$("bClase1").onclick = () => { if (sel !== null && cajas[sel]){ cajas[sel][0] = 1; marcaCambio(); } claseNueva = 1; actualizarBotonClase(); pintar(); };
+
+document.addEventListener("keydown", e => {
+  const tag = (e.target.tagName || "").toUpperCase();
+  if (tag === "SELECT" || tag === "INPUT" || tag === "TEXTAREA") return;
+  if (e.ctrlKey || e.metaKey){
+    if ((e.key === "s" || e.key === "S")){ e.preventDefault(); guardar(); }
+    return;
+  }
+  switch (e.key){
+    case "g": case "G":
+      if (sel !== null && cajas[sel]){ cajas[sel][0] = 0; marcaCambio(); pintar(); }
+      claseNueva = 0; actualizarBotonClase(); break;
+    case "l": case "L":
+      if (sel !== null && cajas[sel]){ cajas[sel][0] = 1; marcaCambio(); pintar(); }
+      claseNueva = 1; actualizarBotonClase(); break;
+    case "Delete": case "Backspace": e.preventDefault(); borrarSel(); break;
+    case "Escape": sel = null; actualizarBotonClase(); pintar(); break;
+    case "n": case "N": irSiguienteSinRevisar(); break;
+    case "ArrowLeft": case "a": case "A": irPagina(idx - 1); break;
+    case "ArrowRight": case "d": case "D": irPagina(idx + 1); break;
+    case "+": case "=": cambiarZoom(20); break;
+    case "-": cambiarZoom(-20); break;
+  }
+});
+
+cargarTodo();
+</script>
+</body>
+</html>

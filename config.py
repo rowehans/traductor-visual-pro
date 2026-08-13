@@ -227,6 +227,21 @@ COMIC_DETECTOR_LINE_SCORE_THRESH: Final[float] = 0.6  # score DBNet (inference.p
 COMIC_DETECTOR_UNCLIP_RATIO: Final[float] = 1.5     # expansión DBNet (dmMaze)
 COMIC_DETECTOR_MAX_REGIONS: Final[int] = 60         # límite regiones → Ruta C
 COMIC_DETECTOR_MIN_AREA_RATIO: Final[float] = 0.0005  # región mínima (0.05% página)
+# Gate heurístico del tier CTD en la fusión (Paso 4, PLAN_MANGA_OCR — lección
+# del benchmark del Paso 5: en páginas bien detectadas el re-OCR de crops
+# cuesta 2-4s y la mayoría de regiones CTD duplica a YOLO). Mismo patrón que
+# el gate YOLO: el tier solo corre en páginas que el pipeline aún detecta
+# DÉBILMENTE (menos bloques que el mínimo del trigger, o conf media baja).
+# Se evalúa con los bloques POST-YOLO (cascada: si YOLO ya resolvió la
+# página, CTD no corre).
+COMIC_DETECTOR_GATE_MIN_BLOCKS: Final[int] = UOCR_TRIGGER_MIN_BLOCKS  # <3 bloques → correr
+COMIC_DETECTOR_GATE_MAX_CONF: Final[float] = 0.35   # o conf media < 0.35 → correr
+# Dedup de regiones CTD vs YOLO por overlap ANTES de la Ruta C: una región
+# CTD que solape (inter/min_area, _overlap_ratio) más que el umbral con una
+# región YOLO ya detectada se descarta — YOLO ya cubre esa zona y ya va a
+# re-OCRear el crop (no pagar el re-OCR dos veces: 85 regiones → 21
+# recuperados → solo 5 nuevos en el benchmark de 5 páginas).
+COMIC_DETECTOR_DEDUP_IOU: Final[float] = 0.40
 
 # ─── Rotación de texto en la Ruta C (Fase 6) ─────────────────────
 # rotation_info es un kwarg de EasyOCR.readtext(): con él, el reader rota el
