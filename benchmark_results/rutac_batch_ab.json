@@ -1,0 +1,509 @@
+{
+ "4": {
+  "crops": 6,
+  "regions": 6,
+  "base_s": 2.35,
+  "alt_s": 0.757,
+  "delta_s": -1.593,
+  "base_det_s": 1.852,
+  "alt_det_s": 0.416,
+  "base_rec_s": 0.38,
+  "alt_rec_s": 0.226,
+  "base_group_s": 0.037,
+  "alt_group_s": 0.008,
+  "base_spell_s": 0.034,
+  "alt_spell_s": 0.005,
+  "base_det_calls": 6,
+  "alt_det_calls": 1,
+  "base_blocks_total": 8,
+  "base_blocks_rapid": 5,
+  "alt_blocks": 7,
+  "texts_equal": false,
+  "solo_base": [
+   "BABAYAGA.QUESIEMPRE HA SIDO TANIMPREDECIBLE prestigiosa reputación",
+   "PODRIAUSARLO PARA",
+   "YSIHUBIESE ACEPTADO.",
+   "nsoisondns-od nsoisondns-iod osareputacion"
+  ],
+  "solo_alt": [
+   "BABAYAGA.QUESIEMPREHA SIDO TANIMPREDECIBLE Y-por_supuestol.gu Y.por_supuesto!.gu presfigjosareputacion presfigjosdreputacion seria uf buen agregado! seria un buen agregado",
+   "PODRIA USARLO PARA",
+   "鼻"
+  ],
+  "base_texts": [
+   "BABAYAGA.QUESIEMPRE HA SIDO TANIMPREDECIBLE prestigiosa reputación",
+   "CONTROLARALAPRIMERA",
+   "ESTA RELACIONADO CON",
+   "LA CARDENALDELSANTO REINO, YUTIA BLOODIA...",
+   "PODRIAUSARLO PARA",
+   "YA QUETAMBIEN",
+   "YSIHUBIESE ACEPTADO.",
+   "nsoisondns-od nsoisondns-iod osareputacion"
+  ],
+  "alt_texts": [
+   "BABAYAGA.QUESIEMPREHA SIDO TANIMPREDECIBLE Y-por_supuestol.gu Y.por_supuesto!.gu presfigjosareputacion presfigjosdreputacion seria uf buen agregado! seria un buen agregado",
+   "CONTROLARALAPRIMERA",
+   "ESTA RELACIONADO CON",
+   "LA CARDENALDELSANTO REINO, YUTIA BLOODIA...",
+   "PODRIA USARLO PARA",
+   "YA QUETAMBIEN",
+   "鼻"
+  ],
+  "base_texts_rapid": [
+   "CONTROLARALAPRIMERA",
+   "ESTA RELACIONADO CON",
+   "LA CARDENALDELSANTO REINO, YUTIA BLOODIA...",
+   "PODRIAUSARLO PARA",
+   "YA QUETAMBIEN"
+  ],
+  "alt_dups": {}
+ },
+ "29": {
+  "crops": 11,
+  "regions": 11,
+  "base_s": 5.155,
+  "alt_s": 1.202,
+  "delta_s": -3.953,
+  "base_det_s": 4.132,
+  "alt_det_s": 0.6,
+  "base_rec_s": 0.724,
+  "alt_rec_s": 0.389,
+  "base_group_s": 0.006,
+  "alt_group_s": 0.004,
+  "base_spell_s": 0.001,
+  "alt_spell_s": 0.0,
+  "base_det_calls": 11,
+  "alt_det_calls": 2,
+  "base_blocks_total": 9,
+  "base_blocks_rapid": 8,
+  "alt_blocks": 9,
+  "texts_equal": false,
+  "solo_base": [
+   "ACUEESCLVCEDAD RO NOMBRE CEIOS CIOSES CYTURNCSY",
+   "ASIQUESEGUi",
+   "ESIMROMENTEDESCHIEEN A",
+   "OSKSTLEOSY NCSCASTOSRTUANES DGI CIEN DIOS COMDACO? YICSARCHIVOSCC 10MASPRCSUNDO DELATORRE? YICSARCHIVOSCC 10MASPRCGUNDO DELATORREY",
+   "PJIOSMISTEAOOSYDOS CESTOSTUAISDGL CEAN DIOS CIMDADOR",
+   "PREGUNTANDO EN EL ORDEN QUE LAS PREPARE, PERO.",
+   "SIEMPRE FUERON SIMPLES.",
+   "ZELHEREDCROEC SU VOLUNTAD?"
+  ],
+  "solo_alt": [
+   "ASi QUE SEGUi",
+   "CUTISCIVEDAD RO NOMBRE CEIOS CIOSES CXTERNCS? 0SMISTL2OSV",
+   "ESIMROMOKTEDESCHIEEKLA SITLACION ACTUAL.ESO ES TCCO IO CUC PUEDO DOCIR.",
+   "KSCASICSRTUANNS DCI CHEN DIOS COMDACOP YICSARCHIVOSCC 10MASPRCSUNDO DELATORRE? YICSARCHIVOSCC 10MASPRCGUNDO DELATORREY",
+   "PJAOSMISTEAOOSYIOSCOSTOSMTUAISDKI CEAN DEOS CEMDADO?",
+   "PREGUNTANDO ENELORDEN QUELASPREPARE,PERO....",
+   "SIEMPREFUERON SIMPLES.",
+   "ZLLHEREDCROCE SUVOLUNTAD?"
+  ],
+  "base_texts": [
+   "ACUEESCLVCEDAD RO NOMBRE CEIOS CIOSES CYTURNCSY",
+   "ASIQUESEGUi",
+   "ESIMROMENTEDESCHIEEN A",
+   "OSKSTLEOSY NCSCASTOSRTUANES DGI CIEN DIOS COMDACO? YICSARCHIVOSCC 10MASPRCSUNDO DELATORRE? YICSARCHIVOSCC 10MASPRCGUNDO DELATORREY",
+   "PJIOSMISTEAOOSYDOS CESTOSTUAISDGL CEAN DIOS CIMDADOR",
+   "PREGUNTANDO EN EL ORDEN QUE LAS PREPARE, PERO.",
+   "SIEMPRE FUERON SIMPLES.",
+   "SUSRESPUESTAS",
+   "ZELHEREDCROEC SU VOLUNTAD?"
+  ],
+  "alt_texts": [
+   "ASi QUE SEGUi",
+   "CUTISCIVEDAD RO NOMBRE CEIOS CIOSES CXTERNCS? 0SMISTL2OSV",
+   "ESIMROMOKTEDESCHIEEKLA SITLACION ACTUAL.ESO ES TCCO IO CUC PUEDO DOCIR.",
+   "KSCASICSRTUANNS DCI CHEN DIOS COMDACOP YICSARCHIVOSCC 10MASPRCSUNDO DELATORRE? YICSARCHIVOSCC 10MASPRCGUNDO DELATORREY",
+   "PJAOSMISTEAOOSYIOSCOSTOSMTUAISDKI CEAN DEOS CEMDADO?",
+   "PREGUNTANDO ENELORDEN QUELASPREPARE,PERO....",
+   "SIEMPREFUERON SIMPLES.",
+   "SUSRESPUESTAS",
+   "ZLLHEREDCROCE SUVOLUNTAD?"
+  ],
+  "base_texts_rapid": [
+   "ACUEESCLVCEDAD RO NOMBRE CEIOS CIOSES CYTURNCSY",
+   "ASIQUESEGUi",
+   "ESIMROMENTEDESCHIEEN A",
+   "PJIOSMISTEAOOSYDOS CESTOSTUAISDGL CEAN DIOS CIMDADOR",
+   "PREGUNTANDO EN EL ORDEN QUE LAS PREPARE, PERO.",
+   "SIEMPRE FUERON SIMPLES.",
+   "SUSRESPUESTAS",
+   "ZELHEREDCROEC SU VOLUNTAD?"
+  ],
+  "alt_dups": {}
+ },
+ "39": {
+  "crops": 4,
+  "regions": 4,
+  "base_s": 1.646,
+  "alt_s": 0.572,
+  "delta_s": -1.074,
+  "base_det_s": 1.357,
+  "alt_det_s": 0.242,
+  "base_rec_s": 0.25,
+  "alt_rec_s": 0.141,
+  "base_group_s": 0.001,
+  "alt_group_s": 0.001,
+  "base_spell_s": 0.0,
+  "alt_spell_s": 0.0,
+  "base_det_calls": 4,
+  "alt_det_calls": 1,
+  "base_blocks_total": 4,
+  "base_blocks_rapid": 3,
+  "alt_blocks": 3,
+  "texts_equal": false,
+  "solo_base": [
+   "DETUNAGAYLUEOU TEPLEDESIR. TEPUEDESIR.",
+   "n",
+   "口"
+  ],
+  "solo_alt": [
+   "1 UETUNAGATLUEOU TEPLEDESIR.",
+   "コ"
+  ],
+  "base_texts": [
+   "DETUNAGAYLUEOU TEPLEDESIR. TEPUEDESIR.",
+   "PERDONPOR LADEMORA.",
+   "n",
+   "口"
+  ],
+  "alt_texts": [
+   "1 UETUNAGATLUEOU TEPLEDESIR.",
+   "PERDONPOR LADEMORA.",
+   "コ"
+  ],
+  "base_texts_rapid": [
+   "PERDONPOR LADEMORA.",
+   "n",
+   "口"
+  ],
+  "alt_dups": {}
+ },
+ "7": {
+  "crops": 5,
+  "regions": 5,
+  "base_s": 1.955,
+  "alt_s": 0.584,
+  "delta_s": -1.371,
+  "base_det_s": 1.486,
+  "alt_det_s": 0.28,
+  "base_rec_s": 0.414,
+  "alt_rec_s": 0.284,
+  "base_group_s": 0.003,
+  "alt_group_s": 0.002,
+  "base_spell_s": 0.0,
+  "alt_spell_s": 0.0,
+  "base_det_calls": 5,
+  "alt_det_calls": 1,
+  "base_blocks_total": 7,
+  "base_blocks_rapid": 4,
+  "alt_blocks": 7,
+  "texts_equal": false,
+  "solo_base": [
+   "DESAPARECIDODESU HONSINOSS ROSTRODESDE",
+   "LAS TRADICIONESSON IMPORTANTES,PERO ASEGURAR SUAPOYO ESPRIORIDAD.",
+   "MAJESTAD.",
+   "QUE HABRA",
+   "SUCEDIDO?",
+   "ns"
+  ],
+  "solo_alt": [
+   "HHONSINOSNS E",
+   "LASTRADICIONESSON IMPORTANTES.PERO ASEGURARSUAPOYO ESPRIORIDAD.",
+   "LQUEESLO QUE HABRA",
+   "MAJESTAD",
+   "SUCEDIDOP",
+   "Su"
+  ],
+  "base_texts": [
+   "DESAPARECIDODESU HONSINOSS ROSTRODESDE",
+   "LAS TRADICIONESSON IMPORTANTES,PERO ASEGURAR SUAPOYO ESPRIORIDAD.",
+   "MAJESTAD.",
+   "PENSEQUENUES- TRA RELACIONIBA ENLA DIRECCION CORRECTA...",
+   "QUE HABRA",
+   "SUCEDIDO?",
+   "ns"
+  ],
+  "alt_texts": [
+   "HHONSINOSNS E",
+   "LASTRADICIONESSON IMPORTANTES.PERO ASEGURARSUAPOYO ESPRIORIDAD.",
+   "LQUEESLO QUE HABRA",
+   "MAJESTAD",
+   "PENSEQUENUES- TRA RELACIONIBA ENLA DIRECCION CORRECTA...",
+   "SUCEDIDOP",
+   "Su"
+  ],
+  "base_texts_rapid": [
+   "MAJESTAD.",
+   "QUE HABRA",
+   "SUCEDIDO?",
+   "ns"
+  ],
+  "alt_dups": {}
+ },
+ "11": {
+  "crops": 8,
+  "regions": 8,
+  "base_s": 2.867,
+  "alt_s": 1.049,
+  "delta_s": -1.818,
+  "base_det_s": 2.152,
+  "alt_det_s": 0.616,
+  "base_rec_s": 0.404,
+  "alt_rec_s": 0.168,
+  "base_group_s": 0.003,
+  "alt_group_s": 0.002,
+  "base_spell_s": 0.0,
+  "alt_spell_s": 0.0,
+  "base_det_calls": 8,
+  "alt_det_calls": 1,
+  "base_blocks_total": 9,
+  "base_blocks_rapid": 6,
+  "alt_blocks": 9,
+  "texts_equal": false,
+  "solo_base": [
+   "JINO QUJERO IR AHI!!",
+   "JON! IHUU!!",
+   "NO DE ESTA FORMA...",
+   "iiPOR.",
+   "iiSUELTA- iSUELTA- MEEEEE!!!!",
+   "liME OPONGO!!"
+  ],
+  "solo_alt": [
+   "O ONG",
+   "iAAAHI iNO!",
+   "iPOR.",
+   "iSUELTA- MEEEEE!!!! iSUELTA- MEEEEE!!!!",
+   "iiME OPONGO!!",
+   "lINO QUJERO IR AHI!!!"
+  ],
+  "base_texts": [
+   "1 目",
+   "JINO QUJERO IR AHI!!",
+   "JON! IHUU!!",
+   "NO DE ESTA FORMA...",
+   "POR FAVORI!",
+   "SERRE",
+   "iiPOR.",
+   "iiSUELTA- iSUELTA- MEEEEE!!!!",
+   "liME OPONGO!!"
+  ],
+  "alt_texts": [
+   "1 目",
+   "O ONG",
+   "POR FAVORI!",
+   "SERRE",
+   "iAAAHI iNO!",
+   "iPOR.",
+   "iSUELTA- MEEEEE!!!! iSUELTA- MEEEEE!!!!",
+   "iiME OPONGO!!",
+   "lINO QUJERO IR AHI!!!"
+  ],
+  "base_texts_rapid": [
+   "JINO QUJERO IR AHI!!",
+   "JON! IHUU!!",
+   "POR FAVORI!",
+   "SERRE",
+   "iiPOR.",
+   "liME OPONGO!!"
+  ],
+  "alt_dups": {}
+ },
+ "52": {
+  "crops": 6,
+  "regions": 6,
+  "base_s": 2.316,
+  "alt_s": 1.05,
+  "delta_s": -1.266,
+  "base_det_s": 1.88,
+  "alt_det_s": 0.534,
+  "base_rec_s": 0.384,
+  "alt_rec_s": 0.415,
+  "base_group_s": 0.003,
+  "alt_group_s": 0.002,
+  "base_spell_s": 0.0,
+  "alt_spell_s": 0.0,
+  "base_det_calls": 6,
+  "alt_det_calls": 1,
+  "base_blocks_total": 10,
+  "base_blocks_rapid": 9,
+  "alt_blocks": 8,
+  "texts_equal": false,
+  "solo_base": [
+   "DIGASQUE..?",
+   "EVAN, QUIERO",
+   "NO. ENOME",
+   "PATATAS PARA LA CENA.",
+   "PROFESIONALDE LA PATATA",
+   "QUEVIAYER,",
+   "QUIERESVOLVERA EENVERDAD COMERLASHOY?",
+   "UCHUUJINMANGAS.CON"
+  ],
+  "solo_alt": [
+   "DIGASQUE...?",
+   "EVAN,QUIERO",
+   "NOENOME",
+   "OE O",
+   "PATATASPARA LACENA",
+   "QUEVIAYER TEHASVUELTOUN PROFESIONALDE LA PATATA"
+  ],
+  "base_texts": [
+   "DIGASQUE..?",
+   "EPERDON?",
+   "EVAN, QUIERO",
+   "NO. ENOME",
+   "PATATAS PARA LA CENA.",
+   "PORLO",
+   "PROFESIONALDE LA PATATA",
+   "QUEVIAYER,",
+   "QUIERESVOLVERA EENVERDAD COMERLASHOY?",
+   "UCHUUJINMANGAS.CON"
+  ],
+  "alt_texts": [
+   "DIGASQUE...?",
+   "EPERDON?",
+   "EVAN,QUIERO",
+   "NOENOME",
+   "OE O",
+   "PATATASPARA LACENA",
+   "PORLO",
+   "QUEVIAYER TEHASVUELTOUN PROFESIONALDE LA PATATA"
+  ],
+  "base_texts_rapid": [
+   "DIGASQUE..?",
+   "EPERDON?",
+   "EVAN, QUIERO",
+   "NO. ENOME",
+   "PATATAS PARA LA CENA.",
+   "PORLO",
+   "PROFESIONALDE LA PATATA",
+   "QUEVIAYER,",
+   "UCHUUJINMANGAS.CON"
+  ],
+  "alt_dups": {}
+ },
+ "8": {
+  "crops": 5,
+  "regions": 5,
+  "base_s": 2.104,
+  "alt_s": 0.581,
+  "delta_s": -1.523,
+  "base_det_s": 1.67,
+  "alt_det_s": 0.283,
+  "base_rec_s": 0.295,
+  "alt_rec_s": 0.177,
+  "base_group_s": 0.002,
+  "alt_group_s": 0.002,
+  "base_spell_s": 0.0,
+  "alt_spell_s": 0.0,
+  "base_det_calls": 5,
+  "alt_det_calls": 1,
+  "base_blocks_total": 8,
+  "base_blocks_rapid": 8,
+  "alt_blocks": 8,
+  "texts_equal": false,
+  "solo_base": [
+   "EUME PODPia..",
+   "EUN REGALO TAN",
+   "MIPROFESOR,",
+   "OFRECIALCONDE PRLATIO",
+   "SVERDRD QUELE",
+   "UEHUUJINMANGAS.CON"
+  ],
+  "solo_alt": [
+   "EUNREGALOTAN",
+   "LME PODRIA..",
+   "MIPROFESOR",
+   "OFRECIOALCONDE PRLATIO...",
+   "SVERDAD QUELE",
+   "UCHUUJ NNANGASCON"
+  ],
+  "base_texts": [
+   "DIGO,A",
+   "EUME PODPia..",
+   "EUN REGALO TAN",
+   "MIPROFESOR,",
+   "OFRECIALCONDE PRLATIO",
+   "PROBLEMATICO'P",
+   "SVERDRD QUELE",
+   "UEHUUJINMANGAS.CON"
+  ],
+  "alt_texts": [
+   "DIGO,A",
+   "EUNREGALOTAN",
+   "LME PODRIA..",
+   "MIPROFESOR",
+   "OFRECIOALCONDE PRLATIO...",
+   "PROBLEMATICO'P",
+   "SVERDAD QUELE",
+   "UCHUUJ NNANGASCON"
+  ],
+  "base_texts_rapid": [
+   "DIGO,A",
+   "EUME PODPia..",
+   "EUN REGALO TAN",
+   "MIPROFESOR,",
+   "OFRECIALCONDE PRLATIO",
+   "PROBLEMATICO'P",
+   "SVERDRD QUELE",
+   "UEHUUJINMANGAS.CON"
+  ],
+  "alt_dups": {}
+ },
+ "1": {
+  "crops": 7,
+  "regions": 7,
+  "base_s": 3.496,
+  "alt_s": 1.038,
+  "delta_s": -2.459,
+  "base_det_s": 2.939,
+  "alt_det_s": 0.536,
+  "base_rec_s": 0.372,
+  "alt_rec_s": 0.344,
+  "base_group_s": 0.002,
+  "alt_group_s": 0.001,
+  "base_spell_s": 0.0,
+  "alt_spell_s": 0.0,
+  "base_det_calls": 7,
+  "alt_det_calls": 1,
+  "base_blocks_total": 4,
+  "base_blocks_rapid": 1,
+  "alt_blocks": 5,
+  "texts_equal": false,
+  "solo_base": [
+   "ENVERDADES INCREIBLE INCREIBLE",
+   "PRIMERO SEOLLANG,Y AHORA YUTIA",
+   "SEOLLANG O!IEN SEOLLANG O!WEN"
+  ],
+  "solo_alt": [
+   "PRIMERO",
+   "S E",
+   "SEOLLANG OUIEN SEOLLANG OUIEN",
+   "SEOLLANG,Y AHORAYUTIA"
+  ],
+  "base_texts": [
+   "AAHH...",
+   "ENVERDADES INCREIBLE INCREIBLE",
+   "PRIMERO SEOLLANG,Y AHORA YUTIA",
+   "SEOLLANG O!IEN SEOLLANG O!WEN"
+  ],
+  "alt_texts": [
+   "AAHH...",
+   "PRIMERO",
+   "S E",
+   "SEOLLANG OUIEN SEOLLANG OUIEN",
+   "SEOLLANG,Y AHORAYUTIA"
+  ],
+  "base_texts_rapid": [
+   "AAHH..."
+  ],
+  "alt_dups": {}
+ },
+ "_verdict": {
+  "controls": [],
+  "control_drift_s": 0.0,
+  "control_drift_max_s": 0.0,
+  "effect_affected_s": -1.882,
+  "verdict": "sin páginas de control — Δ orientativo (añade páginas sin Ruta C para separar deriva de efecto)"
+ }
+}

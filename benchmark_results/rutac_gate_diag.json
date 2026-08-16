@@ -1,0 +1,436 @@
+{
+ "pages": [
+  1,
+  4,
+  7,
+  8,
+  11,
+  2,
+  3,
+  5,
+  6,
+  9,
+  10,
+  12
+ ],
+ "n_crops": 52,
+ "redundant": 25,
+ "crops": [
+  {
+   "page": 1,
+   "source": "yolo",
+   "cls_conf": 0.759,
+   "best_overlap": 1.0,
+   "best_conf": 0.983,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 1,
+   "source": "yolo",
+   "cls_conf": 0.657,
+   "best_overlap": 1.0,
+   "best_conf": 0.906,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 1,
+   "source": "yolo",
+   "cls_conf": 0.473,
+   "best_overlap": 1.0,
+   "best_conf": 0.846,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 1,
+   "source": "yolo",
+   "cls_conf": 0.359,
+   "best_overlap": 1.0,
+   "best_conf": 0.846,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 1,
+   "source": "yolo",
+   "cls_conf": 0.348,
+   "best_overlap": 1.0,
+   "best_conf": 0.958,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 1,
+   "source": "yolo",
+   "cls_conf": 0.314,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 4,
+   "source": "ctd",
+   "cls_conf": 0.864,
+   "best_overlap": 1.0,
+   "best_conf": 0.224,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 4,
+   "source": "ctd",
+   "cls_conf": 0.828,
+   "best_overlap": 1.0,
+   "best_conf": 0.224,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 7,
+   "source": "yolo",
+   "cls_conf": 0.919,
+   "best_overlap": 1.0,
+   "best_conf": 0.895,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 7,
+   "source": "yolo",
+   "cls_conf": 0.912,
+   "best_overlap": 1.0,
+   "best_conf": 0.962,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 7,
+   "source": "yolo",
+   "cls_conf": 0.825,
+   "best_overlap": 1.0,
+   "best_conf": 0.975,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 7,
+   "source": "yolo",
+   "cls_conf": 0.753,
+   "best_overlap": 1.0,
+   "best_conf": 0.947,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 7,
+   "source": "yolo",
+   "cls_conf": 0.667,
+   "best_overlap": 1.0,
+   "best_conf": 0.95,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 8,
+   "source": "yolo",
+   "cls_conf": 0.849,
+   "best_overlap": 1.0,
+   "best_conf": 0.944,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 8,
+   "source": "yolo",
+   "cls_conf": 0.839,
+   "best_overlap": 1.0,
+   "best_conf": 0.996,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 8,
+   "source": "yolo",
+   "cls_conf": 0.695,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 8,
+   "source": "yolo",
+   "cls_conf": 0.446,
+   "best_overlap": 1.0,
+   "best_conf": 0.897,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 11,
+   "source": "yolo",
+   "cls_conf": 0.788,
+   "best_overlap": 0.963,
+   "best_conf": 0.879,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 11,
+   "source": "yolo",
+   "cls_conf": 0.786,
+   "best_overlap": 0.98,
+   "best_conf": 0.91,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 11,
+   "source": "yolo",
+   "cls_conf": 0.676,
+   "best_overlap": 1.0,
+   "best_conf": 0.889,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 11,
+   "source": "yolo",
+   "cls_conf": 0.641,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 11,
+   "source": "yolo",
+   "cls_conf": 0.578,
+   "best_overlap": 1.0,
+   "best_conf": 0.943,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 11,
+   "source": "yolo",
+   "cls_conf": 0.544,
+   "best_overlap": 1.0,
+   "best_conf": 0.99,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 2,
+   "source": "yolo",
+   "cls_conf": 0.788,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 2,
+   "source": "yolo",
+   "cls_conf": 0.786,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 2,
+   "source": "yolo",
+   "cls_conf": 0.676,
+   "best_overlap": 0.6,
+   "best_conf": 0.91,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 2,
+   "source": "yolo",
+   "cls_conf": 0.641,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 2,
+   "source": "yolo",
+   "cls_conf": 0.578,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 2,
+   "source": "yolo",
+   "cls_conf": 0.544,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 3,
+   "source": "yolo",
+   "cls_conf": 0.788,
+   "best_overlap": 0.444,
+   "best_conf": 0.742,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 3,
+   "source": "yolo",
+   "cls_conf": 0.786,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 3,
+   "source": "yolo",
+   "cls_conf": 0.676,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 3,
+   "source": "yolo",
+   "cls_conf": 0.641,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 3,
+   "source": "yolo",
+   "cls_conf": 0.578,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 3,
+   "source": "yolo",
+   "cls_conf": 0.544,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 5,
+   "source": "yolo",
+   "cls_conf": 0.788,
+   "best_overlap": 0.63,
+   "best_conf": 0.946,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 5,
+   "source": "yolo",
+   "cls_conf": 0.786,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 5,
+   "source": "yolo",
+   "cls_conf": 0.676,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 5,
+   "source": "yolo",
+   "cls_conf": 0.641,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 5,
+   "source": "yolo",
+   "cls_conf": 0.578,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 5,
+   "source": "yolo",
+   "cls_conf": 0.544,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 6,
+   "source": "yolo",
+   "cls_conf": 0.788,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 6,
+   "source": "yolo",
+   "cls_conf": 0.786,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 6,
+   "source": "yolo",
+   "cls_conf": 0.676,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 6,
+   "source": "yolo",
+   "cls_conf": 0.641,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 6,
+   "source": "yolo",
+   "cls_conf": 0.578,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 6,
+   "source": "yolo",
+   "cls_conf": 0.544,
+   "best_overlap": 0.0,
+   "best_conf": 0.0,
+   "redundant_high_conf": false
+  },
+  {
+   "page": 9,
+   "source": "yolo",
+   "cls_conf": 0.621,
+   "best_overlap": 1.0,
+   "best_conf": 0.954,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 10,
+   "source": "ctd",
+   "cls_conf": 0.825,
+   "best_overlap": 0.889,
+   "best_conf": 0.933,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 10,
+   "source": "ctd",
+   "cls_conf": 0.874,
+   "best_overlap": 1.0,
+   "best_conf": 0.933,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 12,
+   "source": "yolo",
+   "cls_conf": 0.82,
+   "best_overlap": 1.0,
+   "best_conf": 0.947,
+   "redundant_high_conf": true
+  },
+  {
+   "page": 12,
+   "source": "yolo",
+   "cls_conf": 0.802,
+   "best_overlap": 0.983,
+   "best_conf": 0.892,
+   "redundant_high_conf": true
+  }
+ ]
+}

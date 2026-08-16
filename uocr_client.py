@@ -21,7 +21,10 @@ import subprocess
 import sys
 import time
 import urllib.request
+
+from config import UOCR_MAX_LENGTH
 from pathlib import Path
+from typing import Any, cast
 
 def _resolve_root() -> Path:
     """Resuelve la raíz del proyecto (donde viven env_uocr_gpu/ y hf_cache/).
@@ -59,7 +62,7 @@ UOCR_PYTHON = ROOT / "env_uocr_gpu" / "Scripts" / "python.exe"
 DAEMON_SCRIPT = ROOT / "uocr_daemon.py"
 LOG_FILE = ROOT / "uocr_daemon.log"
 
-_proc: subprocess.Popen | None = None
+_proc: subprocess.Popen[bytes] | None = None
 
 
 def available() -> bool:
@@ -84,10 +87,15 @@ def spawn_daemon() -> bool:
         print("[uocr] Daemon ya activo en el puerto — adoptado")
         return True
     if h.get("state") == "error":
-        # Modelo en estado error: intentar relanzar una vez (el daemon viejo
-        # se quedó con la carga fallida; matarlo y arrancar uno limpio).
+        # Solo se puede reiniciar automáticamente un proceso que este cliente
+        # lanzó y aún conserva en _proc. Nunca se debe matar por PID cualquier
+        # proceso local que coincida con el puerto 5177.
         print(f"[uocr] Daemon en estado error ({h.get('error')}) — relanzando...")
-        _kill_daemon_on_port()
+        if _proc is None or _proc.poll() is not None:
+            print("[uocr] Estado error sin proceso hijo verificable; no se termina el proceso del puerto")
+            return False
+        if not _stop_owned_daemon():
+            return False
         time.sleep(1)
     if not available():
         print("[uocr] Daemon no disponible (env_uocr_gpu o uocr_daemon.py ausentes)")
@@ -127,36 +135,37 @@ def spawn_daemon() -> bool:
         return False
 
 
-def _kill_daemon_on_port() -> None:
-    """Mata cualquier proceso escuchando en el puerto del daemon (Windows).
+def _stop_owned_daemon() -> bool:
+    """Detiene únicamente el daemon hijo lanzado por este cliente.
 
-    Usa netstat + taskkill — evita que un daemon zombi en estado error
-    siga ocupando el puerto y la VRAM.
+    El PID de un proceso que escucha en 5177 no demuestra que sea nuestro
+    daemon. Por eso no se usa netstat/taskkill global: una sesión anterior o
+    un servicio local ajeno debe quedarse intacto y el servidor hará fallback.
     """
     global _proc
+    proc = _proc
+    _proc = None
+    if proc is None or proc.poll() is not None:
+        return False
     try:
-        import subprocess as sp
-        out = sp.run(["netstat", "-ano"], capture_output=True, text=True, timeout=10)
-        pids = set()
-        for line in out.stdout.splitlines():
-            if f":{DAEMON_PORT}" in line and "LISTENING" in line:
-                parts = line.split()
-                if parts and parts[-1].isdigit():
-                    pids.add(parts[-1])
-        for pid in pids:
-            sp.run(["taskkill", "/F", "/PID", pid], capture_output=True, timeout=10)
-            print(f"[uocr] Daemon zombi PID {pid} terminado")
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)
+        print("[uocr] Daemon hijo propio terminado")
+        return True
     except Exception as e:
-        print(f"[uocr] No se pudo limpiar el puerto {DAEMON_PORT}: {e}")
-    finally:
-        _proc = None
+        print(f"[uocr] No se pudo terminar el daemon hijo propio: {e}")
+        return False
 
 
 def is_daemon_running() -> bool:
     return _proc is not None and _proc.poll() is None
 
 
-def _request(method: str, path: str, payload: dict | None = None, timeout: float = 5.0) -> dict:
+def _request(method: str, path: str, payload: dict[str, Any] | None = None, timeout: float = 5.0) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(
         DAEMON_URL + path,
@@ -164,11 +173,12 @@ def _request(method: str, path: str, payload: dict | None = None, timeout: float
         method=method,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8"))
+    # El endpoint es una constante de loopback; no acepta URL del request.
+    with urllib.request.urlopen(req, timeout=timeout) as r:  # nosec B310
+        return cast(dict[str, Any], json.loads(r.read().decode("utf-8")))
 
 
-def health() -> dict:
+def health() -> dict[str, Any]:
     """Estado del daemon: {"state": "offline"|"loading"|"ready"|"error", ...}.
 
     Nunca lanza excepción (el servidor no debe caerse por el daemon).
@@ -192,8 +202,8 @@ def wait_ready(timeout_s: float = 900.0) -> bool:
     return False
 
 
-def process_page(image_path: str, max_length: int = 4096,
-                 wait_timeout_s: float = 900.0) -> dict:
+def process_page(image_path: str, max_length: int = UOCR_MAX_LENGTH,
+                 wait_timeout_s: float = 900.0) -> dict[str, Any]:
     """Envía una imagen al daemon y devuelve {text, infer_s, blocks}.
 
     Si el modelo aún carga, espera hasta wait_timeout_s antes de fallar.
@@ -210,8 +220,8 @@ def process_page(image_path: str, max_length: int = 4096,
         return {"error": f"error de comunicación con el daemon: {e}"}
 
 
-def process_batch(image_paths: list[str], max_length: int = 4096,
-                  wait_timeout_s: float = 900.0) -> dict:
+def process_batch(image_paths: list[str], max_length: int = UOCR_MAX_LENGTH,
+                  wait_timeout_s: float = 900.0) -> dict[str, Any]:
     """Envía VARIAS páginas al daemon en una sola inferencia VLM (Fase 1).
 
     Usa POST /ocr-batch del daemon, que ejecuta _model.infer_multi() — las

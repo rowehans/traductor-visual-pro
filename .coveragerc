@@ -1,0 +1,15 @@
+# Configuración de coverage para el CI (run_ci.py).
+#
+# - source = . : mide los módulos del proyecto por ruta (--cov=cache resolvía
+#   al directorio cache/ en vez de cache.py; por ruta se mide el archivo real).
+# - omit: excluye dependencias (site-packages, venv, dist, env) y la stdlib
+#   empaquetada de `pythons/` para que el reporte solo hable de producción.
+# - ignore_errors: coverage aborta el reporte si un archivo ejecutado no
+#   existe (p. ej. `config-3.py` interno de cv2/OpenCV) — aquí se tolera.
+
+[run]
+source = .
+omit = */site-packages/*, */dist/*, */venv/*, */env/*, */pythons/*, */node_modules/*
+
+[report]
+ignore_errors = true

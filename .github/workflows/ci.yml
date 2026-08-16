@@ -9,6 +9,10 @@ on:
       - '.gitignore'
       - 'AGENTS.md'
       - 'CODEGRAPH.md'
+      # El bot actualiza coverage_base.json tras cada push a main; ignorarlo
+      # evita que ese commit re-dispare el workflow (loop). Es un snapshot de
+      # datos, no código.
+      - 'coverage_base.json'
   pull_request:
     branches: [main, master]
     paths-ignore:
@@ -19,13 +23,24 @@ env:
   PYTHONIOENCODING: utf-8
 
 jobs:
-  # ─── Job 1: Syntax + 247 tests (rápido, ~30s) ────────────────
+  # ─── Job 1: Syntax + mypy + 247 tests (rápido, ~1 min) ────────
   # Se ejecuta en CADA push a main/master y en cada PR.
   lint-test:
-    name: Lint + 247 tests
+    name: Lint + mypy + tests
     runs-on: ubuntu-latest
+    # contents: read para el checkout; pull-requests: write para que el bot
+    # pueda publicar/actualizar el comentario de cobertura en el PR.
+    permissions:
+      # contents: write — el paso de refresh del baseline de cobertura
+      # commitea coverage_base.json en main con el bot.
+      contents: write
+      pull-requests: write
     steps:
+      # fetch-depth: 0 — el gate de cobertura calcula el diff de la rama vs su
+      # base (GITHUB_BASE_REF), así que la historia completa debe estar.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -47,13 +62,85 @@ jobs:
             flask opencv-python-headless numpy pillow \
             langdetect deep-translator \
             flask-sqlalchemy \
-            requests
+            flask-limiter \
+            requests \
+            waitress \
+            mypy types-requests types-psutil lxml
 
-      - name: Run CI (syntax + 247 tests, sin servidor)
+      - name: Run CI (syntax + mypy + tests, sin servidor)
         run: |
           python run_ci.py --skip-server
         env:
           CI: "true"
+
+      # Refresca coverage_base.json (el snapshot contra el que el reporte
+      # muestra el Δ por módulo) en cada push a main. Idempotente: si la
+      # medición no cambió, no hay commit; si cambió, el bot lo commitea y el
+      # push resultante cae en paths-ignore (no re-dispara el workflow). En
+      # PRs no corre — el reporte usa el snapshot ya commiteado de main.
+      - name: Refresh coverage baseline (main only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          python -c "import run_ci; run_ci._write_base_coverage(run_ci.COVERAGE_JSON)"
+          if git diff --quiet coverage_base.json; then
+            echo "Baseline de cobertura sin cambios"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add coverage_base.json
+            git commit -m "chore: actualizar baseline de cobertura por módulo"
+            git push
+          fi
+
+      # Reporte de anotaciones de tipos: HTML por módulo (cobertura de
+      # anotaciones, precisión de tipos). Se genera aunque mypy falle, para
+      # inspeccionar el estado del tipado en el PR. La lista de archivos se
+      # obtiene de run_ci._PROD_PY_FILES (fuente única de verdad).
+      - name: Generate mypy annotation report
+        if: always()
+        run: |
+          FILES=$(python -c "import run_ci; print(' '.join(run_ci._PROD_PY_FILES))")
+          python -m mypy --html-report mypy-report $FILES
+
+      - name: Upload mypy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mypy-report
+          path: mypy-report/
+          retention-days: 14
+
+      # Reporte HTML de cobertura por módulo (lo genera el paso pytest de
+      # run_ci.py en coverage_html/index.html — autocontenido). Se sube aunque
+      # el job falle, para poder inspeccionar la cobertura del PR en el
+      # artifact.
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage_html/index.html
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Resumen de cobertura por módulo en el step summary del run: tabla con
+      # %/umbral/estado y los módulos que bajaron de umbral, para revisarlos
+      # sin abrir el artifact. Lo genera run_ci.write_coverage_summary desde
+      # el mismo JSON del gate. `if: always()` para que el resumen aparezca
+      # aunque el job falle.
+      - name: Publish coverage summary
+        if: always()
+        run: |
+          python -c "import run_ci; run_ci.write_coverage_summary()"
+
+      # Comentario del bot en el PR con la cobertura por módulo (% y umbral), vía
+      # GITHUB_TOKEN (permiso pull-requests: write de este job). run_ci busca el
+      # comentario previo marcado y lo actualiza, para no spamear uno por commit.
+      # Solo en PRs; si falla la API (fork sin permisos) avisa sin romper el job.
+      - name: Comment coverage on PR
+        if: always() && github.event_name == 'pull_request'
+        run: |
+          python -c "import run_ci; run_ci.write_coverage_comment()"
 
   # ─── Job 2: Server + endpoints (deps completas, ~2 min) ──────
   server-test:
@@ -63,6 +150,8 @@ jobs:
     if: github.ref_type == 'branch'  # Solo en branches, no en tags
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -84,13 +173,33 @@ jobs:
             flask opencv-python-headless numpy pillow \
             langdetect deep-translator \
             flask-sqlalchemy \
-            requests
+            flask-limiter \
+            requests \
+            waitress
 
+      # mypy ya se corrió en lint-test (job anterior). Omitirlo aquí evita
+      # duplicar el trabajo; este job verifica servidor + endpoints reales.
+      # La cobertura corre con coverage (pytest + arranque real del servidor
+      # bajo `coverage run --append`), y el gate por módulo se re-verifica
+      # con el servidor incluido al final del paso pytest.
       - name: Run CI with server test
         run: |
-          python run_ci.py
+          python run_ci.py --skip-mypy
         env:
           CI: "true"
+
+      # Reporte HTML de cobertura por módulo CON el arranque real del
+      # servidor incluido (step_server lo regenera en coverage_html/ tras
+      # detener el servidor). Nombre distinto al de lint-test para no
+      # colisionar en el mismo run.
+      - name: Upload coverage report (with server)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report-server
+          path: coverage_html/index.html
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload server log (if failed)
         if: failure()
@@ -212,7 +321,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Job | Status | Trigger |" >> $GITHUB_STEP_SUMMARY
           echo "|-----|--------|---------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Lint + Test | ${{ needs.lint-test.result }} | Push/PR a main |" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint + mypy + Test | ${{ needs.lint-test.result }} | Push/PR a main |" >> $GITHUB_STEP_SUMMARY
           if [ "${{ github.ref_type }}" = "tag" ]; then
             echo "| Release validate | ${{ needs.release-validate.result }} | Tag push |" >> $GITHUB_STEP_SUMMARY
           else

@@ -16,6 +16,10 @@ def _cache_decisiones_tmp(tmp_path, monkeypatch):
     """Aísla el cache persistido de decisiones (ocr_engine, sesión 125) a un
     directorio temporal por test — evita escribir/borrar el archivo real
     cache/ocr_decision_cache.json del proyecto durante la suite."""
+    # Ultralytics inicializa settings.json al importarse. En Windows/CI la
+    # ruta de perfil del usuario puede ser de solo lectura; aislarla evita que
+    # los tests del detector fallen antes de aplicar sus mocks.
+    monkeypatch.setenv("YOLO_CONFIG_DIR", str(tmp_path / "ultralytics"))
     monkeypatch.setattr(
         "ocr_engine._DECISION_CACHE_PATH",
         tmp_path / "ocr_decision_cache.json",

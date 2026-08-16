@@ -1,0 +1,73 @@
+{
+ "15": {
+  "wall_s": 64.689,
+  "n_generate_calls": 6,
+  "total_new_tokens": 376,
+  "per_call": [
+   {
+    "new_tokens": 112,
+    "infer_call_s": 22.156
+   },
+   {
+    "new_tokens": 72,
+    "infer_call_s": 11.61
+   },
+   {
+    "new_tokens": 16,
+    "infer_call_s": 3.4
+   },
+   {
+    "new_tokens": 16,
+    "infer_call_s": 3.3
+   },
+   {
+    "new_tokens": 68,
+    "infer_call_s": 10.052
+   },
+   {
+    "new_tokens": 92,
+    "infer_call_s": 13.266
+   }
+  ],
+  "texto_chars": 132,
+  "n_blocks_raw": 14
+ },
+ "16": {
+  "wall_s": 37.79,
+  "n_generate_calls": 2,
+  "total_new_tokens": 246,
+  "per_call": [
+   {
+    "new_tokens": 230,
+    "infer_call_s": 34.253
+   },
+   {
+    "new_tokens": 16,
+    "infer_call_s": 3.335
+   }
+  ],
+  "texto_chars": 302,
+  "n_blocks_raw": 7
+ },
+ "28": {
+  "wall_s": 41.639,
+  "n_generate_calls": 3,
+  "total_new_tokens": 266,
+  "per_call": [
+   {
+    "new_tokens": 234,
+    "infer_call_s": 34.488
+   },
+   {
+    "new_tokens": 16,
+    "infer_call_s": 3.275
+   },
+   {
+    "new_tokens": 16,
+    "infer_call_s": 3.32
+   }
+  ],
+  "texto_chars": 292,
+  "n_blocks_raw": 8
+ }
+}

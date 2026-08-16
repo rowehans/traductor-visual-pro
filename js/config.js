@@ -5,13 +5,14 @@
 
 /** @type {CLIENT_CONFIG} */
 export const CLIENT_CONFIG = {
+  OCR_SCALE: 1.2, // Escala de render PDF para OCR; el server la baja en modo_cpu
   TIMEOUT_OPENCV_INIT_MS: 15000,
   TIMEOUT_PDFJS_CDN_MS: 10000,
   TIMEOUT_PDFJS_ES_MODULE_MS: 10000,
   TIMEOUT_PDF_RENDER_MS: 60000,
   TIMEOUT_TRANSLATE_MS: 30000,
   TIMEOUT_TRANSLATE_BATCH_MS: 60000,
-  TIMEOUT_PROCESS_PAGE_MS: 120000,
+  TIMEOUT_PROCESS_PAGE_MS: 300000,
   TIMEOUT_INPAINTED_IMAGE_MS: 15000,
   TIMEOUT_EXPORT_REVOKE_MS: 10000,
   TIMEOUT_CDN_LOAD_MS: 8000,
@@ -26,6 +27,9 @@ export async function fetchClientConfig() {
     const resp = await fetch("/api/config");
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
+    if (typeof data.ocr_scale === "number" && data.ocr_scale > 0) {
+      CLIENT_CONFIG.OCR_SCALE = data.ocr_scale;
+    }
     if (data.timeouts_ms) {
       Object.assign(CLIENT_CONFIG, {
         TIMEOUT_OPENCV_INIT_MS: data.timeouts_ms.opencv_init,

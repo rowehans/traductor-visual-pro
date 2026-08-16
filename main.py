@@ -15,8 +15,10 @@ import threading
 import time
 
 try:
-    sys.stdout.reconfigure(encoding='utf-8')
-    sys.stderr.reconfigure(encoding='utf-8')
+    sys.stdout.reconfigure(  # type: ignore[union-attr]
+        encoding='utf-8')
+    sys.stderr.reconfigure(  # type: ignore[union-attr]
+        encoding='utf-8')
 except Exception:  # nosec
     pass
 
@@ -105,7 +107,7 @@ def _fix_cwd() -> None:
 
         # Estrategia 1: Buscar env/ subiendo directorios desde exe_dir
         # (cuando el .exe está dentro de la carpeta del proyecto)
-        def _try_env_paths(paths_to_try):
+        def _try_env_paths(paths_to_try: list[str]) -> bool:
             for candidate in paths_to_try:
                 full = os.path.join(candidate, "env", "Lib", "site-packages")
                 if os.path.exists(full):
@@ -190,15 +192,18 @@ def open_browser() -> None:
 
 def run_server() -> None:
     """
-    Importa y ejecuta server.py con Flask dev server.
-    NO usa waitress (causa 404 con catch-all + blueprints en Flask 3.x).
+    Importa y ejecuta server.py con waitress (servidor de producción).
+    El problema histórico de waitress (404 con catch-all + blueprints en
+    Flask 3.x) está resuelto: el catch-all se registra a nivel de app ANTES
+    de los blueprints (server.py::serve_root) y solo sirve archivos
+    existentes. Validado por el job server-test de run_ci.py.
     """
     _fix_cwd()
 
     from server import app
 
-    # Flask dev server — confiable para desarrollo local
-    app.run(host=HOST, port=PORT, debug=False, use_reloader=False)
+    from waitress import serve
+    serve(app, host=HOST, port=PORT, threads=8)
 
 
 def run_launcher() -> None:
@@ -211,6 +216,13 @@ def run_launcher() -> None:
 
     # Crear acceso directo en el escritorio (solo primera vez)
     _create_desktop_shortcut()
+
+    # Reutilizar una instancia sana. Iniciar otro Flask sobre el mismo puerto
+    # solo produce un error de bind y puede confundir al usuario.
+    if wait_for_port(timeout=1):
+        print(f"Servidor ya activo en http://{HOST}:{PORT}; reutilizando sesión.")
+        open_browser()
+        return
 
     # Abrir navegador en background mientras el servidor arranca
     def open_browser_delayed() -> None:

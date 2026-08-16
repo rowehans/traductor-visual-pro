@@ -13,35 +13,25 @@ if (-not (Test-Path $python)) {
 Set-Location $root
 $env:SKIP_MIT_INIT = "1"
 
-# ─── Limpiar procesos zombie en el puerto ──────────────────────
-Write-Host "Verificando puerto $port..."
-$connections = netstat -ano | Select-String ":$port\s" | Select-String "LISTENING"
-foreach ($conn in $connections) {
-  $parts = $conn -split '\s+'
-  $pid = $parts[-1]
-  if ($pid -and $pid -ne "0") {
-    Write-Host "Matando proceso zombie PID=$pid en puerto $port..."
-    taskkill -f -pid $pid 2>$null
-    # Pequena pausa para que el SO libere el puerto
-    Start-Sleep -Milliseconds 300
+# ─── Reutilizar una sesión sana sin matar PIDs por puerto ───────
+# El servidor y el daemon escuchan en loopback. Un puerto ocupado no prueba
+# que el proceso sea nuestro: nunca terminamos procesos globalmente. Si ya
+# hay un servidor Traductor Visual Pro sano, simplemente abrimos la UI; el
+# propio uocr_client adopta un daemon U-OCR compatible que ya esté vivo.
+function Test-ServerReady {
+  try {
+    $response = Invoke-WebRequest -Uri "http://127.0.0.1:$port/api/health" `
+      -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+    return $response.StatusCode -eq 200
+  } catch {
+    return $false
   }
 }
 
-# ─── Limpiar daemon Unlimited-OCR zombi (puerto 5177) ──────────
-# El daemon (uocr_daemon.py) es un subproceso persistente que mantiene el
-# modelo 4-bit en VRAM. Si quedó de una sesión anterior (2.25 GB VRAM),
-# matarlo aquí para liberar la GPU antes de arrancar el servidor.
-$daemonPort = 5177
-Write-Host "Verificando puerto del daemon U-OCR $daemonPort..."
-$dconns = netstat -ano | Select-String ":$daemonPort\s" | Select-String "LISTENING"
-foreach ($conn in $dconns) {
-  $parts = $conn -split '\s+'
-  $dpid = $parts[-1]
-  if ($dpid -and $dpid -ne "0") {
-    Write-Host "Matando daemon U-OCR zombie PID=$dpid en puerto $daemonPort..."
-    taskkill -f -pid $dpid 2>$null
-    Start-Sleep -Milliseconds 300
-  }
+if (Test-ServerReady) {
+  Write-Host "Servidor ya activo en http://127.0.0.1:$port; reutilizando sesión."
+  Start-Process "http://127.0.0.1:$port/"
+  exit 0
 }
 
 # ─── Iniciar servidor ──────────────────────────────────────────
@@ -52,6 +42,11 @@ $proc = Start-Process -FilePath $python -ArgumentList $server -PassThru -NoNewWi
 Write-Host "Esperando al servidor en http://127.0.0.1:$port ..."
 for ($i = 0; $i -lt 30; $i++) {
   Start-Sleep -Milliseconds 500
+  if ($proc.HasExited) {
+    Write-Host "El servidor terminó durante el arranque (código $($proc.ExitCode))."
+    Write-Host "No se modificó el proceso que ocupaba el puerto $port."
+    exit 1
+  }
   try {
     $req = Invoke-WebRequest -Uri "http://127.0.0.1:$port/api/health" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
     if ($req.StatusCode -eq 200) {

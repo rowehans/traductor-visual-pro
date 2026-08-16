@@ -1,0 +1,397 @@
+{
+ "benchmark": "benchmark_production.py",
+ "pdf": "Capítulo 43 de Cómo criar villanos correctamente.pdf",
+ "scale_pdfjs": 1.2,
+ "pages": [
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12
+ ],
+ "avg_s_per_page": 21.693,
+ "total_s": 260.321,
+ "trigger_v42_count": 0,
+ "vlm_called_count": 0,
+ "vlm_recovered_total": 0,
+ "rapid_aggr_salvaged_count": 0,
+ "yolo_pages": 12,
+ "ctd_pages": 12,
+ "per_page": {
+  "1": {
+   "total_s": 207.414,
+   "n_blocks": 7,
+   "avg_conf": 0.808,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "trigger_reason": "threshold_not_met",
+   "n_blocks_at_trigger": 7,
+   "avg_conf_at_trigger": 0.5002309046420408,
+   "has_big_panel": false,
+   "dark_ratio": 0.121,
+   "vlm_called": false,
+   "vlm_recovered": 0,
+   "rapid_aggr_calls": 0,
+   "rapid_aggr_salvaged": false,
+   "negative_skip_841": false,
+   "stages": {
+    "prefilter": 1.586,
+    "rapid": 15.139,
+    "ruta_c": 9.339,
+    "yolo": 32.679,
+    "ctd": 0.0
+   },
+   "calls": {
+    "prefilter": 12,
+    "rapid": 46,
+    "ruta_c": 9,
+    "yolo": 12,
+    "ctd": 12
+   }
+  },
+  "2": {
+   "total_s": 1.983,
+   "n_blocks": 7,
+   "avg_conf": 0.788,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "trigger_reason": "threshold_not_met",
+   "n_blocks_at_trigger": 7,
+   "avg_conf_at_trigger": 0.7875888080368864,
+   "has_big_panel": true,
+   "dark_ratio": 0.193,
+   "vlm_called": false,
+   "vlm_recovered": 0,
+   "rapid_aggr_calls": 0,
+   "rapid_aggr_salvaged": false,
+   "negative_skip_841": false,
+   "stages": {
+    "prefilter": 0.427,
+    "rapid": 1.065,
+    "yolo": 0.0,
+    "ctd": 0.0
+   },
+   "calls": {
+    "prefilter": 11,
+    "rapid": 39,
+    "yolo": 11,
+    "ctd": 11,
+    "ruta_c": 8
+   }
+  },
+  "3": {
+   "total_s": 2.074,
+   "n_blocks": 3,
+   "avg_conf": 0.795,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "trigger_reason": "threshold_not_met",
+   "n_blocks_at_trigger": 3,
+   "avg_conf_at_trigger": 0.7954998897006793,
+   "has_big_panel": false,
+   "dark_ratio": 0.133,
+   "vlm_called": false,
+   "vlm_recovered": 0,
+   "rapid_aggr_calls": 0,
+   "rapid_aggr_salvaged": false,
+   "negative_skip_841": false,
+   "stages": {
+    "prefilter": 0.472,
+    "rapid": 0.78,
+    "yolo": 0.0,
+    "ctd": 0.0
+   },
+   "calls": {
+    "prefilter": 10,
+    "rapid": 38,
+    "yolo": 10,
+    "ctd": 10,
+    "ruta_c": 8
+   }
+  },
+  "4": {
+   "total_s": 19.67,
+   "n_blocks": 9,
+   "avg_conf": 0.831,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "trigger_reason": "threshold_not_met",
+   "n_blocks_at_trigger": 9,
+   "avg_conf_at_trigger": 0.0,
+   "has_big_panel": false,
+   "dark_ratio": 0.022,
+   "vlm_called": false,
+   "vlm_recovered": 0,
+   "rapid_aggr_calls": 0,
+   "rapid_aggr_salvaged": false,
+   "negative_skip_841": false,
+   "stages": {
+    "prefilter": 0.527,
+    "rapid": 7.879,
+    "ruta_c": 8.573,
+    "yolo": 5.34,
+    "ctd": 12.757
+   },
+   "calls": {
+    "prefilter": 9,
+    "rapid": 37,
+    "ruta_c": 8,
+    "yolo": 9,
+    "ctd": 9
+   }
+  },
+  "5": {
+   "total_s": 1.763,
+   "n_blocks": 3,
+   "avg_conf": 0.828,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "trigger_reason": "threshold_not_met",
+   "n_blocks_at_trigger": 3,
+   "avg_conf_at_trigger": 0.827654285267705,
+   "has_big_panel": true,
+   "dark_ratio": 0.227,
+   "vlm_called": false,
+   "vlm_recovered": 0,
+   "rapid_aggr_calls": 0,
+   "rapid_aggr_salvaged": false,
+   "negative_skip_841": false,
+   "stages": {
+    "prefilter": 0.427,
+    "rapid": 0.281,
+    "yolo": 0.0,
+    "ctd": 0.0
+   },
+   "calls": {
+    "prefilter": 8,
+    "rapid": 28,
+    "yolo": 8,
+    "ctd": 8,
+    "ruta_c": 6
+   }
+  },
+  "6": {
+   "total_s": 1.272,
+   "n_blocks": 6,
+   "avg_conf": 0.903,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "trigger_reason": "threshold_not_met",
+   "n_blocks_at_trigger": 6,
+   "avg_conf_at_trigger": 0.9028842244750298,
+   "has_big_panel": true,
+   "dark_ratio": 0.195,
+   "vlm_called": false,
+   "vlm_recovered": 0,
+   "rapid_aggr_calls": 0,
+   "rapid_aggr_salvaged": false,
+   "negative_skip_841": false,
+   "stages": {
+    "prefilter": 0.439,
+    "rapid": 0.491,
+    "yolo": 0.0,
+    "ctd": 0.0
+   },
+   "calls": {
+    "prefilter": 7,
+    "rapid": 27,
+    "yolo": 7,
+    "ctd": 7,
+    "ruta_c": 6
+   }
+  },
+  "7": {
+   "total_s": 6.394,
+   "n_blocks": 7,
+   "avg_conf": 0.951,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "trigger_reason": "threshold_not_met",
+   "n_blocks_at_trigger": 7,
+   "avg_conf_at_trigger": 0.0,
+   "has_big_panel": false,
+   "dark_ratio": 0.131,
+   "vlm_called": false,
+   "vlm_recovered": 0,
+   "rapid_aggr_calls": 0,
+   "rapid_aggr_salvaged": false,
+   "negative_skip_841": false,
+   "stages": {
+    "prefilter": 0.517,
+    "rapid": 4.208,
+    "ruta_c": 4.075,
+    "yolo": 4.163,
+    "ctd": 0.826
+   },
+   "calls": {
+    "prefilter": 6,
+    "rapid": 26,
+    "ruta_c": 6,
+    "yolo": 6,
+    "ctd": 6
+   }
+  },
+  "8": {
+   "total_s": 4.276,
+   "n_blocks": 8,
+   "avg_conf": 0.917,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "trigger_reason": "threshold_not_met",
+   "n_blocks_at_trigger": 8,
+   "avg_conf_at_trigger": 0.7158410089711348,
+   "has_big_panel": false,
+   "dark_ratio": 0.166,
+   "vlm_called": false,
+   "vlm_recovered": 0,
+   "rapid_aggr_calls": 0,
+   "rapid_aggr_salvaged": false,
+   "negative_skip_841": false,
+   "stages": {
+    "prefilter": 0.475,
+    "rapid": 3.261,
+    "ruta_c": 3.147,
+    "yolo": 3.233,
+    "ctd": 0.0
+   },
+   "calls": {
+    "prefilter": 5,
+    "rapid": 20,
+    "ruta_c": 5,
+    "yolo": 5,
+    "ctd": 5
+   }
+  },
+  "9": {
+   "total_s": 2.536,
+   "n_blocks": 2,
+   "avg_conf": 0.939,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "trigger_reason": "threshold_not_met",
+   "n_blocks_at_trigger": 2,
+   "avg_conf_at_trigger": 0.9239371180534363,
+   "has_big_panel": false,
+   "dark_ratio": 0.163,
+   "vlm_called": false,
+   "vlm_recovered": 0,
+   "rapid_aggr_calls": 0,
+   "rapid_aggr_salvaged": false,
+   "negative_skip_841": false,
+   "stages": {
+    "prefilter": 0.431,
+    "rapid": 0.839,
+    "ruta_c": 0.61,
+    "yolo": 0.696,
+    "ctd": 0.835
+   },
+   "calls": {
+    "prefilter": 4,
+    "rapid": 15,
+    "ruta_c": 4,
+    "yolo": 4,
+    "ctd": 4
+   }
+  },
+  "10": {
+   "total_s": 4.174,
+   "n_blocks": 2,
+   "avg_conf": 0.813,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "trigger_reason": "threshold_not_met",
+   "n_blocks_at_trigger": 2,
+   "avg_conf_at_trigger": 0.6937733292579651,
+   "has_big_panel": false,
+   "dark_ratio": 0.103,
+   "vlm_called": false,
+   "vlm_recovered": 0,
+   "rapid_aggr_calls": 0,
+   "rapid_aggr_salvaged": false,
+   "negative_skip_841": false,
+   "stages": {
+    "prefilter": 0.486,
+    "rapid": 2.134,
+    "yolo": 0.432,
+    "ruta_c": 1.9,
+    "ctd": 2.696
+   },
+   "calls": {
+    "prefilter": 3,
+    "rapid": 13,
+    "yolo": 3,
+    "ruta_c": 3,
+    "ctd": 3
+   }
+  },
+  "11": {
+   "total_s": 5.98,
+   "n_blocks": 9,
+   "avg_conf": 0.781,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "trigger_reason": "threshold_not_met",
+   "n_blocks_at_trigger": 9,
+   "avg_conf_at_trigger": 0.40864851850430917,
+   "has_big_panel": false,
+   "dark_ratio": 0.156,
+   "vlm_called": false,
+   "vlm_recovered": 0,
+   "rapid_aggr_calls": 0,
+   "rapid_aggr_salvaged": false,
+   "negative_skip_841": false,
+   "stages": {
+    "prefilter": 0.459,
+    "rapid": 3.732,
+    "ruta_c": 3.464,
+    "yolo": 3.555,
+    "ctd": 0.0
+   },
+   "calls": {
+    "prefilter": 2,
+    "rapid": 10,
+    "ruta_c": 2,
+    "yolo": 2,
+    "ctd": 2
+   }
+  },
+  "12": {
+   "total_s": 2.786,
+   "n_blocks": 3,
+   "avg_conf": 0.856,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "trigger_reason": "threshold_not_met",
+   "n_blocks_at_trigger": 3,
+   "avg_conf_at_trigger": 0.728997177275067,
+   "has_big_panel": false,
+   "dark_ratio": 0.064,
+   "vlm_called": false,
+   "vlm_recovered": 0,
+   "rapid_aggr_calls": 0,
+   "rapid_aggr_salvaged": false,
+   "negative_skip_841": false,
+   "stages": {
+    "prefilter": 0.476,
+    "rapid": 1.857,
+    "ruta_c": 1.628,
+    "yolo": 1.714,
+    "ctd": 0.0
+   },
+   "calls": {
+    "prefilter": 1,
+    "rapid": 3,
+    "ruta_c": 1,
+    "yolo": 1,
+    "ctd": 1
+   }
+  }
+ }
+}

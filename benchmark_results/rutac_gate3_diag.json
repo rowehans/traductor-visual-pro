@@ -1,0 +1,313 @@
+{
+ "n_crops": 34,
+ "zero_production": 5,
+ "covered_high_conf": 0,
+ "crops": [
+  {
+   "page": 1,
+   "source": "yolo",
+   "cls_conf": 0.759,
+   "n_blocks_produced": 2,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 1,
+   "source": "yolo",
+   "cls_conf": 0.657,
+   "n_blocks_produced": 1,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 1,
+   "source": "yolo",
+   "cls_conf": 0.473,
+   "n_blocks_produced": 1,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 1,
+   "source": "yolo",
+   "cls_conf": 0.359,
+   "n_blocks_produced": 1,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 1,
+   "source": "yolo",
+   "cls_conf": 0.348,
+   "n_blocks_produced": 1,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 1,
+   "source": "yolo",
+   "cls_conf": 0.314,
+   "n_blocks_produced": 0,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 4,
+   "source": "yolo",
+   "cls_conf": 0.904,
+   "n_blocks_produced": 3,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 4,
+   "source": "yolo",
+   "cls_conf": 0.859,
+   "n_blocks_produced": 3,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 4,
+   "source": "yolo",
+   "cls_conf": 0.775,
+   "n_blocks_produced": 2,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 4,
+   "source": "yolo",
+   "cls_conf": 0.576,
+   "n_blocks_produced": 2,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 4,
+   "source": "yolo",
+   "cls_conf": 0.439,
+   "n_blocks_produced": 1,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 4,
+   "source": "yolo",
+   "cls_conf": 0.303,
+   "n_blocks_produced": 1,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 4,
+   "source": "ctd",
+   "cls_conf": 0.864,
+   "n_blocks_produced": 0,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 4,
+   "source": "ctd",
+   "cls_conf": 0.828,
+   "n_blocks_produced": 0,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 7,
+   "source": "yolo",
+   "cls_conf": 0.919,
+   "n_blocks_produced": 3,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 7,
+   "source": "yolo",
+   "cls_conf": 0.912,
+   "n_blocks_produced": 2,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 7,
+   "source": "yolo",
+   "cls_conf": 0.825,
+   "n_blocks_produced": 2,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 7,
+   "source": "yolo",
+   "cls_conf": 0.753,
+   "n_blocks_produced": 2,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 7,
+   "source": "yolo",
+   "cls_conf": 0.667,
+   "n_blocks_produced": 2,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 8,
+   "source": "yolo",
+   "cls_conf": 0.849,
+   "n_blocks_produced": 2,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 8,
+   "source": "yolo",
+   "cls_conf": 0.839,
+   "n_blocks_produced": 4,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 8,
+   "source": "yolo",
+   "cls_conf": 0.695,
+   "n_blocks_produced": 0,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 8,
+   "source": "yolo",
+   "cls_conf": 0.446,
+   "n_blocks_produced": 1,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 11,
+   "source": "yolo",
+   "cls_conf": 0.788,
+   "n_blocks_produced": 1,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 11,
+   "source": "yolo",
+   "cls_conf": 0.786,
+   "n_blocks_produced": 2,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 11,
+   "source": "yolo",
+   "cls_conf": 0.676,
+   "n_blocks_produced": 2,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 11,
+   "source": "yolo",
+   "cls_conf": 0.641,
+   "n_blocks_produced": 0,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 11,
+   "source": "yolo",
+   "cls_conf": 0.578,
+   "n_blocks_produced": 2,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 11,
+   "source": "yolo",
+   "cls_conf": 0.544,
+   "n_blocks_produced": 1,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 9,
+   "source": "yolo",
+   "cls_conf": 0.621,
+   "n_blocks_produced": 2,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 10,
+   "source": "ctd",
+   "cls_conf": 0.825,
+   "n_blocks_produced": 1,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.062,
+   "best_conf_prev": 0.694
+  },
+  {
+   "page": 10,
+   "source": "ctd",
+   "cls_conf": 0.874,
+   "n_blocks_produced": 2,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 12,
+   "source": "yolo",
+   "cls_conf": 0.82,
+   "n_blocks_produced": 1,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  },
+  {
+   "page": 12,
+   "source": "yolo",
+   "cls_conf": 0.802,
+   "n_blocks_produced": 1,
+   "covered_prev_high_conf": false,
+   "best_overlap_prev": 0.0,
+   "best_conf_prev": 0.0
+  }
+ ]
+}

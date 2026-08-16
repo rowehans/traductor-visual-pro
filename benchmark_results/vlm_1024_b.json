@@ -1,0 +1,72 @@
+{
+ "benchmark": "benchmark_vlm_maxlen.py",
+ "max_length": 1024,
+ "pages": [
+  28,
+  16
+ ],
+ "total_s": 77.465,
+ "vlm_total_s": 63.519,
+ "vlm_recovered_total": 6,
+ "per_page": {
+  "28": {
+   "total_s": 41.865,
+   "vlm_s": 33.33,
+   "vlm_recovered": 3,
+   "n_blocks": 10,
+   "avg_conf": 0.78,
+   "trigger": true,
+   "trigger_reason": "large_image_panel",
+   "texts": [
+    "BAJCE",
+    "DIRALPRESHNAL",
+    "EA 4RIE",
+    "INTEREJANTE",
+    "INTERESANTE.",
+    "LFUYAN!EI VERDAE",
+    "OH.",
+    "SE amo TIFNFT",
+    "YA HAS RECIED MUCHAS COSAS QUE HUBIESTEN SIDO IMPOSIBLES DE HACER SIN DIVINIDAD, ¿COMO ES QUE ERES TAN INGRORANTE...?",
+    "YAHAI HFHO MIN HAS"
+   ],
+   "stages": {
+    "prefilter": 0.453,
+    "rapid": 2.268,
+    "yolo": 0.0,
+    "ctd": 0.0,
+    "rapid_aggr": 0.0,
+    "vlm": 33.33
+   }
+  },
+  "16": {
+   "total_s": 35.599,
+   "vlm_s": 30.189,
+   "vlm_recovered": 3,
+   "n_blocks": 10,
+   "avg_conf": 0.879,
+   "trigger": true,
+   "trigger_reason": "large_image_panel",
+   "texts": [
+    "Aa",
+    "DESPUES DE",
+    "DESPUES DE TODO, HASVENI- DO CON MUCHAS CONSULTAS.",
+    "ENESECASO",
+    "EXCELENTE,",
+    "EXCELLENTE,",
+    "LOHAREPOCO APOCO.",
+    "UKHULJINMANGAS.COM",
+    "VOYAEMPEZAR CONTESTANOOA TUS PREGUNTAS.",
+    "目"
+   ],
+   "stages": {
+    "prefilter": 0.486,
+    "rapid": 3.337,
+    "ruta_c": 3.049,
+    "yolo": 4.023,
+    "ctd": 0.0,
+    "rapid_aggr": 0.0,
+    "vlm": 30.189
+   }
+  }
+ }
+}

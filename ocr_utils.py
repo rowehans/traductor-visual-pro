@@ -5,17 +5,25 @@ Extraído de server.py. Depende de config.py para patrones de ruido y constantes
 """
 
 import base64
+import hashlib
+import io
 import re
 import threading
 import unicodedata
-from typing import Any
+from typing import Any, Final, cast
 
 import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from config import (ROOT, MARGIN_NOISE_PATTERNS, WATERMARK_PATTERNS,
-                    FUSION_TYPE_REINFORCE, FUSION_TYPE_WEIGHTS)
+from config import (
+    ROOT, MARGIN_NOISE_PATTERNS, WATERMARK_PATTERNS,
+    FUSION_TYPE_REINFORCE, FUSION_TYPE_WEIGHTS,
+    RUTA_C_RAPID_PRIMARY, RUTA_C_RAPID_MIN_CONF,
+    MAX_IMAGE_DECODE_PIXELS,
+    RAPID_COND_ENABLED, RAPID_COND_MIN_BLOCKS, RAPID_COND_MIN_CONF,
+)
+from runtime_diagnostics import configure_torch_determinism
 
 # Type alias for OpenCV images (suppresses overly-strict ndarray checks)
 _Img = np.ndarray
@@ -55,22 +63,34 @@ _gpu_lock: threading.RLock = threading.RLock()
 _uocr_inferring: threading.Event = threading.Event()
 
 
-def _get_ocr_reader(lang: str = "auto") -> Any:
+def _get_ocr_reader(lang: str = "auto", *, prefer_gpu: bool = True) -> Any:
+    """Obtiene un lector EasyOCR cacheado.
+
+    ``prefer_gpu=False`` existe para la recuperación de páginas mixtas: los
+    lectores de escritura japonesa/coreana/china se cargan bajo demanda en
+    CPU para no duplicar el detector EasyOCR en la GTX de 4 GB. El lector
+    principal conserva su comportamiento anterior y sigue priorizando GPU.
+    """
+    lang = str(lang or "auto").strip().lower()
     lang_key: str = "latin"
     if lang == "ja":
         lang_key = "ja"
     elif lang == "ko":
         lang_key = "ko"
-    elif lang == "zh":
+    elif lang in {"zh", "zh-cn", "zh-tw"}:
         lang_key = "zh"
 
+    # El lector GPU principal conserva la clave histórica; las variantes de
+    # recuperación CPU tienen una entrada separada y no pisan ese estado.
+    cache_key = lang_key if prefer_gpu else f"{lang_key}:cpu"
+
     global _ocr_readers  # noqa: PLW0603
-    if lang_key in _ocr_readers:
-        return _ocr_readers[lang_key]
+    if cache_key in _ocr_readers:
+        return _ocr_readers[cache_key]
 
     with _ocr_lock:
-        if lang_key in _ocr_readers:
-            return _ocr_readers[lang_key]
+        if cache_key in _ocr_readers:
+            return _ocr_readers[cache_key]
 
         langs: list[str] = ["es", "en"]
         if lang_key == "ja":
@@ -80,17 +100,19 @@ def _get_ocr_reader(lang: str = "auto") -> Any:
         elif lang_key == "zh":
             langs = ["ch_sim", "en"]
         else:
-            langs = ["es", "en", "pt", "fr", "de"]
+            # Solo se activan los idiomas latinos soportados actualmente.
+            # No cargar fr/de/it evita que sus alfabetos compitan durante la
+            # detección automática y reduce el trabajo del recognizer.
+            langs = ["es", "en", "pt"]
 
         # ═══ Carga EasyOCR: GPU si CUDA disponible, CPU si no ═══════
         # El orden de carga es CRÍTICO para evitar conflicto cuDNN:
         #   - Si CT2 carga PRIMERO CUDA/cuDNN, luego PyTorch no puede
         #     cargar sus propios símbolos cuDNN → crash.
-        #   - Server.py ahora carga EasyOCR PRIMERO (PyTorch toma GPU,
-        #     carga cuDNN), y luego CT2 con force_cpu=True.
-        #   - Si el usuario llama EasyOCR sin preload (caso de esquina),
-        #     también funciona: PyTorch inicializa CUDA, CT2 detecta
-        #     que CUDA está disponible pero se pasa force_cpu como fallback.
+        #   - Server.py carga EasyOCR PRIMERO (PyTorch toma GPU, carga cuDNN)
+        #     y luego CT2 puede usar GPU sin el conflicto de DLLs.
+        #   - La contención de VRAM se controla con locks/semaforos en el
+        #     pipeline; force_cpu queda reservado para degradaciones explícitas.
         # ════════════════════════════════════════════════════════════
         print(f"[OCR] Cargando EasyOCR para {langs}...")
 
@@ -98,10 +120,12 @@ def _get_ocr_reader(lang: str = "auto") -> Any:
             import easyocr
             # Intentar GPU primero. Si falla (CUDA no disponible, memoria insuficiente),
             # EasyOCR automáticamente cae a CPU via el try/except que sigue.
-            gpu_available = True
+            gpu_available = bool(prefer_gpu)
             try:
                 import torch
-                gpu_available = torch.cuda.is_available()
+                gpu_available = gpu_available and torch.cuda.is_available()
+                if gpu_available:
+                    configure_torch_determinism(torch)
             except Exception:
                 gpu_available = False
 
@@ -112,7 +136,7 @@ def _get_ocr_reader(lang: str = "auto") -> Any:
                 download_enabled=True,
                 verbose=False,
             )
-            _ocr_readers[lang_key] = reader
+            _ocr_readers[cache_key] = reader
             device_str = "GPU" if gpu_available else "CPU"
             print(f"[OCR] EasyOCR para {langs} listo en {device_str}.")
         except Exception as e:
@@ -127,12 +151,12 @@ def _get_ocr_reader(lang: str = "auto") -> Any:
                     download_enabled=True,
                     verbose=False,
                 )
-                _ocr_readers[lang_key] = reader
+                _ocr_readers[cache_key] = reader
                 print(f"[OCR] EasyOCR para {langs} listo en CPU (fallback).")
             except Exception as e2:
                 print(f"[OCR] Error cargando EasyOCR incluso en CPU: {e2}")
                 return None
-    return _ocr_readers[lang_key]
+    return _ocr_readers[cache_key]
 
 
 # ─── RapidOCR (lazy load with thread safety) ─────────────────────
@@ -140,6 +164,13 @@ def _get_ocr_reader(lang: str = "auto") -> Any:
 # sin el conflicto de PaddlePaddle vs PyTorch.
 _rapid_engine: Any = None
 _rapid_lock: threading.Lock = threading.Lock()
+
+
+# batch del recognizer de RapidOCR (rec_batch_num). Módulo-global (no Final)
+# para que benchmark_rutac_params.py lo parchee en runtime; default 6 = config
+# de la librería. Solo afecta a llamadas con MUCHAS líneas de texto por imagen;
+# los crops de la Ruta C tienen pocas líneas → sin cambio medible (A/B 2026-08-15).
+_RAPID_REC_BATCH_NUM: int = 6
 
 
 def _get_rapid_engine() -> Any:
@@ -151,7 +182,7 @@ def _get_rapid_engine() -> Any:
             return _rapid_engine
         try:
             from rapidocr_onnxruntime import RapidOCR
-            _rapid_engine = RapidOCR()
+            _rapid_engine = RapidOCR(rec_batch_num=_RAPID_REC_BATCH_NUM)
             print("[OCR] RapidOCR listo (CPU/ONNX)")
         except Exception as e:
             print(f"[OCR] Error cargando RapidOCR: {e}")
@@ -159,11 +190,66 @@ def _get_rapid_engine() -> Any:
     return _rapid_engine
 
 
-def _preprocess_rapid(img_bgr: _Img) -> _Img:
-    """Preprocesamiento optimizado para RapidOCR (pre-filter + enhance)."""
-    filtered = _pre_filter_image(img_bgr)
+def _preprocess_rapid(
+    img_bgr: _Img,
+    *,
+    already_prefiltered: bool = False,
+) -> _Img:
+    """Preprocesamiento optimizado para RapidOCR (pre-filter + enhance).
+
+    ``_detect_and_ocr`` ya calcula el pre-filtro para EasyOCR. Reutilizarlo
+    evita una segunda pasada morfologica sobre la misma pagina; los callers
+    que entregan una imagen cruda conservan el comportamiento anterior.
+    """
+    filtered = img_bgr if already_prefiltered else _pre_filter_image(img_bgr)
     enhanced = _preprocess_enhanced(filtered)
     return enhanced
+
+
+def _script_language_hints(
+    blocks: list[dict[str, Any]],
+    *,
+    min_conf: float = 0.35,
+) -> list[str]:
+    """Devuelve idiomas CJK evidenciados por bloques OCR confiables.
+
+    No intenta adivinar todos los idiomas del mundo a partir de píxeles. Usa
+    únicamente texto ya recuperado por RapidOCR para decidir si vale la pena
+    una segunda pasada especializada. Esto evita cargar lectores extra en
+    páginas latinas normales y mantiene el coste acotado en hardware pequeño.
+    """
+    scores: dict[str, int] = {"ja": 0, "ko": 0, "zh": 0}
+    for block in blocks:
+        text = str(block.get("text", ""))
+        if not text:
+            continue
+        try:
+            confidence = float(block.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence < min_conf:
+            continue
+
+        kana = sum(0x3040 <= ord(char) <= 0x30FF for char in text)
+        hangul = sum(0xAC00 <= ord(char) <= 0xD7A3 for char in text)
+        hanzi = sum(0x4E00 <= ord(char) <= 0x9FFF for char in text)
+
+        # Kana es evidencia fuerte de japonés. Hanzi sin kana queda como
+        # chino, igual que la heurística de detección de idioma del traductor.
+        if kana:
+            scores["ja"] += kana + min(hanzi, 2)
+        if hangul >= 2:
+            scores["ko"] += hangul
+        if hanzi >= 2 and not kana:
+            scores["zh"] += hanzi
+
+    return [
+        language
+        for language, score in sorted(
+            scores.items(), key=lambda item: (-item[1], item[0])
+        )
+        if score >= 2
+    ]
 
 
 # ─── YOLO detector de regiones de texto (Fase 6) ─────────────────
@@ -207,7 +293,7 @@ def _get_yolo_engine() -> Any:
                     return None
             # Import DINÁMICO: ultralytics no se importa al cargar ocr_utils
             # (el .exe no lo necesita; si falta, el tier simplemente no aporta).
-            from ultralytics import YOLO
+            from ultralytics import YOLO  # type: ignore[attr-defined]
             engine = YOLO(YOLO_MODEL_PATH if os.path.exists(YOLO_MODEL_PATH)
                           else "yolov8n.pt")
             _yolo_engine = engine
@@ -246,9 +332,14 @@ def _resolver_device_yolo() -> str:
     with _yolo_device_lock:
         if _yolo_device is not None:
             return _yolo_device
-        from config import YOLO_DEVICE
+        from config import MODO_CPU, YOLO_DEVICE
         device = YOLO_DEVICE
-        if device == "auto":
+        # Preset modo_cpu (soporte sin GPU dedicada): YOLO se fuerza a CPU
+        # aunque el torch del proceso detecte CUDA — el modo_cpu quiere 0 VRAM
+        # y 0 contención, no aprovechar una GPU que no existe/está débil.
+        if MODO_CPU:
+            device = "cpu"
+        elif device == "auto":
             try:
                 import torch
                 if torch.cuda.is_available():
@@ -518,7 +609,7 @@ def _comic_detector_box_score(prob_map: np.ndarray,
     shifted = pts.copy()
     shifted[:, 0] -= xmin
     shifted[:, 1] -= ymin
-    cv2.fillPoly(mask, shifted.reshape(1, -1, 2).astype(np.int32), 1)
+    cv2.fillPoly(cast(Any, mask), cast(Any, [shifted.reshape(1, -1, 2).astype(np.int32)]), cast(Any, 1))
     if mask.sum() == 0:
         return 0.0
     return float(cv2.mean(prob_map[ymin:ymax + 1, xmin:xmax + 1], mask)[0])
@@ -766,6 +857,7 @@ def _run_rapidocr(
     box_thresh: float | None = None,
     unclip_ratio: float | None = None,
     text_score: float | None = None,
+    filter_page_margins: bool = True,
 ) -> list[dict[str, Any]]:
     """
     Ejecuta RapidOCR sobre una imagen y retorna bloques en el
@@ -798,42 +890,19 @@ def _run_rapidocr(
             "text_score": text_score if text_score is not None else 0.5,
         }
         result, _ = engine(img_bgr, **params)
-        blocks: list[dict[str, Any]] = []
+        items: list[tuple[Any, Any, Any]] = []
         if result:
             for r in result:
                 try:
                     bbox, text, conf = r
-                    text = str(text).strip()
-                    if not text or conf < 0.08:
-                        continue
-                    xs = [p[0] for p in bbox]
-                    ys = [p[1] for p in bbox]
-                    x, y = int(min(xs)), int(min(ys))
-                    w, h = int(max(xs) - x), int(max(ys) - y)
-                    if w < 3 or h < 3:
-                        continue
-                    font_size = max(8, int(h * 0.75))
-                    cx, cy = x + w // 2, y + h // 2
-                    pad = max(2, h // 6)
-                    roi = img_bgr[max(0, cy - pad):cy + pad, max(0, cx - pad):cx + pad]
-                    text_color = "#ffffff"
-                    if roi.size > 0:
-                        mean_b = int(np.mean(roi[:, :, 0]))
-                        mean_g = int(np.mean(roi[:, :, 1]))
-                        mean_r = int(np.mean(roi[:, :, 2]))
-                        brightness = mean_r * 0.299 + mean_g * 0.587 + mean_b * 0.114
-                        text_color = "#000000" if brightness > 128 else "#ffffff"
-
-                    blocks.append({
-                        "x": x, "y": y, "w": w, "h": h,
-                        "text": text,
-                        "confidence": float(conf),
-                        "fontSize": font_size,
-                        "textColor": text_color,
-                    })
+                    items.append((bbox, text, conf))
                 except (ValueError, IndexError, TypeError):
                     continue
-        return _group_and_merge_blocks(blocks, img_bgr.shape[0])
+        blocks = _rapidocr_blocks_from_lines(img_bgr, items)
+        # Los crops de la Ruta C no son páginas: sus bordes suelen contener
+        # precisamente el texto del globo. No aplicarles filtros de margen.
+        page_height = img_bgr.shape[0] if filter_page_margins else None
+        return _group_and_merge_blocks(blocks, page_height)
     except Exception as e:
         print(f"[OCR] Error en RapidOCR: {e}")
         return []
@@ -941,17 +1010,13 @@ def _fusionar_blocks_multi(
             tagged.append({**b, "_engine": i, "_weight": w})
 
     def _score(b: dict[str, Any]) -> float:
-        return _block_score(b) * b.get("_weight", 1.0)
+        return _block_score(b) * float(b.get("_weight", 1.0))
 
     # 1. Dedup por texto normalizado idéntico
-    by_text: dict[str, dict[str, Any]] = {}
-    for b in tagged:
-        key = _normalize_text(b["text"])
-        if key not in by_text or _score(b) > _score(by_text[key]):
-            by_text[key] = b
 
     # 2. Alineación Levenshtein entre bloques solapados espacialmente
-    candidates: list[dict[str, Any]] = list(by_text.values())
+    # El texto repetido en regiones lejanas debe conservar ambas cajas.
+    candidates: list[dict[str, Any]] = list(tagged)
     candidates.sort(key=_score, reverse=True)
     final_result: list[dict[str, Any]] = []
     for b in candidates:
@@ -985,11 +1050,26 @@ def _fusionar_blocks_multi(
         if not merged:
             final_result.append(b)
 
-    # 3. NMS espacial final (IoU > 0.40)
+    # 3. NMS final consciente del texto. El solape espacial por sÃ­ solo no
+    # basta: dos lÃ­neas consecutivas pueden compartir una fracciÃ³n grande de
+    # su caja cuando un motor devuelve bboxes algo altos. Solo se descarta un
+    # candidato si el texto tambiÃ©n es equivalente al de una caja conservada;
+    # los duplicados de texto ya fusionados arriba siguen protegidos.
     final_result.sort(key=_score, reverse=True)
     nms: list[dict[str, Any]] = []
     for b in final_result:
-        if any(_overlap_ratio(b, e) > 0.40 for e in nms):
+        duplicate = False
+        for e in nms:
+            if _overlap_ratio(b, e) <= 0.40:
+                continue
+            nb = _normalize_text(b["text"])
+            ne = _normalize_text(e["text"])
+            max_len = max(len(nb), len(ne))
+            if max_len and (nb == ne or
+                            _levenshtein(nb, ne) / max_len <= 0.30):
+                duplicate = True
+                break
+        if duplicate:
             continue
         nms.append(b)
 
@@ -1010,12 +1090,56 @@ def _fusionar_blocks(
 
 # ─── Corrector ortografico post-OCR (pyspellchecker) ────────────
 # Usa pyspellchecker en lugar de un diccionario manual.
-# pyspellchecker trae diccionarios completos de espanol, ingles,
-# frances, aleman, portugues, etc. SIN mantenimiento manual.
+# pyspellchecker trae diccionarios completos de español, inglés y portugués
+# para las lenguas activas. No se cargan diccionarios de idiomas pausados.
 # Correccion por distancia de Levenshtein (max 2).
 # Fallback a _levenshtein() si pyspellchecker no esta instalado.
 _OCR_SPELLCHECKER: Any = None
 _OCR_SPELL_LOCK: threading.Lock = threading.Lock()
+_OCR_FOREIGN_SPELLCHECKERS: dict[str, Any] = {}
+
+# Máximo de caracteres del bloque que se pasan al detector de idioma del
+# spellcheck. langdetect escala con la longitud (medido: ~16 ms a 8000 chars)
+# y los textos fusionados del merge final pueden superar eso; 600 chars bastan
+# para la distribución de n-gramas del idioma (verificado: 0 diferencias en el
+# corpus) y además hace que el lru_cache de _detect_language_robust comparta
+# entrada entre bloques largos de la misma página.
+_SPELL_LANG_MAX_CHARS: Final[int] = 600
+
+# Umbral de longitud para usar la corrección barata propia en vez de
+# sp.correction(). pyspellchecker es rápido en palabras cortas (known + edición
+# 1 generan pocos strings) pero explota en largas: la expansión de distancia 2
+# genera ~4.8 M strings para una palabra de 21 chars (~0.3-1.3 s; calibrado
+# 2026-08-15: a partir de len 13 el scan por buckets del diccionario es
+# MÁS rápido — len 18: 13.6x, len 21: 1287x — y en cortas es al revés).
+_SPELL_CORRECTION_MIN_LEN: Final[int] = 13
+
+# Límite de edición dependiente de la longitud (calibrado 2026-08-15 con el
+# A/B del capítulo completo, ver benchmark_spellcheck_ab.py): las 3 correcciones
+# reales del capítulo son de 3-5 chars a distancia 1, y NINGUNA corrección real
+# usa distancia 2 ni afecta a palabras > 14 chars (la réplica no corrigió nada
+# en 8 llamadas >= 13). Schedule refinado por la calibración:
+#   - 3-5  chars -> edición 1 (una corrección a distancia 2 en una palabra
+#     corta cambia >50 % de los caracteres — riesgo de corrupción alto).
+#   - 6-14 chars -> edición 2 (sin cambio; el valor que pyspellchecker usa).
+#   - >14  chars -> edición 1, NO 0: la propuesta original (>14 -> 0) pierde
+#     correcciones d1 legítimas de palabras largas reales fuera del diccionario
+#     (p. ej. 'inconstitucinal' -> 'inconstitucional'); permitir d1 y bloquear
+#     SOLO d2 preserva esas correcciones y sigue eliminando las sugerencias
+#     arbitrarias de distancia 2 (p. ej. 'chmar' -> 'tomar' a d2, donde la
+#     distancia 2 de una palabra larga cae en una palabra de alta frecuencia
+#     no relacionada).
+_SPELL_EDIT_1_MAX_LEN: Final[int] = 5
+_SPELL_EDIT_2_MAX_LEN: Final[int] = 14
+
+
+def _spell_max_edits(length: int) -> int:
+    """Límite de edición del corrector según la longitud de la palabra."""
+    if length <= _SPELL_EDIT_1_MAX_LEN:
+        return 1
+    if length <= _SPELL_EDIT_2_MAX_LEN:
+        return 2
+    return 1  # >14: solo distancia 1 (bloquea d2, preserva d1)
 
 
 def _get_spellchecker(lang: str = "es") -> Any:
@@ -1055,6 +1179,292 @@ def _get_spellchecker(lang: str = "es") -> Any:
     return _OCR_SPELLCHECKER
 
 
+def _get_foreign_spellchecker(lang: str) -> Any:
+    """Carga bajo demanda un diccionario latino para detectar mezcla.
+
+    No corrige texto con estos diccionarios: solo sirven como barrera contra
+    falsos positivos del corrector español cuando una burbuja contiene una
+    frase en inglés o portugués. No agrega modelos OCR/traducción.
+    """
+    lang = str(lang or "").strip().lower()
+    if lang not in {"en", "pt"}:
+        return None
+    if lang in _OCR_FOREIGN_SPELLCHECKERS:
+        return _OCR_FOREIGN_SPELLCHECKERS[lang]
+    with _OCR_SPELL_LOCK:
+        if lang in _OCR_FOREIGN_SPELLCHECKERS:
+            return _OCR_FOREIGN_SPELLCHECKERS[lang]
+        try:
+            from spellchecker import SpellChecker
+            checker = SpellChecker(language=lang)
+            _OCR_FOREIGN_SPELLCHECKERS[lang] = checker
+            return checker
+        except Exception as exc:
+            print(f"[OCR-spellcheck] Diccionario {lang} no disponible: {exc}")
+            return None
+
+
+def _contains_foreign_latin_tokens(text: str, spanish_checker: Any) -> bool:
+    """Detecta tokens de otros idiomas actuales dentro de un bloque latino."""
+    if spanish_checker is None:
+        return False
+    tokens = [
+        token.strip("'\".,;:!?¡¿()[]{}")
+        for token in text.split()
+    ]
+    tokens = [
+        token.lower() for token in tokens
+        # Incluye tokens de 2 letras en la deteccion ("go", "my", "je",
+        # etc.), aunque el corrector siga sin modificar palabras tan cortas.
+        if len(token) > 1 and not any(char.isdigit() for char in token)
+    ]
+    if not tokens:
+        return False
+
+    try:
+        spanish_known = set(spanish_checker.known(tokens))
+    except Exception:
+        return False
+
+    unknown_tokens = [token for token in tokens if token not in spanish_known]
+    if not unknown_tokens:
+        return False
+
+    for lang in ("en", "pt"):
+        checker = _get_foreign_spellchecker(lang)
+        if checker is None:
+            continue
+        # Fast-path por acotación de longitud (misma técnica que el corrector
+        # principal): ningún token más largo que la palabra más larga del
+        # diccionario extranjero puede estar en él — `known()` es un set
+        # lookup exacto (no aproxima por edición), así que pasarlo es trabajo
+        # inútil. Se filtran los candidatos a [2, longest_word_length]
+        # (mismo rango que _check_if_should_check de pyspellchecker). El
+        # isinstance protege los checker mockeados en tests (MagicMock no
+        # tiene longest real) y cualquier objeto sin el atributo.
+        try:
+            longest = checker.word_frequency.longest_word_length
+        except Exception:
+            longest = 0
+        if not isinstance(longest, int) or longest <= 0:
+            candidates = list(unknown_tokens)
+        else:
+            candidates = [t for t in unknown_tokens
+                          if 2 <= len(t) <= longest]
+        if not candidates:
+            continue
+        try:
+            foreign_known = set(checker.known(candidates))
+        except (MemoryError, OverflowError):
+            return False
+        except Exception:
+            continue
+        # Un token conocido solo por otro diccionario es suficiente para
+        # tratar el bloque como mixto y conservarlo sin correccion agresiva.
+        if foreign_known - spanish_known:
+            return True
+    return False
+
+
+# Índice del diccionario del spellchecker agrupado por longitud, cacheado por
+# instancia (id(sp)). Se usa para acotar los candidatos de corrección: la
+# distancia de edición <= 2 implica |len(a) - len(b)| <= 2, así que basta
+# revisar las palabras de longitud [len(word)-2, len(word)+2] en vez de las
+# ~86k del diccionario completo.
+#
+# CORRECCIÓN 2026-08-15: se cacheaba en un WeakKeyDictionary, pero SpellChecker
+# define __slots__ sin __weakref__ → el índice NUNCA se pudo almacenar con el
+# checker real y el fast-path fue inerte en producción (el except del caller
+# ponía puede_corregir=True siempre y se seguía pagando sp.correction()
+# completo — ver profile de pág 4: 26.2 s en correction). Ahora es un dict
+# por id(sp) con referencia fuerte al owner: el id no se reutiliza mientras el
+# índice exista (el objeto vive), y la validación `owner is sp` detecta
+# cualquier reutilización teórica (p.ej. mocks en tests). Cada entrada guarda
+# (palabra, conteo_de_caracteres): el conteo se usa como pre-filtro de la
+# búsqueda (edición <= k implica exceso/defecto de conteos <= k), evitando el
+# DP Damerau contra TODO el bucket de longitudes.
+_SPELL_INDEX_BY_ID: dict[int, dict[int, list[tuple[str, bytes]]]] = {}
+_SPELL_INDEX_OWNERS: dict[int, Any] = {}
+
+
+def _spell_char_counts(word: str) -> bytes:
+    """Conteo de caracteres a-z + ñ (áéíóúü → su base) como bytes de 27.
+
+    La distancia de edición <= k implica que el exceso y el defecto de
+    conteos entre dos palabras son <= k (cada inserción/borrado mueve 1,
+    cada sustitución mueve 1 en cada lado; la transposición no cambia los
+    conteos). Es un bound necesario (no suficiente) y barato de comparar.
+    """
+    c = bytearray(27)
+    for ch in word:
+        if ch == "ñ":
+            c[26] += 1
+        elif "a" <= ch <= "z":
+            c[ord(ch) - 97] += 1
+        elif ch in "áéíóúü":
+            base = {"á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u", "ü": "u"}[ch]
+            c[ord(base) - 97] += 1
+    return bytes(c)
+
+
+def _spell_words_by_len(sp: Any) -> dict[int, list[tuple[str, bytes]]]:
+    """Diccionario agrupado por longitud (lazy, cacheado por instancia)."""
+    key = id(sp)
+    if _SPELL_INDEX_OWNERS.get(key) is sp:
+        return _SPELL_INDEX_BY_ID[key]
+    idx: dict[int, list[tuple[str, bytes]]] = {}
+    for w in sp.word_frequency.dictionary:
+        idx.setdefault(len(w), []).append((w, _spell_char_counts(w)))
+    _SPELL_INDEX_BY_ID[key] = idx
+    _SPELL_INDEX_OWNERS[key] = sp
+    return idx
+
+
+def _damerau_le(a: str, b: str, max_dist: int) -> bool:
+    """True si la distancia Damerau-Levenshtein(a, b) <= max_dist.
+
+    pyspellchecker cuenta la TRANSPOSICIÓN como 1 edición (edit_distance_1
+    genera deletes + transposes + replaces + inserts), así que para replicar
+    su corrección exactamente hay que usar Damerau, no Levenshtein. DP con
+    corte temprano por fila (mismo patrón que _levenshtein_le): si una fila
+    entera queda por encima del umbral, ninguna posterior puede bajar.
+    """
+    if abs(len(a) - len(b)) > max_dist:
+        return False
+    prev_prev = list(range(len(b) + 1))  # fila i-2
+    prev = list(range(len(b) + 1))       # fila i-1
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        row_min = cur[0]
+        for j, cb in enumerate(b, 1):
+            cost = prev[j - 1] + (0 if ca == cb else 1)
+            cur.append(min(cur[-1] + 1, prev[j] + 1, cost))
+            # Transposición: a[i-2] == b[j-1] y a[i-1] == b[j-2]
+            if i > 1 and j > 1 and a[i - 2] == b[j - 1] and a[i - 1] == b[j - 2]:
+                cur[j] = min(cur[j], prev_prev[j - 2] + 1)
+            row_min = min(row_min, cur[j])
+        if row_min > max_dist:
+            return False
+        prev_prev, prev = prev, cur
+    return prev[-1] <= max_dist
+
+
+def _spell_candidates(sp: Any, word: str, max_dist: int) -> list[str]:
+    """Palabras del diccionario a distancia Damerau <= max_dist de `word`.
+
+    Recorre el índice por longitud ([len-2, len+2] para distancia 2) con
+    `_damerau_le` (mismo conjunto de candidatos que pyspellchecker genera por
+    expansión, pero sin la expansión masiva de ~4.8 M strings). Primero
+    aplica el pre-filtro de conteos de caracteres (exceso/defecto <= max_dist):
+    el DP solo se ejecuta contra el ~1 % del bucket que lo pasa.
+    """
+    by_len = _spell_words_by_len(sp)
+    lo = max(1, len(word) - max_dist)
+    hi = len(word) + max_dist
+    wc = _spell_char_counts(word)
+    out: list[str] = []
+    for length in range(lo, hi + 1):
+        for cand, cc in by_len.get(length, ()):
+            # Pre-filtro: exceso/defecto de conteos <= max_dist.
+            ex = 0
+            de = 0
+            ok = True
+            for a, b in zip(wc, cc):
+                if b > a:
+                    ex += b - a
+                elif a > b:
+                    de += a - b
+                if ex > max_dist or de > max_dist:
+                    ok = False
+                    break
+            if ok and _damerau_le(word, cand, max_dist):
+                out.append(cand)
+    return out
+
+
+def _levenshtein_le(a: str, b: str, max_dist: int) -> bool:
+    """True si la distancia de edición(a, b) <= max_dist.
+
+    DP completo clásico con corte temprano: si una fila entera queda por encima
+    del umbral, ninguna fila posterior puede bajar (la distancia no decrece),
+    así que se puede abortar. Las palabras del diccionario y el OCR son cortas
+    (<= 23 chars), el costo por par es trivial.
+    """
+    if abs(len(a) - len(b)) > max_dist:
+        return False
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        row_min = cur[0]
+        for j, cb in enumerate(b, 1):
+            cost = prev[j - 1] + (0 if ca == cb else 1)
+            cur.append(min(cur[-1] + 1, prev[j] + 1, cost))
+            row_min = min(row_min, cur[-1])
+        if row_min > max_dist:
+            return False
+        prev = cur
+    return prev[-1] <= max_dist
+
+
+def _remove_diacritics(s: str) -> str:
+    """Quita los diacríticos (réplica de pyspellchecker._remove_diacritics)."""
+    nfkd = unicodedata.normalize("NFKD", s)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def _spellcheck_correction(sp: Any, word: str) -> str | None:
+    """Réplica barata de sp.correction(word) sin la expansión masiva.
+
+    pyspellchecker.correction() genera TODAS las cadenas a distancia 1 y 2 del
+    word usando las letras del corpus y filtra contra el diccionario — la
+    expansión de distancia 2 de una palabra de 21 chars genera ~4.8 M strings
+    (~0.3-1.3 s; en pág 4 del corpus: 8 llamadas a __edit_distance_alt =
+    26.3 s del profile). Aquí el MISMO conjunto de candidatos se obtiene de
+    forma directa: como edición <= k implica |Δlongitud| <= k, basta revisar
+    las palabras del diccionario de longitud [len-k, len+k] con Damerau-Le-
+    venshtein acotado (pyspellchecker cuenta transposiciones como 1 edición).
+
+    La selección replica correction() exactamente:
+    1. known([word]) — palabra ya en el diccionario → sin corrección (word).
+    2. Candidatos a distancia 1; si hay, elegir entre ellos. Si no, distancia 2.
+    3. Preferir los que coinciden SIN diacríticos (pyspellchecker._remove_dia-
+       critics), y entre esos (o entre todos) el de MAYOR frecuencia del
+       diccionario (max(key=__getitem__) = frecuencia/total).
+
+    Empates exactos de frecuencia: pyspellchecker elige por orden de hash del
+    set (no determinista entre runs); aquí el orden del índice (orden de
+    inserción del diccionario) es determinista. En la práctica ambos son
+    igualmente válidos.
+    """
+    dictionary = sp.word_frequency.dictionary
+    # 1. known([word]): palabra ya correcta → sin cambio.
+    if word in dictionary:
+        return word
+    # 2. Límite de edición dependiente de la longitud (calibración 2026-08-15,
+    # ver _spell_max_edits): aquí solo llegan las largas >= 13 — 13-14 → 2
+    # (sin cambio) y >14 → 1 (se bloquea SOLO la distancia 2, la que produce
+    # sugerencias arbitrarias de alta frecuencia en largas; las d1 legítimas
+    # como 'inconstitucinal' -> 'inconstitucional' se preservan).
+    max_dist = _spell_max_edits(len(word))
+    if max_dist < 1:
+        return None
+    # 3. Candidatos por distancia (1 primero, luego 2 si el límite lo permite).
+    pool = _spell_candidates(sp, word, 1)
+    if not pool and max_dist >= 2:
+        pool = _spell_candidates(sp, word, 2)
+    if not pool:
+        return None
+    # 3. Preferencia de diacríticos + max por frecuencia.
+    wn = _remove_diacritics(word)
+    diac = [c for c in pool if _remove_diacritics(c) == wn]
+    if diac:
+        pool = diac
+    freq_get = getattr(dictionary, "get", None)
+    if freq_get is None:
+        return max(pool)
+    return max(pool, key=lambda c: freq_get(c, 0) or 0)
+
+
 def _levenshtein(s1: str, s2: str) -> int:
     """Distancia de Levenshtein entre dos strings (iterativa, O(n*m))."""
     if len(s1) < len(s2):
@@ -1088,15 +1498,64 @@ def _ocr_spellcheck(text: str) -> str:
     - Palabras en mayusculas que parecen acronimos
     - Nombres propios (no estan en el diccionario, pero no los fuerza)
 
-    Esto funciona para CUALQUIER PDF sin necesidad de mantener GLOSARIO_PRE.
+    El diccionario cargado por defecto es espanol. Por seguridad, solo se
+    aplica cuando el texto parece espanol: usarlo sobre ingles, portugues,
+    frances, aleman, italiano o CJK puede convertir una deteccion correcta
+    en otra palabra. Los alfabetos japones, coreano y chino se dejan intactos
+    porque sus tokens no son compatibles con este corrector.
     """
     if not text or len(text) <= 2:
+        return text
+
+    # No pasar escritura CJK por un diccionario latino. Ademas de evitar
+    # falsos positivos, esto evita cargar/consultar el corrector en cada
+    # bloque de una pagina japonesa, coreana o china.
+    if any(
+        0x3040 <= ord(char) <= 0x30FF       # hiragana / katakana
+        or 0xAC00 <= ord(char) <= 0xD7A3    # hangul
+        or 0x4E00 <= ord(char) <= 0x9FFF    # hanzi / kanji
+        for char in text
+    ):
+        return text
+
+    # El corrector disponible es espanol. La deteccion se hace aqui, antes
+    # de pedir el singleton, para que paginas inglesas/multilingues no sean
+    # alteradas accidentalmente. Se reutiliza la misma deteccion robusta del
+    # pipeline de traduccion y no se agregan idiomas ni modelos nuevos.
+    #
+    # Optimización 2026-08-15 (textos largos fusionados): el detector se
+    # aplica sobre un PREFIJO de maximo _SPELL_LANG_MAX_CHARS caracteres. El
+    # costo de langdetect escala con la longitud del texto (medido: ~16 ms a
+    # 8000 chars) y los textos fusionados del merge final pueden superar eso;
+    # un prefijo de 600 chars es mas que suficiente para la distribucion de
+    # n-gramas del idioma (verificado: 0 diferencias es/no-es entre texto
+    # completo y prefijo en el corpus). El lru_cache de _detect_language_ro-
+    # bust ya cachea por texto exacto; con el prefijo, los bloques largos de
+    # la misma pagina comparten entrada de cache (misma firma de inicio).
+    try:
+        from translator import _detect_language_robust
+        sample = text if len(text) <= _SPELL_LANG_MAX_CHARS \
+            else text[:_SPELL_LANG_MAX_CHARS]
+        if _detect_language_robust(sample) != "es":
+            return text
+    except Exception as exc:
+        # Ante un fallo del detector, conservar el OCR es mas seguro que
+        # aplicar un diccionario posiblemente incorrecto.
+        print(f"[OCR-spellcheck] omitido por idioma no verificable: {exc}")
         return text
 
     palabras = text.split()
     corregidas: list[str] = []
     # Obtener spellchecker UNA VEZ fuera del loop
     sp = _get_spellchecker()
+
+    # Un detector de idioma de bloque puede clasificar como espanol una
+    # frase corta mixta (por ejemplo: "Quiero go home"). Antes de corregir,
+    # comparar los tokens contra los diccionarios de los idiomas latinos que
+    # ya soporta el proyecto. Si hay evidencia extranjera, preservar todo el
+    # bloque evita cambiar solo una parte de la frase.
+    if len(palabras) >= 2 and _contains_foreign_latin_tokens(text, sp):
+        return text
 
     for p in palabras:
         stripped = p.strip("'\".,;:!?¡¿()[]{}")
@@ -1118,9 +1577,48 @@ def _ocr_spellcheck(text: str) -> str:
         p_lower = stripped.lower()
 
         if sp is not None:
-            # pyspellchecker.correction(word) retorna None si la palabra es correcta
-            # o la palabra corregida si no lo es (distancia Levenshtein implicita)
-            correccion = sp.correction(p_lower)
+            # Optimización 2026-08-15 (costo oculto del A/B de la Ruta C):
+            # pyspellchecker.correction() paga la expansión de distancia 2
+            # (~0.3-1.3 s por palabra de 10-21 chars fuera del diccionario —
+            # palabras largas/pegadas del OCR) escaneando TODO el diccionario
+            # cuando hay candidatos a distancia 2. _spellcheck_correction()
+            # replica la selección exacta (candidatos por longitud + Damerau
+            # acotado + pre-filtro de conteos + diacríticos + frecuencia) sin
+            # la expansión masiva, y devuelve None si no hay candidatos
+            # (resultado idéntico, sin el costo). Se usa a partir de
+            # _SPELL_CORRECTION_MIN_LEN (13): en palabras cortas el scan del
+            # bucket es más lento que sp.correction() (calibrado 2026-08-15),
+            # así que esas delegan a pyspellchecker. Cualquier excepción
+            # (p.ej. un checker mockeado en tests sin word_frequency) cae al
+            # comportamiento histórico.
+            try:
+                if len(p_lower) >= _SPELL_CORRECTION_MIN_LEN:
+                    correccion = _spellcheck_correction(sp, p_lower)
+                else:
+                    correccion = sp.correction(p_lower)
+            except Exception:
+                correccion = None
+                try:
+                    correccion = sp.correction(p_lower)
+                except Exception:
+                    correccion = None
+            # Calibración 2026-08-15: en palabras de 3-5 chars solo se
+            # aceptan correcciones a DISTANCIA 1 (una a distancia 2 cambia
+            # >50 % de los caracteres). pyspellchecker ya prefiere distancia 1
+            # cuando existe; el filtro solo descarta el fallback a distancia 2
+            # de las cortas. Se verifica contra el índice (mismo conjunto de
+            # candidatos) y fail-open ante checkers mockeados sin índice: si
+            # el índice no se puede construir (MagicMock sin word_frequency
+            # real), se acepta la corrección de sp.correction(). Las
+            # correcciones reales del capítulo son todas d1 — ninguna se pierde.
+            if (correccion is not None and correccion != p_lower
+                    and len(p_lower) <= _SPELL_EDIT_1_MAX_LEN):
+                try:
+                    candidatos_d1 = _spell_candidates(sp, p_lower, 1)
+                except (TypeError, AttributeError):
+                    candidatos_d1 = [correccion]  # fail-open (mockeado)
+                if correccion not in candidatos_d1:
+                    correccion = None
             if correccion is not None and correccion != p_lower:
                 # Preservar capitalizacion original
                 if p[0].isupper() and not p.isupper():
@@ -1169,14 +1667,60 @@ def _ocr_spellcheck(text: str) -> str:
 
 
 # ─── Image base64 conversion ─────────────────────────────────────
-def _base64_to_cv2(b64: str) -> _Img | None:
-    if "," in b64:
-        b64 = b64.split(",", 1)[1]
+def _bytes_to_cv2(
+    img_bytes: bytes,
+    *,
+    max_pixels: int | None = None,
+) -> _Img | None:
+    """Decodifica bytes crudos de imagen (PNG/JPEG/...) a BGR.
+
+    Comparte la validación de píxeles de _base64_to_cv2: inspeccionar la
+    cabecera con Pillow es barato y evita que cv2.imdecode reserve un ndarray
+    enorme para una imagen muy comprimida. (Optimización 2.4: el cliente
+    puede enviar el canvas como cuerpo binario en vez de base64 en JSON.)
+    """
     try:
-        img_bytes = base64.b64decode(b64)
+        pixel_limit = MAX_IMAGE_DECODE_PIXELS
+        if max_pixels is not None:
+            try:
+                pixel_limit = min(pixel_limit, max(0, int(max_pixels)))
+            except (TypeError, ValueError, OverflowError):
+                return None
+        header_size: tuple[int, int] | None = None
+        try:
+            from PIL import Image
+
+            with Image.open(io.BytesIO(img_bytes)) as header:
+                header_size = header.size
+        except Exception:
+            # Algunos formatos aceptados por OpenCV no los abre Pillow; en
+            # ese caso se mantiene el fallback histórico de imdecode().
+            header_size = None
+        if header_size is not None:
+            width, height = header_size
+            if width <= 0 or height <= 0 or width * height > pixel_limit:
+                return None
         np_arr = np.frombuffer(img_bytes, dtype=np.uint8)
         img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         return img
+    except Exception:
+        return None
+
+
+def _base64_to_cv2(
+    b64: str,
+    *,
+    max_pixels: int | None = None,
+) -> _Img | None:
+    if "," in b64:
+        b64 = b64.split(",", 1)[1]
+    try:
+        # ``validate=True`` evita que b64decode ignore caracteres inválidos
+        # silenciosamente (p. ej. un payload válido seguido de ``!``). Eso
+        # podría hacer que una entrada corrupta pareciera válida y llegara a
+        # OpenCV con bytes distintos de los que el cliente envió.
+        img_bytes = base64.b64decode(b64, validate=True)
+        return _bytes_to_cv2(img_bytes, max_pixels=max_pixels)
     except Exception:
         return None
 
@@ -1303,9 +1847,18 @@ def _pre_filter_image(img_bgr: _Img) -> _Img:
     # Dilatar ligeramente para cubrir la línea completa
     kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 1))
     line_mask = cv2.dilate(thresh_lines, kernel_dilate, iterations=1)
-    # Inpainting de las líneas detectadas
+    # Inpainting de las líneas detectadas. NOTA (Fase 4, 4.4B — DESCARTADA):
+    # se probó hacer el inpaint a resolución reducida (0.5×) para abaratar el
+    # ~1.4 s/pág (el detector marca ~90% del área del manga como "línea" y
+    # TELEA corre sobre la página completa). La validación A/B en el flujo
+    # real mostró una REGRESIÓN en la página débil (pág 11: 9 bloques /
+    # conf 0.727 → 7 / 0.612) — exactamente donde el prefilter más aporta —
+    # así que se revierte a resolución completa. La vía correcta es 4.4C
+    # (detector de líneas más selectivo para reducir el área de la máscara),
+    # no bajar la resolución del inpaint.
     if int(line_mask.max()) > 0:
-        result = cv2.inpaint(result, line_mask, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
+        result = cv2.inpaint(result, line_mask, inpaintRadius=3,
+                             flags=cv2.INPAINT_TELEA)
         # Re-calcular gray después del inpainting (modificó result)
         gray = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
 
@@ -1353,13 +1906,29 @@ _OCR_MIN_SIZE: int = 6
 # Factor de upscaling interno de EasyOCR. 1.3 mejora detección de
 # texto muy pequeño (manga) sin saturar con ruido de fondo.
 _OCR_MAG_RATIO: float = 1.3
+# Batch del recognizer de EasyOCR (Fase 1, ítem 2.2): EasyOCR procesa los
+# crops de texto de a uno por defecto (batch_size=1); el recognizer (CNN)
+# aprovecha el batch en GPU/CPU y acelera ~2-4x cuando la página tiene
+# varios bloques. Los crops son pequeños (~32px), así que el coste de VRAM
+# extra es despreciable frente al presupuesto de 4 GB. NO afecta al
+# determinismo por página: cada crop se procesa independientemente, solo
+# cambia el empaquetado del recognizer.
+_OCR_BATCH_SIZE: int = 8
+
+# NOTA de diseño (Fase 1, ítem 2.2): se evaluó `torch.backends.cudnn.
+# benchmark = True` (~10-20% en convnets con input estable) y se DESCARTÓ:
+# runtime_diagnostics.configure_torch_determinism() fija cudnn.deterministic
+# = True / benchmark = False a propósito (misma imagen → misma firma → misma
+# decisión de trigger/negativas U-OCR entre corridas; la variación cuDNN ya
+# causó bugs reales en páginas gemelas). benchmark=True es incompatible con
+# determinístico (PyTorch lo ignora) y reintroduciría esa variación.
 
 
 def _run_ocr_on_image(
     reader: Any,
     img_bgr: _Img,
     mag_ratio: float | None = None,
-    rotation_info: list[str] | tuple[str, ...] | None = None,
+    rotation_info: list[int] | tuple[int, ...] | None = None,
 ) -> list[Any]:
     """
     Ejecuta EasyOCR sobre una imagen y retorna resultados crudos.
@@ -1379,8 +1948,10 @@ def _run_ocr_on_image(
             internamente), así que el mapeo ÷upscale de la Ruta C no cambia.
     """
     mag = mag_ratio if mag_ratio is not None else _OCR_MAG_RATIO
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     acquired = _ocr_semaphore.acquire(blocking=True, timeout=120)
+    if not acquired:
+        print("[OCR] Timeout adquiriendo el semáforo de EasyOCR; se omite esta pasada")
+        return []
     try:
         # v4.2 race-window fix: si el daemon U-OCR empezó a inferir DESPUÉS de
         # que _detect_and_ocr chequeara el flag (check-then-act), este worker ya
@@ -1395,6 +1966,7 @@ def _run_ocr_on_image(
         # v4.2: adquirir el lock GPU para no competir por VRAM con el daemon
         # U-OCR si está infiriendo (un solo motor GPU a la vez).
         with _gpu_lock:
+            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
             kwargs: dict[str, Any] = {
                 "detail": 1,
                 "paragraph": False,
@@ -1404,10 +1976,13 @@ def _run_ocr_on_image(
                 "link_threshold": 0.3,
                 "canvas_size": min(max(img_bgr.shape[:2]), _OCR_CANVAS_SIZE),
                 "mag_ratio": mag,
+                # Fase 1 (2.2): batch del recognizer — acelera páginas con
+                # varios bloques sin cambiar los resultados por crop.
+                "batch_size": _OCR_BATCH_SIZE,
             }
             if rotation_info is not None:
                 kwargs["rotation_info"] = list(rotation_info)
-            return reader.readtext(img_rgb, **kwargs)
+            return cast(list[Any], reader.readtext(img_rgb, **kwargs))
     except Exception as e:
         print(f"[OCR] Error en readtext: {e}")
         return []
@@ -1434,9 +2009,13 @@ def _ocr_results_to_blocks(results: list[Any], img_bgr: _Img) -> list[dict[str, 
             # Formato interno (RapidOCR CPU en la race window): bloques ya
             # formateados con x/y/w/h/text/confidence/fontSize/textColor.
             text = str(res.get("text", "")).strip()
-            conf = float(res.get("confidence", 0.5))
+            try:
+                conf = float(res.get("confidence", 0.5))
+            except (TypeError, ValueError):
+                # Un bloque malformado no debe tumbar el resto de la página.
+                continue
             # Paridad con el camino tupla: mismo filtro de confianza mínima.
-            if not text or conf < 0.08:
+            if not text or not np.isfinite(conf) or conf < 0.08:
                 continue
             x = int(res.get("x", 0))
             y = int(res.get("y", 0))
@@ -1452,9 +2031,13 @@ def _ocr_results_to_blocks(results: list[Any], img_bgr: _Img) -> list[dict[str, 
                 "textColor": res.get("textColor", "#000000"),
             })
             continue
-        bbox, text, conf = res
+        try:
+            bbox, text, conf = res
+            conf = float(conf)
+        except (TypeError, ValueError):
+            continue
         text = str(text).strip()
-        if not text or conf < 0.08:
+        if not text or not np.isfinite(conf) or conf < 0.08:
             continue
         xs = [p[0] for p in bbox]
         ys = [p[1] for p in bbox]
@@ -1483,6 +2066,30 @@ def _ocr_results_to_blocks(results: list[Any], img_bgr: _Img) -> list[dict[str, 
         })
 
     return _group_and_merge_blocks(blocks, img_bgr.shape[0])
+
+
+def _rapid_cond_skip(blocks_easy: list[dict[str, Any]],
+                      use_hybrid: bool) -> bool:
+    """True → omitir el pase RapidOCR (página ya bien detectada).
+
+    Con ``use_hybrid=False`` (pure_easyocr) no hay tier híbrido: se omite.
+    Con el flag ``RAPID_COND_ENABLED`` apagado se conserva el comportamiento
+    histórico (siempre correr RapidOCR). Si EasyOCR resolvió la página con
+    fuerza —>= ``RAPID_COND_MIN_BLOCKS`` bloques y confianza media
+    >= ``RAPID_COND_MIN_CONF``, el mismo criterio del trigger v4.2— el pase
+    CPU complementario solo deduplicaría (la fusión se queda con el de mayor
+    confianza) y se evita el coste de ~1.1-1.5s/pág. Páginas débiles o vacías
+    devuelven False: ahí RapidOCR sí puede recuperar texto estilizado.
+    """
+    if not use_hybrid:
+        return True
+    if not RAPID_COND_ENABLED:
+        return False
+    if not blocks_easy:
+        return False
+    avg_conf = float(np.mean([b.get("confidence", 0) for b in blocks_easy]))
+    return (len(blocks_easy) >= RAPID_COND_MIN_BLOCKS
+            and avg_conf >= RAPID_COND_MIN_CONF)
 
 
 def _detect_and_ocr(
@@ -1564,14 +2171,58 @@ def _detect_and_ocr(
                     blocks_easy = blocks_high
                     avg_conf = avg_conf_high
 
-    # ── Híbrido: Ejecutar RapidOCR siempre para capturar texto estilizado/títulos ──
-    if use_hybrid:
-        print("[OCR] Ejecutando RapidOCR para complementar texto estilizado y títulos...")
-        img_rapid = _preprocess_rapid(img_bgr)
-        rapid_blocks = _run_rapidocr(img_rapid)
+    # ── Híbrido condicional (Fase 1, ítem 2.1): RapidOCR solo si EasyOCR débil ──
+    # Antes corría SIEMPRE en paralelo con EasyOCR y el wait del hilo pagaba
+    # ~1.5s/pág incluso en páginas fáciles (la fusión solo deduplicaba). Con
+    # _rapid_cond_skip, en páginas que EasyOCR ya resolvió con fuerza (>= 3
+    # bloques y conf >= 0.20, el mismo criterio del trigger v4.2) se omite el
+    # pase CPU completo. En páginas débiles o vacías corre igual (serial,
+    # después de EasyOCR) para capturar texto estilizado y títulos.
+    rapid_blocks: list[dict[str, Any]] = []
+    if not _rapid_cond_skip(blocks_easy, use_hybrid):
+        print("[OCR] EasyOCR débil/vacío: ejecutando RapidOCR (CPU) para "
+              "complementar...")
+        try:
+            img_rapid = _preprocess_rapid(
+                img_ocr,
+                already_prefiltered=prefilter,
+            )
+            rapid_blocks = _run_rapidocr(img_rapid)
+        except Exception as exc:
+            print(f"[OCR] RapidOCR falló: {exc}")
 
         if rapid_blocks:
             merged = _fusionar_blocks(blocks_easy, rapid_blocks)
+
+            # Página mixta: RapidOCR puede detectar texto CJK aunque el
+            # lector latino de EasyOCR no lo reconozca correctamente. Se
+            # reintenta como máximo con los dos alfabetos más evidentes y en
+            # CPU; así no se cargan varios modelos EasyOCR en la GTX 1050 Ti.
+            if lang_hint == "auto":
+                script_hints = _script_language_hints(rapid_blocks)[:2]
+                for script_lang in script_hints:
+                    try:
+                        script_reader = _get_ocr_reader(
+                            script_lang, prefer_gpu=False)
+                        if script_reader is None:
+                            continue
+                        script_results = _run_ocr_on_image(
+                            script_reader, img_ocr)
+                        script_blocks = _ocr_results_to_blocks(
+                            script_results, img_ocr)
+                        if script_blocks:
+                            merged = _fusionar_blocks(merged, script_blocks)
+                            print(
+                                f"[OCR] Recuperación {script_lang} CPU: "
+                                f"{len(script_blocks)} bloques"
+                            )
+                    except Exception as exc:
+                        # La segunda pasada es opcional: si falla no se debe
+                        # perder el resultado ya fusionado de EasyOCR/RapidOCR.
+                        print(
+                            f"[OCR] Recuperación {script_lang} omitida: {exc}"
+                        )
+
             print(f"[OCR] Híbrido EasyOCR + RapidOCR: {len(merged)} bloques totales "
                   f"(Easy={len(blocks_easy)}, Rapid={len(rapid_blocks)})")
             return merged
@@ -1661,7 +2312,8 @@ def _detect_bubble_regions_in_panel(
         if roundness < 0.30:  # blob demasiado irregular para ser globo
             continue
         mask_region = bright[by:by + bh, bx:bx + bw]
-        border_mask = cv2.dilate(mask_region, np.ones((5, 5), np.uint8)) ^ mask_region
+        border_mask = cv2.bitwise_xor(
+            cv2.dilate(mask_region, np.ones((5, 5), np.uint8)), mask_region)
         border_hits = cv2.countNonZero(cv2.bitwise_and(edges[by:by + bh, bx:bx + bw], border_mask))
         border_ratio = border_hits / max(cv2.countNonZero(border_mask), 1)
         if border_ratio < 0.08:
@@ -1730,6 +2382,296 @@ def _classify_rotate_crop(up_img: _Img) -> tuple[_Img, bool, float]:
         _rapid_semaphore.release()
 
 
+def _semantic_type_for_region(region: dict[str, Any]) -> str:
+    """Convierte etiquetas de detectores a tipos semánticos estables."""
+    raw = str(region.get("type") or region.get("label") or "text").lower()
+    if any(token in raw for token in ("title", "chapter", "heading")):
+        return "title"
+    if any(token in raw for token in ("header", "caption", "narrat", "cartel")):
+        return "header"
+    if any(token in raw for token in ("sfx", "sound", "onomat")):
+        return "sfx"
+    if any(token in raw for token in ("thought", "thinking", "thought_bubble")):
+        return "thought"
+    if any(token in raw for token in ("bubble", "balloon", "speech", "dialog")):
+        return "dialogue"
+    return "text"
+
+
+# Parámetros del crop de la Ruta C (A/B 2026-08-15): son módulo-globales
+# (NO Final) para que benchmark_rutac_params.py los parchee en runtime y mida
+# alternativas (pad factor / pad mínimo / interpolación) sin tocar producción.
+# A/B 2026-08-15 (benchmark_rutac_params.py, 14 págs): pad 6% → 3% mantiene
+# 107 = 107 bloques y textos idénticos a −23.6 % de tiempo en páginas con Ruta
+# C (−1.45 s/pág). INTER_CUBIC vs INTER_LINEAR: peor recuperación (−4 bloques)
+# sin ganancia → se mantiene CUBIC. rotation_info: (0,180) pierde 1 bloque
+# real → se mantiene (0,90,180,270).
+# CORRECCIÓN 2026-08-15 (re-corrida con daemon VLM detenido, --reps 3,
+# benchmark_results/rutac_params_reps3.json): el −23.6 % del pad era deriva de
+# GPU sin control (noise-floor 0.02 s vs ±0.3-0.7 s con el daemon activo). Con
+# ruido controlado, pad 0.03 vs 0.06 es neutro en tiempo (+0.2 %, bloques
+# idénticos 47 = 47) → el 3% queda igualmente como producción; box_thresh 0.35
+# neutro en tiempo y −1 bloque; unclip 2.2 neutro en tiempo y −4 bloques → los
+# defaults (0.5 / 1.6) quedan CONFIRMADOS.
+_RUTA_C_PAD_FACTOR: float = 0.03
+_RUTA_C_PAD_MIN: int = 6
+_RUTA_C_INTERP: int = cv2.INTER_CUBIC
+
+# Parámetros de detección de RapidOCR en los CROPS de la Ruta C (A/B 2026-08-15,
+# benchmark_rutac_params.py). None = defaults de la librería (0.5 / 1.6), que es
+# el comportamiento histórico. Módulo-globales para parcheo en runtime.
+_RUTA_C_RAPID_BOX_THRESH: float | None = None
+_RUTA_C_RAPID_UNCLIP_RATIO: float | None = None
+
+# Batch estructural de la Ruta C (A/B 2026-08-15, benchmark_rutac_batch.py): en
+# vez de det DBNet + rec por crop, los crops se apilan en un strip vertical (gap
+# blanco, chunks de alto <= _RUTA_C_STRIP_MAX_CHUNK_H — el límite del det es
+# max_side_len=2000, con margen) y se ejecuta det UNA vez por chunk + UNA sola
+# llamada text_rec con TODAS las líneas de todos los crops. El A/B midió −76.6 %
+# en el núcleo (20.5 s → 4.8 s, 52 det-calls → 8) con recuperación equivalente o
+# mejor; los duplicados que se observaron son regiones YOLO solapadas (crops
+# gemelos con el mismo contenido) — mismo comportamiento que el per-crop,
+# deduplicado downstream por overlap en la fusión.
+_RUTA_C_STRIP_GAP: int = 24
+_RUTA_C_STRIP_MAX_CHUNK_H: int = 1900
+# Interruptor del batch estructural en producción (default ON tras la
+# integración de 2026-08-15). Módulo-global (no Final) para que
+# benchmark_rutac_batch.py haga el A/B mismo-proceso (per-crop vs strip) y
+# como válvula de rollback si el strip diera problemas en algún corpus: con
+# False, _recover_regions_with_easyocr vuelve a _run_rapidocr por crop.
+_RUTA_C_STRIP_BATCH: bool = True
+
+
+def _ruta_c_prepare_crops(
+    img_bgr: _Img,
+    regions: list[dict[str, Any]],
+    upscale: float,
+) -> list[dict[str, Any] | None]:
+    """Prepara los crops de la Ruta C (pad + upscale + cls de rotación).
+
+    Resultado alineado con ``regions``: una entrada por región, ``None`` si el
+    crop no es procesable (tamaño mínimo o límite de resolución). Compartido por
+    el batch estructural (strip) y el loop de mapeo/fallback de
+    _recover_regions_with_easyocr para que AMBOS usen EXACTAMENTE los mismos
+    crops (mismo pad 3%, mismo upscale INTER_CUBIC, mismo cls de rotación).
+    """
+    h_page, w_page = img_bgr.shape[:2]
+    prepared: list[dict[str, Any] | None] = []
+    for r in regions:
+        region_type = _semantic_type_for_region(r)
+        pad = max(_RUTA_C_PAD_MIN, int(min(r["w"], r["h"]) * _RUTA_C_PAD_FACTOR))
+        x0, y0 = max(0, r["x"] - pad), max(0, r["y"] - pad)
+        x1, y1 = min(w_page, r["x"] + r["w"] + pad), min(h_page, r["y"] + r["h"] + pad)
+        crop = img_bgr[y0:y1, x0:x1]
+        if crop.size == 0 or crop.shape[0] < 8 or crop.shape[1] < 8:
+            prepared.append(None)
+            continue
+        up_w, up_h = int(crop.shape[1] * upscale), int(crop.shape[0] * upscale)
+        if up_w > 8000 or up_h > 8000:
+            prepared.append(None)
+            continue
+        up_img = cv2.resize(crop, (up_w, up_h), interpolation=_RUTA_C_INTERP)
+        # Clasificar antes del primer OCR: RapidOCR también debe recibir el
+        # crop corregido cuando el texto está girado 180°.
+        up_img_ocr, se_roto, cls_score = _classify_rotate_crop(up_img)
+        if se_roto:
+            print(f"[OCR] Ruta C: globo rotado 180° "
+                  f"(score {cls_score:.2f}) — corregido")
+        prepared.append({
+            "img": up_img_ocr,
+            "x0": x0, "y0": y0,
+            # Dimensiones del upscale PRE-cls: idénticas a las del rotado
+            # (ROTATE_180 conserva forma) y son las que usa el mapeo de
+            # des-rotación de coordenadas.
+            "up_w": up_img.shape[1], "up_h": up_img.shape[0],
+            "se_roto": se_roto, "cls_score": cls_score,
+            "type": region_type,
+        })
+    return prepared
+
+
+def _rapidocr_blocks_from_lines(
+    crop_img: _Img,
+    items: list[tuple[Any, Any, Any]],
+) -> list[dict[str, Any]]:
+    """Construye bloques internos desde líneas (bbox, text, conf) de un crop.
+
+    Réplica exacta del bloque de construcción de _run_rapidocr (conf mínima
+    0.08, textColor por brillo del ROI) sin volver a ejecutar det/rec. NO
+    agrupa: cada caller aplica _group_and_merge_blocks con su propio
+    page_height (None para crops — los bordes del globo son texto legítimo —
+    y la altura de página para páginas completas).
+    """
+    blocks: list[dict[str, Any]] = []
+    for bbox, text, conf in items:
+        try:
+            text = str(text).strip()
+            if not text or conf < 0.08:
+                continue
+            xs = [p[0] for p in bbox]
+            ys = [p[1] for p in bbox]
+            x, y = int(min(xs)), int(min(ys))
+            w, h = int(max(xs) - x), int(max(ys) - y)
+            if w < 3 or h < 3:
+                continue
+            font_size = max(8, int(h * 0.75))
+            cx, cy = x + w // 2, y + h // 2
+            pad = max(2, h // 6)
+            roi = crop_img[max(0, cy - pad):cy + pad, max(0, cx - pad):cx + pad]
+            text_color = "#ffffff"
+            if roi.size > 0:
+                mean_b = int(np.mean(roi[:, :, 0]))
+                mean_g = int(np.mean(roi[:, :, 1]))
+                mean_r = int(np.mean(roi[:, :, 2]))
+                brightness = mean_r * 0.299 + mean_g * 0.587 + mean_b * 0.114
+                text_color = "#000000" if brightness > 128 else "#ffffff"
+            blocks.append({
+                "x": x, "y": y, "w": w, "h": h,
+                "text": text,
+                "confidence": float(conf),
+                "fontSize": font_size,
+                "textColor": text_color,
+            })
+        except (ValueError, IndexError, TypeError):
+            continue
+    return blocks
+
+
+def _rapidocr_strip_batch(
+    crops: list[dict[str, Any] | None],
+    upscale: float = 3.5,
+) -> dict[int, list[dict[str, Any]]]:
+    """Re-OCR estructural de los crops de la Ruta C en UNA pasada det+rec.
+
+    En vez de det DBNet + rec por crop (~1.2 s/crop de det), los crops se
+    apilan en un strip vertical (gap _RUTA_C_STRIP_GAP, chunks de alto
+    <= _RUTA_C_STRIP_MAX_CHUNK_H) y se ejecuta:
+      1. det DBNet UNA vez por chunk (box_thresh/unclip: defaults de la Ruta C
+         0.5/1.6, con los overrides de A/B si están parcheados).
+      2. UNA sola llamada text_rec con TODAS las líneas de todos los chunks
+         (batch nativo del recognizer).
+      3. Mapeo de cada línea a su crop por centro-y (líneas cuyo centro cae en
+         el gap se descartan — no pertenecen a ningún crop) y construcción de
+         bloques en coordenadas del crop upscaleado.
+
+    Returns:
+        {índice en ``crops``: bloques en formato interno (coords del crop
+        upscaleado, ya agrupados por _group_and_merge_blocks)}. Los índices
+        None o sin líneas recuperadas no aparecen: el caller los trata como
+        "rapid no recuperó" y cae al fallback EasyOCR por crop.
+
+    Degradación segura: sin engine o con semáforo agotado → {} (el fallback
+    por crop queda intacto, igual que si RapidOCR no recuperara nada).
+    """
+    engine = _get_rapid_engine()
+    if engine is None:
+        return {}
+    acquired = _rapid_semaphore.acquire(blocking=True, timeout=120)
+    if not acquired:
+        print("[OCR] Timeout adquiriendo semaforo RapidOCR (strip, 120s)")
+        return {}
+    try:
+        valid: list[tuple[int, dict[str, Any]]] = [
+            (i, c) for i, c in enumerate(crops) if c is not None
+        ]
+        if not valid:
+            return {}
+        # Stitch vertical con gap blanco, en chunks de <= MAX_CHUNK_H.
+        chunks: list[dict[str, Any]] = []
+        current: list[tuple[int, dict[str, Any]]] = []
+        cur_h, cur_w = 0, 0
+
+        def flush() -> None:
+            nonlocal current, cur_h, cur_w
+            if not current:
+                return
+            img = np.full((cur_h, cur_w, 3), 255, np.uint8)
+            bands: list[dict[str, Any]] = []
+            top = 0
+            for idx, c in current:
+                img[top:top + c["up_h"], 0:c["up_w"]] = c["img"]
+                bands.append({"idx": idx, "top": top, "h": c["up_h"]})
+                top += c["up_h"] + _RUTA_C_STRIP_GAP
+            chunks.append({"img": img, "bands": bands})
+            current, cur_h, cur_w = [], 0, 0
+
+        for item in valid:
+            _cidx, cinfo = item
+            h, w = cinfo["up_h"], cinfo["up_w"]
+            if current and cur_h + _RUTA_C_STRIP_GAP + h > _RUTA_C_STRIP_MAX_CHUNK_H:
+                flush()
+            if not current:
+                current = [item]
+                cur_h, cur_w = h, w
+            else:
+                current.append(item)
+                cur_h += _RUTA_C_STRIP_GAP + h
+                cur_w = max(cur_w, w)
+        flush()
+
+        # Parámetros de detección: mismos defaults que _run_rapidocr (0.5/1.6)
+        # con los overrides de A/B si están parcheados en runtime.
+        engine.text_det.postprocess_op.box_thresh = (
+            _RUTA_C_RAPID_BOX_THRESH if _RUTA_C_RAPID_BOX_THRESH is not None else 0.5)
+        engine.text_det.postprocess_op.unclip_ratio = (
+            _RUTA_C_RAPID_UNCLIP_RATIO if _RUTA_C_RAPID_UNCLIP_RATIO is not None else 1.6)
+        engine.text_score = 0.5
+
+        all_lines: list[tuple[Any, Any, int]] = []  # (line, bbox, crop_idx)
+        for chunk in chunks:
+            dt_boxes, _ = engine.text_det(chunk["img"])
+            if dt_boxes is None:
+                continue
+            boxes = list(dt_boxes)
+            if not boxes:
+                continue
+            lines = engine.get_crop_img_list(chunk["img"], boxes)
+            for box, line in zip(boxes, lines):
+                xs = [p[0] for p in box]
+                ys = [p[1] for p in box]
+                cy = int(min(ys) + (max(ys) - min(ys)) / 2)
+                band = next(
+                    (b for b in chunk["bands"]
+                     if b["top"] <= cy < b["top"] + b["h"]), None)
+                if band is None:
+                    # Centro en el gap: la caja no pertenece a ningún crop.
+                    continue
+                all_lines.append((line, box, band["idx"]))
+        if not all_lines:
+            return {}
+
+        rec_res, _ = engine.text_rec([l for l, _b, _i in all_lines])
+
+        per_crop: dict[int, list[Any]] = {}
+        for (line, box, crop_idx), (text, conf) in zip(all_lines, rec_res):
+            per_crop.setdefault(crop_idx, []).append((box, text, conf))
+
+        tops: dict[int, int] = {}
+        for chunk in chunks:
+            for band in chunk["bands"]:
+                tops[band["idx"]] = band["top"]
+
+        result: dict[int, list[dict[str, Any]]] = {}
+        for idx, items in per_crop.items():
+            c = crops[idx]
+            if c is None:
+                continue
+            top = tops[idx]
+            local: list[Any] = []
+            for box, text, conf in items:
+                bbox_local = [(float(p[0]), float(p[1]) - top) for p in box]
+                local.append((bbox_local, text, conf))
+            result[idx] = _group_and_merge_blocks(
+                _rapidocr_blocks_from_lines(c["img"], local), None)
+        return result
+    except Exception as e:
+        print(f"[OCR] Error en el batch estructural RapidOCR: {e}")
+        return {}
+    finally:
+        if acquired:
+            _rapid_semaphore.release()
+
+
 def _recover_regions_with_easyocr(
     img_bgr: _Img,
     regions: list[dict[str, Any]],
@@ -1739,27 +2681,41 @@ def _recover_regions_with_easyocr(
     """Re-OCR de regiones de texto/globos a nivel individual (Ruta C).
 
     Para cada región (coordenadas de página):
-      1. Recortar con padding.
-      2. Upscale 3-4× (INTER_CUBIC) — la granularidad que el benchmark
-         demostró necesaria para el diálogo artístico.
+      1. Recortar con padding (A/B 2026-08-15: 3% en vez de 6% — 107 = 107
+         bloques y textos idénticos a −23.6 %, ver _RUTA_C_PAD_FACTOR).
+      2. Upscale 3.5× (INTER_CUBIC) — A/B corregido 2026-08-15
+         (benchmark_rutac_upscale/recovery, daemon detenido, --reps 3): 3.5×
+         recupera 2 bloques más que 2× (pág 11) a tiempo neutro. El 2×
+         aplicado 2026-08-14 se revierte: su A/B estaba roto (comparaba
+         3.5× vs 3.5×) y el "−24%" era deriva de GPU.
       3. OCR sobre el recorte upscaleado.
       4. Mapear bloques de vuelta a coordenadas de página (÷ upscale).
 
-    Motor (§8.4.4): EasyOCR GPU por defecto; pero si el daemon U-OCR está
-    infiriendo (_uocr_inferring activo, v4.2), NO se carga EasyOCR a VRAM y
-    se degrada a **RapidOCR CPU** sobre el crop upscaleado — así la Ruta C
-    no compite por la GTX con la inferencia VLM en curso (un solo motor GPU
-    a la vez). El chequeo ocurre ANTES de _get_ocr_reader(), igual que en
-    _detect_and_ocr.
+    Motor: RapidOCR CPU por defecto en el crop; EasyOCR GPU queda como
+    fallback si RapidOCR no devuelve texto fiable. Si el daemon U-OCR está
+    infiriendo (_uocr_inferring activo, v4.2), EasyOCR no se carga nunca y
+    la Ruta C permanece en RapidOCR para no competir por la GTX. El chequeo
+    ocurre ANTES de _get_ocr_reader(), igual que en _detect_and_ocr.
+
+    Estructural (2026-08-15): con el motor rapid activo, el paso 3 se ejecuta
+    en batch — los crops se apilan en un strip vertical y corren det DBNet por
+    chunk + UNA llamada text_rec para todos (−76.6 % del núcleo en el A/B,
+    benchmark_rutac_batch.py); el fallback EasyOCR por crop se conserva para
+    los crops que el strip no recupera.
 
     Returns:
         Bloques en formato interno ({x, y, w, h, text, confidence, fontSize}).
     """
     # §8.4.4: si el daemon U-OCR está infiriendo, degradar a RapidOCR CPU.
     use_rapid = _uocr_inferring.is_set()
-    reader = None if use_rapid else _get_ocr_reader(lang_hint)
-    if reader is None and not use_rapid:
-        return []
+    prefer_rapid = bool(RUTA_C_RAPID_PRIMARY) and not use_rapid
+    # Con RapidOCR primario no cargamos EasyOCR GPU por adelantado. Solo se
+    # inicializa si el recorte no devuelve texto fiable y hace falta fallback.
+    reader = None
+    if not use_rapid and not prefer_rapid:
+        reader = _get_ocr_reader(lang_hint)
+        if reader is None:
+            return []
     if not regions:
         return []
     # Fase 6: rotation_info (0/90/180/270) para recuperar títulos verticales
@@ -1769,111 +2725,173 @@ def _recover_regions_with_easyocr(
     if use_rapid:
         print("[OCR] Ruta C degradada a RapidOCR CPU "
               "(daemon U-OCR infiriendo)")
-    h_page, w_page = img_bgr.shape[:2]
+    # Batch estructural: preparar los crops UNA vez (pad + upscale + cls de
+    # rotación) y, si el motor rapid está activo, correr el strip (det por
+    # chunk + UNA text_rec para todos). El fallback EasyOCR por crop se
+    # conserva: los crops que el strip no recupera caen al reader lazy.
+    # Con _RUTA_C_STRIP_BATCH=False se vuelve al re-OCR por crop (_run_rapidocr
+    # por región) — A/B del benchmark y válvula de rollback.
+    prepared = _ruta_c_prepare_crops(img_bgr, regions, upscale)
+    strip_by_crop: dict[int, list[dict[str, Any]]] = {}
+    if (use_rapid or prefer_rapid) and _RUTA_C_STRIP_BATCH:
+        strip_by_crop = _rapidocr_strip_batch(prepared, upscale)
+
     recovered: list[dict[str, Any]] = []
-    for r in regions:
-        pad = max(6, int(min(r["w"], r["h"]) * 0.06))
-        x0, y0 = max(0, r["x"] - pad), max(0, r["y"] - pad)
-        x1, y1 = min(w_page, r["x"] + r["w"] + pad), min(h_page, r["y"] + r["h"] + pad)
-        crop = img_bgr[y0:y1, x0:x1]
-        if crop.size == 0 or crop.shape[0] < 8 or crop.shape[1] < 8:
+    for i, r in enumerate(regions):
+        crop_info = prepared[i]
+        if crop_info is None:
             continue
-        up_w, up_h = int(crop.shape[1] * upscale), int(crop.shape[0] * upscale)
-        if up_w > 8000 or up_h > 8000:
-            continue
-        up_img = cv2.resize(crop, (up_w, up_h), interpolation=cv2.INTER_CUBIC)
-        if use_rapid:
-            # Degradación §8.4.4: RapidOCR CPU sobre el crop upscaleado.
-            # _run_rapidocr ya devuelve bloques en formato interno.
-            rapid_blocks = _run_rapidocr(up_img)
+        region_type = crop_info["type"]
+        x0, y0 = crop_info["x0"], crop_info["y0"]
+        up_img_ocr = crop_info["img"]
+        se_roto = crop_info["se_roto"]
+        # Dimensiones del upscale PRE-cls (idénticas tras ROTATE_180): son
+        # las que usa la des-rotación de coordenadas del bloque.
+        up_w_original = crop_info["up_w"]
+        up_h_original = crop_info["up_h"]
+        if use_rapid or prefer_rapid:
+            # RapidOCR es el motor primario de Ruta C porque el benchmark de
+            # crops artísticos mostró mejor lectura que EasyOCR. En el camino
+            # de daemon, además, es obligatorio para no competir por VRAM.
+            # Los bloques vienen del batch estructural (strip) por crop; con
+            # _RUTA_C_STRIP_BATCH=False se re-OCRea el crop individual.
+            if _RUTA_C_STRIP_BATCH:
+                rapid_blocks = strip_by_crop.get(i, [])
+            else:
+                rapid_blocks = _run_rapidocr(
+                    up_img_ocr, filter_page_margins=False,
+                    box_thresh=_RUTA_C_RAPID_BOX_THRESH,
+                    unclip_ratio=_RUTA_C_RAPID_UNCLIP_RATIO)
+            usable_rapid: list[dict[str, Any]] = []
             for rb in rapid_blocks:
-                text = str(rb.get("text", "")).strip()
-                if not text:
+                if not isinstance(rb, dict):
                     continue
-                bx = x0 + int(rb.get("x", 0) / upscale)
-                by = y0 + int(rb.get("y", 0) / upscale)
-                bw = int(rb.get("w", 0) / upscale)
-                bh = int(rb.get("h", 0) / upscale)
-                if bw < 3 or bh < 3:
+                try:
+                    rb_text = str(rb.get("text", "")).strip()
+                    rb_conf = float(rb.get("confidence", 0.0))
+                except (TypeError, ValueError):
                     continue
-                recovered.append({
-                    "x": bx, "y": by, "w": bw, "h": bh,
-                    "text": text,
-                    "confidence": float(rb.get("confidence", 0.5)),
-                    "fontSize": max(8, int(bh * 0.75)),
-                    "textColor": rb.get("textColor", "#000000"),
-                    "engine": "rapidocr-region",
-                })
-        else:
-            # Fase 3 punto 3: TextClassifier de RapidOCR (Cls PP-OCRv4) —
-            # detecta si el globo está rotado 180° y lo rota ANTES del re-OCR
-            # (EasyOCR no detecta texto girado; el bloque rotado se pierde).
-            up_img_ocr, se_roto, cls_score = _classify_rotate_crop(up_img)
-            if se_roto:
-                print(f"[OCR] Ruta C: globo rotado 180° "
-                      f"(score {cls_score:.2f}) — corregido")
-            # Fase 6: rotation_info — EasyOCR prueba 0/90/180/270 y elige el
-            # de mejor confianza. Recupera títulos verticales (tategaki) y
-            # cartelas rotadas que YOLO detecta como región. EasyOCR devuelve
-            # las cajas en coords del crop ORIGINAL (rota internamente), así
-            # que el mapeo ÷upscale posterior no cambia. Solo se aplica en los
-            # CROPS de la Ruta C, no en la página completa (costo ~4x).
-            results = _run_ocr_on_image(
-                reader, up_img_ocr, rotation_info=EASYOCR_ROTATION_INFO)
-            for res in results:
-                # Normalizar ambos formatos: si _run_ocr_on_image degradó
-                # internamente a RapidOCR (race window: el daemon empezó a
-                # inferir justo después del chequeo de _uocr_inferring al
-                # inicio de esta función), devuelve bloques en formato interno
-                # (dicts) en vez de tuplas crudas (bbox, text, conf). Tratar
-                # ambos para no perder la recuperación silenciosamente.
-                if isinstance(res, dict):
-                    text = str(res.get("text", "")).strip()
+                if rb_text and np.isfinite(rb_conf) and rb_conf >= RUTA_C_RAPID_MIN_CONF:
+                    usable_rapid.append(rb)
+            if usable_rapid or use_rapid:
+                for rb in usable_rapid:
+                    text = str(rb.get("text", "")).strip()
                     if not text:
                         continue
-                    bx_u = int(res.get("x", 0))
-                    by_u = int(res.get("y", 0))
-                    bw_u = int(res.get("w", 0))
-                    bh_u = int(res.get("h", 0))
-                    conf = float(res.get("confidence", 0.5))
-                    color = res.get("textColor", "#000000")
-                else:
-                    # Formato crudo estándar de EasyOCR: (bbox, text, conf)
-                    bbox, text, conf = res
-                    text = str(text).strip()
-                    if not text or conf < 0.10:
+                    bx = x0 + int(rb.get("x", 0) / upscale)
+                    by = y0 + int(rb.get("y", 0) / upscale)
+                    bw = int(rb.get("w", 0) / upscale)
+                    bh = int(rb.get("h", 0) / upscale)
+                    if se_roto:
+                        bx_u = int(rb.get("x", 0))
+                        by_u = int(rb.get("y", 0))
+                        bx = x0 + int((up_w_original - bx_u - int(rb.get("w", 0))) / upscale)
+                        by = y0 + int((up_h_original - by_u - int(rb.get("h", 0))) / upscale)
+                    if bw < 3 or bh < 3:
                         continue
-                    xs = [p[0] for p in bbox]
-                    ys = [p[1] for p in bbox]
-                    bx_u = int(min(xs))
-                    by_u = int(min(ys))
-                    bw_u = int(max(xs) - min(xs))
-                    bh_u = int(max(ys) - min(ys))
-                    color = "#000000"
-                # Si el cls rotó el crop 180°, las coords del bloque están en
-                # el espacio rotado — des-rotarlas para mapear al crop original.
-                if se_roto:
-                    up_w = int(up_img.shape[1])
-                    up_h = int(up_img.shape[0])
-                    bx_u = up_w - bx_u - bw_u
-                    by_u = up_h - by_u - bh_u
-                bx = x0 + int(bx_u / upscale)
-                by = y0 + int(by_u / upscale)
-                bw = int(bw_u / upscale)
-                bh = int(bh_u / upscale)
-                if bw < 3 or bh < 3:
+                    recovered.append({
+                        "x": bx, "y": by, "w": bw, "h": bh,
+                        "text": text,
+                        "confidence": float(rb.get("confidence", 0.5)),
+                        "fontSize": max(8, int(bh * 0.75)),
+                        "textColor": rb.get("textColor", "#000000"),
+                        "engine": "rapidocr-region",
+                        "type": region_type,
+                    })
+                # Si el daemon infiere o RapidOCR recuperó el crop, no
+                # ejecutamos EasyOCR adicional sobre el mismo globo.
+                continue
+            # RapidOCR no recuperó el crop: solo aquí se permite fallback a
+            # EasyOCR GPU, que se carga de forma lazy una única vez.
+            if reader is None:
+                fallback_lang = lang_hint
+                prefer_gpu = True
+                if lang_hint == "auto":
+                    # Aunque la confianza sea insuficiente para aceptar el
+                    # texto de RapidOCR, sus caracteres siguen siendo una
+                    # señal útil del alfabeto. Usar el lector CJK en CPU
+                    # evita caer silenciosamente al lector latino de auto y
+                    # evita duplicar otro modelo en la GTX de 4 GB.
+                    script_hints = _script_language_hints(
+                        rapid_blocks, min_conf=0.15)[:1]
+                    if script_hints:
+                        fallback_lang = script_hints[0]
+                        prefer_gpu = False
+                reader = _get_ocr_reader(
+                    fallback_lang, prefer_gpu=prefer_gpu)
+            if reader is None:
+                continue
+        if use_rapid:
+            # El daemon está infiriendo y no se debe abrir EasyOCR GPU.
+            continue
+        if reader is None:
+            continue
+        # Fase 3 punto 3: el crop ya fue corregido por el TextClassifier
+        # antes del primer intento, tanto para RapidOCR como para EasyOCR.
+        # Fase 6: rotation_info — EasyOCR prueba 0/90/180/270 y elige el
+        # de mejor confianza. Recupera títulos verticales (tategaki) y
+        # cartelas rotadas que YOLO detecta como región. EasyOCR devuelve
+        # las cajas en coords del crop ORIGINAL (rota internamente), así
+        # que el mapeo ÷upscale posterior no cambia. Solo se aplica en los
+        # CROPS de la Ruta C, no en la página completa (costo ~4x).
+        results = _run_ocr_on_image(
+            reader, up_img_ocr, rotation_info=EASYOCR_ROTATION_INFO)
+        for res in results:
+            # Normalizar ambos formatos: si _run_ocr_on_image degradó
+            # internamente a RapidOCR (race window: el daemon empezó a
+            # inferir justo después del chequeo de _uocr_inferring al
+            # inicio de esta función), devuelve bloques en formato interno
+            # (dicts) en vez de tuplas crudas (bbox, text, conf). Tratar
+            # ambos para no perder la recuperación silenciosamente.
+            if isinstance(res, dict):
+                text = str(res.get("text", "")).strip()
+                if not text:
                     continue
-                recovered.append({
-                    "x": bx, "y": by, "w": bw, "h": bh,
-                    "text": text,
-                    "confidence": float(conf),
-                    "fontSize": max(8, int(bh * 0.75)),
-                    "textColor": color,
-                    "engine": "easyocr-region",
-                })
+                bx_u = int(res.get("x", 0))
+                by_u = int(res.get("y", 0))
+                bw_u = int(res.get("w", 0))
+                bh_u = int(res.get("h", 0))
+                conf = float(res.get("confidence", 0.5))
+                color = res.get("textColor", "#000000")
+            else:
+                # Formato crudo estándar de EasyOCR: (bbox, text, conf)
+                bbox, text, conf = res
+                text = str(text).strip()
+                if not text or conf < 0.10:
+                    continue
+                xs = [p[0] for p in bbox]
+                ys = [p[1] for p in bbox]
+                bx_u = int(min(xs))
+                by_u = int(min(ys))
+                bw_u = int(max(xs) - min(xs))
+                bh_u = int(max(ys) - min(ys))
+                color = "#000000"
+            # Si el cls rotó el crop 180°, las coords del bloque están en
+            # el espacio rotado — des-rotarlas para mapear al crop original.
+            if se_roto:
+                bx_u = up_w_original - bx_u - bw_u
+                by_u = up_h_original - by_u - bh_u
+            bx = x0 + int(bx_u / upscale)
+            by = y0 + int(by_u / upscale)
+            bw = int(bw_u / upscale)
+            bh = int(bh_u / upscale)
+            if bw < 3 or bh < 3:
+                continue
+            recovered.append({
+                "x": bx, "y": by, "w": bw, "h": bh,
+                "text": text,
+                "confidence": float(conf),
+                "fontSize": max(8, int(bh * 0.75)),
+                "textColor": color,
+                "engine": "easyocr-region",
+                "type": region_type,
+            })
     if not recovered:
         return []
-    return _group_and_merge_blocks(recovered, h_page)
+    # Cada bloque proviene de una región ya validada por YOLO/CTD. Sus bordes
+    # son los del globo, no los de la página; reaplicar filtros de margen aquí
+    # perdería diálogo legítimo pegado al borde superior/inferior.
+    return _group_and_merge_blocks(recovered, None)
 
 
 def _page_dark_features(img_bgr: _Img) -> tuple[float, np.ndarray] | None:
@@ -1942,7 +2960,15 @@ def _page_signature(img_bgr: _Img, grid: int = 8, cell_dark_ratio: float = 0.05)
             cell = dark[y0:y1, x0:x1]
             if cell.size and float(cell.mean()) > cell_dark_ratio:
                 bits |= 1 << (gy * grid + gx)
-    return f"{dark_ratio:.1f}:{bits:0{grid * grid}x}"
+    # El layout por sí solo colisiona entre páginas con la misma composición.
+    # Añadir un digest corto del thumbnail conserva la velocidad (~32x32 bytes)
+    # y evita reutilizar decisiones OCR para imágenes con contenido distinto.
+    thumb = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA)
+    content_digest = hashlib.blake2b(
+        f"{sh}x{sw}".encode("ascii") + thumb.tobytes(),
+        digest_size=8,
+    ).hexdigest()
+    return f"{dark_ratio:.1f}:{bits:0{grid * grid}x}:{content_digest}"
 
 
 def _page_has_large_image_panel(img_bgr: _Img, min_ratio: float = 0.15) -> bool:
@@ -1986,6 +3012,32 @@ def _filter_watermarks_from_blocks(blocks: list[dict[str, Any]]) -> list[dict[st
 
 
 # ─── Agrupación y fusión de bloques ────────────────────────────
+def _canonical_block_type(value: Any) -> str:
+    """Normaliza etiquetas semanticas de OCR a un conjunto estable."""
+    raw = str(value or "text").strip().lower().replace("-", "_")
+    if any(token in raw for token in ("title", "chapter", "heading")):
+        return "title"
+    if any(token in raw for token in ("header", "caption", "narrat", "cartel")):
+        return "header"
+    if any(token in raw for token in ("sfx", "sound", "onomat")):
+        return "sfx"
+    if any(token in raw for token in ("thought", "thinking")):
+        return "thought"
+    if any(token in raw for token in ("dialog", "speech", "bubble", "balloon")):
+        return "dialogue"
+    return "text"
+
+
+def _merged_block_type(group: list[dict[str, Any]]) -> str | None:
+    """Devuelve el tipo dominante, sin inventarlo para OCR sin tipado."""
+    explicit = [item.get("type") for item in group if item.get("type")]
+    if not explicit:
+        return None
+    types = {_canonical_block_type(item) for item in explicit}
+    priority = ("title", "header", "sfx", "thought", "dialogue", "text")
+    return next(kind for kind in priority if kind in types)
+
+
 def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = None) -> list[dict[str, Any]]:
     if not blocks:
         return []
@@ -2021,6 +3073,14 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
             print(f"[OCR] Filtrando URL pre-merge: '{text_raw}'")
             continue
 
+        # Preservar marcadores de pensamiento/onomatopeya antes de limpiar
+        # sÃ­mbolos: ``*sigh*`` pierde su semÃ¡ntica si se convierte en ``sigh``.
+        from translator import _es_sfx
+        if _es_sfx(text_raw):
+            b["text"] = text_raw
+            pre_filtered.append(b)
+            continue
+
         # ── Ahora corregir errores de OCR con glosario, limpiar simbolos y spellcheck ──
         from translator import _aplicar_glosario
         text_corr = _aplicar_glosario(text_raw)
@@ -2053,7 +3113,21 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
             max_h = max(group[-1]["h"], b2["h"])
             gap_x = b2["x"] - group_x2
 
-            if abs(cy1 - cy2) < max_h * 0.45 and -b2["w"] < gap_x < max(35, group[-1]["w"] * 2.5):
+            group_types = {
+                _canonical_block_type(item.get("type"))
+                for item in group
+                if item.get("type")
+            }
+            candidate_type = _canonical_block_type(b2.get("type")) if b2.get("type") else "text"
+            concrete_types = group_types - {"text"}
+            incompatible_types = bool(
+                concrete_types
+                and candidate_type != "text"
+                and candidate_type not in concrete_types
+            )
+            if (not incompatible_types
+                    and abs(cy1 - cy2) < max_h * 0.45
+                    and -b2["w"] < gap_x < max(35, group[-1]["w"] * 2.5)):
                 group.append(b2)
                 used[j] = True
 
@@ -2069,13 +3143,17 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
             my = min(all_y)
             mw = max(all_x2) - mx
             mh = max(all_y2) - my
-            merged.append({
+            merged_block = {
                 "x": mx, "y": my, "w": mw, "h": mh,
                 "text": " ".join(g["text"] for g in group),
                 "confidence": float(np.mean([g["confidence"] for g in group])),
                 "fontSize": max(g["fontSize"] for g in group),
                 "textColor": group[0]["textColor"],
-            })
+            }
+            merged_type = _merged_block_type(group)
+            if merged_type is not None:
+                merged_block["type"] = merged_type
+            merged.append(merged_block)
 
     # ─── Segunda pasada: fusión vertical (líneas de mismo globo) ───
     # Combina bloques en la misma columna y cerca verticalmente
@@ -2101,7 +3179,19 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
                     continue
                 # Cerca verticalmente (gap < 1.5x altura)
                 gap_y = abs(b2["y"] - (b["y"] + b["h"]))
-                if gap_y < max(b["h"], b2["h"]) * 1.5:
+                group_types = {
+                    _canonical_block_type(item.get("type"))
+                    for item in v_group
+                    if item.get("type")
+                }
+                candidate_type = _canonical_block_type(b2.get("type")) if b2.get("type") else "text"
+                concrete_types = group_types - {"text"}
+                incompatible_types = bool(
+                    concrete_types
+                    and candidate_type != "text"
+                    and candidate_type not in concrete_types
+                )
+                if not incompatible_types and gap_y < max(b["h"], b2["h"]) * 1.5:
                     v_group.append(b2)
                     v_used[j] = True
             if len(v_group) > 1:
@@ -2114,18 +3204,27 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
                 my = min(all_y)
                 mw = max(all_x2) - mx
                 mh = max(all_y2) - my
-                v_merged.append({
+                merged_block = {
                     "x": mx, "y": my, "w": mw, "h": mh,
                     "text": " ".join(g["text"] for g in v_group),
                     "confidence": float(np.mean([g["confidence"] for g in v_group])),
                     "fontSize": max(g["fontSize"] for g in v_group),
                     "textColor": v_group[0]["textColor"],
-                })
+                }
+                merged_type = _merged_block_type(v_group)
+                if merged_type is not None:
+                    merged_block["type"] = merged_type
+                v_merged.append(merged_block)
             else:
                 v_merged.append(b)
         merged = v_merged
 
     final_blocks: list[dict[str, Any]] = []
+    # Solo se aplica a resultados débiles y no-CJK. La heurística de ruido de
+    # traducción es útil como gate OCR en este punto, pero sus reglas de
+    # caracteres extendidos no deben borrar japonés/coreano/chino de baja
+    # confianza.
+    from translator import _es_ocr_noise
     for b in merged:
         w, h = b["w"], b["h"]
         text = str(b["text"]).strip()
@@ -2133,6 +3232,20 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
         conf = float(b.get("confidence", 0))
 
         if text_len == 0:
+            continue
+
+        has_cjk = any(
+            0x3040 <= ord(char) <= 0x30FF
+            or 0x3130 <= ord(char) <= 0x318F
+            or 0xAC00 <= ord(char) <= 0xD7A3
+            or 0x4E00 <= ord(char) <= 0x9FFF
+            for char in text
+        )
+        if conf < 0.35 and not has_cjk and _es_ocr_noise(text):
+            print(
+                f"[OCR] Filtrando basura OCR de baja confianza: "
+                f"'{text[:50]}' conf={conf:.2f}"
+            )
             continue
 
         if re.match(r'^\d+$', text):
@@ -2254,7 +3367,8 @@ def _build_glyph_mask_for_bubble(img_bgr: _Img, block: dict[str, Any]) -> _Img:
     # ── Detección de glifos basada en contraste local ───────────
     roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     local_median = int(np.median(roi_gray))
-    diff_from_median = cv2.absdiff(roi_gray, local_median)
+    diff_from_median = cv2.absdiff(
+        roi_gray, np.full(roi_gray.shape, local_median, dtype=roi_gray.dtype))
     
     # Píxeles de texto: aquellos que difieren de forma destacada de la mediana del ROI
     glyph_mask_roi = (diff_from_median > 45).astype(np.uint8) * 255
@@ -2279,10 +3393,23 @@ def _build_inpaint_mask(img_bgr: _Img, blocks: list[dict[str, Any]]) -> _Img:
     mask: _Img = np.zeros((h, w), dtype=np.uint8)
 
     for block in blocks:
-        glyph_mask = _build_glyph_mask_for_bubble(img_bgr, block)
-        glyph_pixels = int(np.sum(glyph_mask > 0))
-        if glyph_pixels > 0:
-            mask = cv2.bitwise_or(mask, glyph_mask)
+        if _is_inside_speech_bubble(img_bgr, block):
+            # En globos uniformes preservamos el borde y el relleno; solo
+            # marcamos los trazos para no destruir la forma de la burbuja.
+            glyph_mask = _build_glyph_mask_for_bubble(img_bgr, block)
+            if int(np.sum(glyph_mask > 0)) > 0:
+                mask = cv2.bitwise_or(mask, glyph_mask)
+            continue
+
+        # Texto flotante/SFX sobre arte: el fondo no es uniforme y una mÃ¡scara
+        # de glifos deja halos y restos. En este caso se borra la caja completa
+        # para que TELEA pueda reconstruir la textura circundante.
+        x0 = max(0, int(block.get("x", 0)))
+        y0 = max(0, int(block.get("y", 0)))
+        x1 = min(w, x0 + max(0, int(block.get("w", 0))))
+        y1 = min(h, y0 + max(0, int(block.get("h", 0))))
+        if x1 > x0 and y1 > y0:
+            mask[y0:y1, x0:x1] = 255
 
     # Dilatación mínima (3x3) para cubrir solo bordes inmediatos de los trazos
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -2411,8 +3538,8 @@ def _inpaint_image(img_bgr: _Img, mask: _Img, blocks: list[dict[str, Any]] | Non
         # Crear mascara de mezcla (dilatar + blur para bordes suaves)
         blend_mask = (mask_roi > 0).astype(np.float32)
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        blend_mask = cv2.dilate(blend_mask, k, iterations=2)
-        blend_mask = cv2.GaussianBlur(blend_mask, (7, 7), sigmaX=2)
+        blend_mask = cv2.dilate(blend_mask, k, iterations=2).astype(np.float32)
+        blend_mask = cv2.GaussianBlur(blend_mask, (7, 7), sigmaX=2).astype(np.float32)
 
         # Obtener el ROI del resultado para este bloque
         result_roi = result[by:min(h, by + bh), bx:min(w, bx + bw)]

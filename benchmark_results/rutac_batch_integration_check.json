@@ -1,0 +1,135 @@
+{
+ "4": {
+  "crops": 6,
+  "regions": 6,
+  "base_s": 9.991,
+  "alt_s": 5.391,
+  "delta_s": -4.601,
+  "base_det_s": 0.414,
+  "alt_det_s": 0.409,
+  "base_rec_s": 0.214,
+  "alt_rec_s": 0.191,
+  "base_group_s": 9.274,
+  "alt_group_s": 4.775,
+  "base_spell_s": 9.271,
+  "alt_spell_s": 4.774,
+  "base_det_calls": 1,
+  "alt_det_calls": 1,
+  "base_blocks_total": 7,
+  "base_blocks_rapid": 5,
+  "alt_blocks": 12,
+  "texts_equal": false,
+  "solo_base": [
+   "BABAYAGA.QUESIEMPREHA SIDOTANIMPREDECIBLE Y-por_supuesto!.su Y-por_supuesto!.su prestigjosdreputacion prestigjosdreputacion seria ui buenagregado seria buen agregado",
+   "鼻"
+  ],
+  "solo_alt": [
+   "BABAYAGA.QUESIEMPREHA SIDOTANIMPREDECIBLE",
+   "Y-por_supuesto!.su",
+   "prestigjosdreputacion",
+   "seria buen agregado",
+   "seria ui buenagregado"
+  ],
+  "base_texts": [
+   "BABAYAGA.QUESIEMPREHA SIDOTANIMPREDECIBLE Y-por_supuesto!.su Y-por_supuesto!.su prestigjosdreputacion prestigjosdreputacion seria ui buenagregado seria buen agregado",
+   "CONTROLARALAPRIMERA",
+   "ESTARELACIONADOCON",
+   "LACARDENALDELSANTO REINO, YUTIA BLOODIA...",
+   "PODRIAUSARLOPARA",
+   "YAQUETAMBIEN",
+   "鼻"
+  ],
+  "alt_texts": [
+   "BABAYAGA.QUESIEMPREHA SIDOTANIMPREDECIBLE",
+   "CONTROLARALAPRIMERA",
+   "ESTARELACIONADOCON",
+   "LACARDENALDELSANTO REINO, YUTIA BLOODIA...",
+   "PODRIAUSARLOPARA",
+   "Y-por_supuesto!.su",
+   "Y-por_supuesto!.su",
+   "YAQUETAMBIEN",
+   "prestigjosdreputacion",
+   "prestigjosdreputacion",
+   "seria buen agregado",
+   "seria ui buenagregado"
+  ],
+  "base_texts_rapid": [
+   "CONTROLARALAPRIMERA",
+   "ESTARELACIONADOCON",
+   "LACARDENALDELSANTO REINO, YUTIA BLOODIA...",
+   "PODRIAUSARLOPARA",
+   "YAQUETAMBIEN"
+  ],
+  "alt_dups": {
+   "Y-por_supuesto!.su": 2,
+   "prestigjosdreputacion": 2
+  }
+ },
+ "29": {
+  "crops": 11,
+  "regions": 11,
+  "base_s": 0.856,
+  "alt_s": 0.753,
+  "delta_s": -0.103,
+  "base_det_s": 0.44,
+  "alt_det_s": 0.443,
+  "base_rec_s": 0.283,
+  "alt_rec_s": 0.282,
+  "base_group_s": 0.004,
+  "alt_group_s": 0.002,
+  "base_spell_s": 0.0,
+  "alt_spell_s": 0.0,
+  "base_det_calls": 1,
+  "alt_det_calls": 1,
+  "base_blocks_total": 8,
+  "base_blocks_rapid": 5,
+  "alt_blocks": 12,
+  "texts_equal": false,
+  "solo_base": [
+   "CUEESCIVRDAD RONOMBRE OEIOS PIDSES CXTERNOS? 0SMSTLOOSY",
+   "NOSCASOSMTUANESDGL CHENDIOS COVDACDP YICSARCHIVOSCC 10MASPRCUNDO DELATORRE? YICSACHIVOSDC 10MASPRCSUNDO DELATORRE?",
+   "SUSRESPUESTAS SIEMPREFUERON SIMPLES."
+  ],
+  "solo_alt": [
+   "0SMSTLOOSY",
+   "CUEESCIVRDAD RONOMBRE OEIOS PIDSES CXTERNOS?",
+   "NOSCASOSMTUANESDGL CHENDIOS COVDACDP",
+   "SIEMPREFUERON SIMPLES.",
+   "SUSRESPUESTAS",
+   "YICSACHIVOSDC 10MASPRCSUNDO DELATORRE?",
+   "YICSARCHIVOSCC 10MASPRCUNDO DELATORRE?"
+  ],
+  "base_texts": [
+   "ASIQUESEGUi",
+   "CUEESCIVRDAD RONOMBRE OEIOS PIDSES CXTERNOS? 0SMSTLOOSY",
+   "NOSCASOSMTUANESDGL CHENDIOS COVDACDP YICSARCHIVOSCC 10MASPRCUNDO DELATORRE? YICSACHIVOSDC 10MASPRCSUNDO DELATORRE?",
+   "PLOSMISTEA9OSYDOSCESOSRITUAIESDGL CEAN DIOSCIMDADO?",
+   "PREGUNTANDOENELORDEN QUELASPREPARE,PER....",
+   "RSIMPEMENEDESCRBENLA SITLACIONACTUALCSOESTOOO IOCUEPUEDODCCIR.",
+   "SUSRESPUESTAS SIEMPREFUERON SIMPLES.",
+   "ZELHEREDCRODE SUVOLUNTAD?"
+  ],
+  "alt_texts": [
+   "0SMSTLOOSY",
+   "ASIQUESEGUi",
+   "CUEESCIVRDAD RONOMBRE OEIOS PIDSES CXTERNOS?",
+   "NOSCASOSMTUANESDGL CHENDIOS COVDACDP",
+   "PLOSMISTEA9OSYDOSCESOSRITUAIESDGL CEAN DIOSCIMDADO?",
+   "PREGUNTANDOENELORDEN QUELASPREPARE,PER....",
+   "RSIMPEMENEDESCRBENLA SITLACIONACTUALCSOESTOOO IOCUEPUEDODCCIR.",
+   "SIEMPREFUERON SIMPLES.",
+   "SUSRESPUESTAS",
+   "YICSACHIVOSDC 10MASPRCSUNDO DELATORRE?",
+   "YICSARCHIVOSCC 10MASPRCUNDO DELATORRE?",
+   "ZELHEREDCRODE SUVOLUNTAD?"
+  ],
+  "base_texts_rapid": [
+   "ASIQUESEGUi",
+   "PLOSMISTEA9OSYDOSCESOSRITUAIESDGL CEAN DIOSCIMDADO?",
+   "PREGUNTANDOENELORDEN QUELASPREPARE,PER....",
+   "RSIMPEMENEDESCRBENLA SITLACIONACTUALCSOESTOOO IOCUEPUEDODCCIR.",
+   "ZELHEREDCRODE SUVOLUNTAD?"
+  ],
+  "alt_dups": {}
+ }
+}

@@ -56,3 +56,8 @@ ultralytics==8.4.115
 
 # Utilities
 requests==2.34.2
+
+# Servidor de producción (waitress sirve la app Flask multi-threaded).
+# El catch-all + blueprints de Flask 3.x ya está resuelto a nivel de app
+# (server.py::serve_root) — verificado por el job server-test de run_ci.py.
+waitress==3.0.2

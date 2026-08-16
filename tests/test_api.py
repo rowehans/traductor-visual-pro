@@ -17,15 +17,24 @@ import sys
 import os
 import json
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, Future
 from unittest.mock import MagicMock, patch
 
 import pytest
 from flask import Flask, jsonify
+import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from routes.api import api_bp
+from routes.api import (
+    _coerce_bool,
+    _finalize_page_blocks,
+    _validate_lang_code,
+    _validate_lang_params,
+)
+from translation_memory import DocumentTranslationMemory
 
 # Función real capturada a nivel de módulo: el fixture autouse parchea
 # ocr_utils._detect_and_ocr a [] para TODOS los tests; para probar el camino
@@ -33,6 +42,41 @@ from routes.api import api_bp
 # antes de que corra el fixture).
 import ocr_utils as _ocr_utils_mod
 _REAL_DETECT_AND_OCR = _ocr_utils_mod._detect_and_ocr
+
+
+class TestBooleanPayloadNormalization:
+    @pytest.mark.parametrize(
+        ("value", "default", "expected"),
+        [
+            (True, False, True),
+            (False, True, False),
+            ("true", False, True),
+            ("FALSE", True, False),
+            ("1", False, True),
+            ("0", True, False),
+            ("desconocido", True, True),
+            (None, False, False),
+        ],
+    )
+    def test_coerce_bool_no_activa_uocr_por_cadena_arbitraria(
+        self, value, default, expected
+    ):
+        assert _coerce_bool(value, default=default) is expected
+
+
+def test_validate_lang_params_respeta_si_source_auto_esta_permitido():
+    source, target, error = _validate_lang_params(
+        {"source": "auto", "target": "en"},
+        allow_source_auto=False,
+    )
+
+    assert source is None
+    assert target is None
+    assert error is not None
+
+
+def test_validate_lang_code_rechaza_selector_occidental_desactivado():
+    assert _validate_lang_code("eng+spa+fra+deu") is None
 
 
 # ─── Helpers ─────────────────────────────────────────────────────
@@ -118,6 +162,679 @@ class TestContentTypeValidation:
             content_type="text/plain",
         )
         assert resp.status_code == 415
+
+
+class TestTranslationConsistency:
+    @pytest.fixture(autouse=True)
+    def _aisla_ct2_batch(self, mocker):
+        """Aísla el pre-paso CT2 batch (optimización 2.6): estos tests
+        verifican el flujo individual con _translate_one mockeado; si el
+        batch CT2 real resolviera los textos, el mock no se llamaría.
+        Forzar batch→None mantiene el contrato original del test."""
+        mocker.patch(
+            "translator._translate_ctranslate2_batch",
+            side_effect=lambda texts, s, t: [None] * len(texts),
+        )
+
+    def test_source_auto_detects_each_block_in_a_mixed_language_page(self, mocker):
+        """Una página con CJK y español no debe traducirse con un idioma global."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [
+            {"x": 10, "y": 10, "w": 20, "h": 10, "text": "こんにちは",
+             "type": "dialogue", "confidence": 0.9, "fontSize": 10,
+             "textColor": "#000"},
+            {"x": 50, "y": 10, "w": 20, "h": 10, "text": "Hola",
+             "type": "dialogue", "confidence": 0.9, "fontSize": 10,
+             "textColor": "#000"},
+        ]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+        mocker.patch("routes.api.get_document_memory", return_value=None)
+
+        def detect(text):
+            return "ja" if "こんにちは" in text else "es"
+
+        mocker.patch("translator._detect_language_robust", side_effect=detect)
+        translate_mock = mocker.patch(
+            "server._translate_one",
+            side_effect=lambda text, source, target, *, block_type=None: f"{source}:{text}",
+        )
+        executor = MagicMock()
+
+        def submit(fn, *args, **kwargs):
+            future = Future()
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                future.set_exception(exc)
+            return future
+
+        executor.submit.side_effect = submit
+        mocker.patch("server._get_executor", return_value=executor)
+
+        result, *_ = _finalize_page_blocks(
+            image, blocks, "auto", "es", 1.0, 1.0, "es")
+
+        assert {call.args[1] for call in translate_mock.call_args_list} == {"ja", "es"}
+        assert [block["source_lang"] for block in result] == ["ja", "es"]
+
+    def test_source_auto_exposes_languages_inside_mixed_block(self, mocker):
+        """Un bloque puede contener español y una frase inglesa incrustada."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [{
+            "x": 10, "y": 10, "w": 80, "h": 15,
+            "text": "No puedo go home", "type": "dialogue",
+            "confidence": 0.9, "fontSize": 10, "textColor": "#000",
+        }]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+        mocker.patch("routes.api.get_document_memory", return_value=None)
+        mocker.patch("translator._detect_language_robust", return_value="es")
+        mocker.patch("server._translate_one", return_value="No puedo ir a casa")
+
+        executor = MagicMock()
+
+        def submit(fn, *args, **kwargs):
+            future = Future()
+            future.set_result(fn(*args, **kwargs))
+            return future
+
+        executor.submit.side_effect = submit
+        mocker.patch("server._get_executor", return_value=executor)
+
+        result, *_ = _finalize_page_blocks(
+            image, blocks, "auto", "es", 1.0, 1.0, "es")
+
+        assert result[0]["source_lang"] == "es"
+        assert result[0]["source_langs"] == ["es", "en"]
+        assert result[0]["mixed_source"] is True
+
+    def test_error_en_deteccion_combinada_no_contamina_todos_los_bloques(
+        self, mocker
+    ):
+        """El fallback de página no debe convertir todo a español."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [
+            {"x": 10, "y": 10, "w": 30, "h": 10, "text": "こんにちは",
+             "type": "dialogue", "confidence": 0.9, "fontSize": 10,
+             "textColor": "#000"},
+            {"x": 50, "y": 10, "w": 30, "h": 10, "text": "Hola",
+             "type": "dialogue", "confidence": 0.9, "fontSize": 10,
+             "textColor": "#000"},
+        ]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+        mocker.patch("routes.api.get_document_memory", return_value=None)
+
+        def detect(text):
+            if text == "こんにちは Hola":
+                raise RuntimeError("detector combinado no disponible")
+            return "ja" if "こんにちは" in text else "es"
+
+        mocker.patch("translator._detect_language_robust", side_effect=detect)
+        mocker.patch("server._translate_one", side_effect=lambda text, source, target,
+                     *, block_type=None: f"{source}:{text}")
+        executor = MagicMock()
+
+        def submit(fn, *args, **kwargs):
+            future = Future()
+            future.set_result(fn(*args, **kwargs))
+            return future
+
+        executor.submit.side_effect = submit
+        mocker.patch("server._get_executor", return_value=executor)
+
+        result, *_ = _finalize_page_blocks(
+            image, blocks, "auto", "es", 1.0, 1.0, "es")
+
+        assert [block["source_lang"] for block in result] == ["ja", "es"]
+
+    def test_empate_de_idiomas_usa_fallback_de_pagina_y_no_orden_de_bloques(
+        self, mocker
+    ):
+        """El idioma dominante no debe cambiar al reordenar globos empatados."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [
+            {"x": 10, "y": 10, "w": 30, "h": 10, "text": "Hello",
+             "type": "dialogue", "confidence": 0.9, "fontSize": 10,
+             "textColor": "#000"},
+            {"x": 50, "y": 10, "w": 30, "h": 10, "text": "こんにちは",
+             "type": "dialogue", "confidence": 0.9, "fontSize": 10,
+             "textColor": "#000"},
+        ]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+        mocker.patch("routes.api.get_document_memory", return_value=None)
+
+        def detect(text):
+            if "Hello" in text and "こんにちは" in text:
+                return "ja"
+            return "en" if text == "Hello" else "ja"
+
+        mocker.patch("translator._detect_language_robust", side_effect=detect)
+        mocker.patch("server._translate_one", return_value="Translated")
+
+        executor = MagicMock()
+
+        def submit(fn, *args, **kwargs):
+            future = Future()
+            future.set_result(fn(*args, **kwargs))
+            return future
+
+        executor.submit.side_effect = submit
+        mocker.patch("server._get_executor", return_value=executor)
+
+        result, _image, detected, _inpaint_t = _finalize_page_blocks(
+            image, blocks, "auto", "es", 1.0, 1.0, "es")
+        reversed_result, _image, detected_reversed, _inpaint_t = (
+            _finalize_page_blocks(
+                image, list(reversed(blocks)), "auto", "es", 1.0, 1.0, "es")
+        )
+
+        assert [block["source_lang"] for block in result] == ["en", "ja"]
+        assert [block["source_lang"] for block in reversed_result] == ["ja", "en"]
+        assert detected == detected_reversed == "ja"
+
+    def test_response_format_jpeg_usa_fmt_jpg(self, mocker):
+        """Optimización 2.3: con response_format="jpeg" la imagen inpaintada
+        se codifica en JPEG; el default (png) no cambia."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [{"x": 10, "y": 10, "w": 30, "h": 10, "text": "Hello",
+                   "type": "dialogue", "confidence": 0.9, "fontSize": 10,
+                   "textColor": "#000"}]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        encode = mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+        mocker.patch("routes.api.get_document_memory", return_value=None)
+        mocker.patch("translator._detect_language_robust", return_value="en")
+        mocker.patch("server._translate_one", return_value="Translated")
+
+        executor = MagicMock()
+
+        def submit(fn, *args, **kwargs):
+            future = Future()
+            future.set_result(fn(*args, **kwargs))
+            return future
+
+        executor.submit.side_effect = submit
+        mocker.patch("server._get_executor", return_value=executor)
+
+        _finalize_page_blocks(image, blocks, "auto", "es", 1.0, 1.0, "es",
+                              response_format="jpeg")
+        _finalize_page_blocks(image, blocks, "auto", "es", 1.0, 1.0, "es")
+
+        fmts = [call.kwargs.get("fmt") for call in encode.call_args_list]
+        assert ".jpg" in fmts
+        assert ".png" in fmts
+
+    def test_same_uppercase_text_with_different_types_is_not_merged(self, mocker):
+        """Un diálogo y un SFX con el mismo OCR necesitan decisiones distintas."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [
+            {"x": 10, "y": 10, "w": 20, "h": 10, "text": "NARUTO",
+             "type": "dialogue", "confidence": 0.9, "fontSize": 10,
+             "textColor": "#000"},
+            {"x": 50, "y": 10, "w": 20, "h": 10, "text": "NARUTO",
+             "type": "sfx", "confidence": 0.9, "fontSize": 10,
+             "textColor": "#000"},
+        ]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+
+        def translate(_text, _source, _target, *, block_type=None):
+            return "Naruto" if block_type == "dialogue" else "NARUTO"
+
+        translate_mock = mocker.patch("server._translate_one", side_effect=translate)
+        executor = MagicMock()
+
+        def submit(fn, *args, **kwargs):
+            future = Future()
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                future.set_exception(exc)
+            return future
+
+        executor.submit.side_effect = submit
+        mocker.patch("server._get_executor", return_value=executor)
+
+        result, *_ = _finalize_page_blocks(
+            image, blocks, "es", "en", 1.0, 1.0, "es")
+
+        assert translate_mock.call_count == 2
+        assert [block["translated"] for block in result] == ["Naruto", "NARUTO"]
+
+    def test_pre_paso_ct2_batch_resuelve_y_evita_flujo_individual(self, mocker):
+        """Optimización 2.6: cuando el batch CT2 traduce los textos, el
+        executor individual no debe re-traducirlos (una sola llamada
+        translate_batch por página)."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [
+            {"x": 10, "y": 10, "w": 20, "h": 10, "text": "Hola mundo",
+             "confidence": 0.9, "fontSize": 10, "textColor": "#000"},
+            {"x": 50, "y": 10, "w": 20, "h": 10, "text": "Hola universo",
+             "confidence": 0.9, "fontSize": 10, "textColor": "#000"},
+        ]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+        translate = mocker.patch(
+            "server._translate_one", side_effect=lambda *args, **kwargs: "Hello")
+        batch = mocker.patch(
+            "translator._translate_ctranslate2_batch",
+            return_value=["Hello mundo", "Hello universo"],
+        )
+
+        executor = MagicMock()
+        def submit(fn, *args):
+            future = Future()
+            try:
+                future.set_result(fn(*args))
+            except Exception as exc:
+                future.set_exception(exc)
+            return future
+        executor.submit.side_effect = submit
+        mocker.patch("server._get_executor", return_value=executor)
+
+        result, _image, _lang, _inpaint_t = _finalize_page_blocks(
+            image, blocks, "es", "en", 1.0, 1.0, "es")
+
+        batch.assert_called_once()
+        translate.assert_not_called()  # el batch resolvió todo
+        assert [b["translated"] for b in result] == [
+            "Hello mundo", "Hello universo"]
+
+    def test_pre_paso_ct2_batch_invalido_cae_al_flujo_individual(self, mocker):
+        """Optimización 2.6: un resultado del batch que parece idioma
+        fuente se descarta y el flujo individual lo reintenta."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [{"x": 10, "y": 10, "w": 30, "h": 10, "text": "Hola mundo",
+                   "confidence": 0.9, "fontSize": 10, "textColor": "#000"}]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+        translate = mocker.patch(
+            "server._translate_one", side_effect=lambda *args, **kwargs: "Hello")
+        # Resultado en idioma fuente (es) → se descarta en el ensamblado.
+        mocker.patch(
+            "translator._translate_ctranslate2_batch",
+            return_value=["Hola mundo"],
+        )
+
+        executor = MagicMock()
+        def submit(fn, *args):
+            future = Future()
+            try:
+                future.set_result(fn(*args))
+            except Exception as exc:
+                future.set_exception(exc)
+            return future
+        executor.submit.side_effect = submit
+        mocker.patch("server._get_executor", return_value=executor)
+
+        result, _image, _lang, _inpaint_t = _finalize_page_blocks(
+            image, blocks, "es", "en", 1.0, 1.0, "es")
+
+        translate.assert_called_once()  # cayó al flujo individual
+        assert [b["translated"] for b in result] == ["Hello"]
+
+    def test_repeated_text_on_same_page_is_translated_once(self, mocker):
+        """El mismo texto debe compartir resultado dentro de una página."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [
+            {"x": 10, "y": 10, "w": 20, "h": 10, "text": "Hola mundo",
+             "confidence": 0.9, "fontSize": 10, "textColor": "#000"},
+            {"x": 50, "y": 10, "w": 20, "h": 10, "text": " Hola   mundo ",
+             "confidence": 0.9, "fontSize": 10, "textColor": "#000"},
+        ]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+        translate = mocker.patch(
+            "server._translate_one", side_effect=lambda *args, **kwargs: "Hello")
+
+        executor = MagicMock()
+        def submit(fn, *args):
+            future = Future()
+            try:
+                future.set_result(fn(*args))
+            except Exception as exc:
+                future.set_exception(exc)
+            return future
+        executor.submit.side_effect = submit
+        mocker.patch("server._get_executor", return_value=executor)
+
+        result, _image, _lang, _inpaint_t = _finalize_page_blocks(
+            image, blocks, "es", "en", 1.0, 1.0, "es")
+
+        assert translate.call_count == 1
+        assert [b["translated"] for b in result] == ["Hello", "Hello"]
+
+    def test_page_finalize_rejects_garbage_returned_by_translation_worker(self, mocker):
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [{
+            "x": 10, "y": 10, "w": 80, "h": 15,
+            "text": "Hola mundo", "type": "dialogue",
+            "confidence": 0.9, "fontSize": 10, "textColor": "#000",
+        }]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+        mocker.patch("server._translate_one", return_value="mainstremainstre")
+
+        executor = MagicMock()
+
+        def submit(fn, *args, **kwargs):
+            future = Future()
+            future.set_result(fn(*args, **kwargs))
+            return future
+
+        executor.submit.side_effect = submit
+        mocker.patch("server._get_executor", return_value=executor)
+
+        result, *_ = _finalize_page_blocks(
+            image, blocks, "es", "en", 1.0, 1.0, "es")
+
+        assert result[0]["translated"] == "Hola mundo"
+
+    def test_document_memory_reuses_reliable_translation_on_next_page(self, mocker):
+        """Una traducción fiable se reutiliza sin volver a llamar al motor."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [{
+            "x": 10, "y": 10, "w": 20, "h": 10, "text": "田中さん",
+            "confidence": 0.95, "fontSize": 10, "textColor": "#000",
+        }]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+
+        memory = DocumentTranslationMemory("memory-doc", persist=False)
+        mocker.patch("routes.api.get_document_memory", return_value=memory)
+        translate = mocker.patch("server._translate_one", return_value="Tanaka-san")
+
+        executor = MagicMock()
+
+        def submit(fn, *args):
+            future = Future()
+            try:
+                future.set_result(fn(*args))
+            except Exception as exc:
+                future.set_exception(exc)
+            return future
+
+        executor.submit.side_effect = submit
+        mocker.patch("server._get_executor", return_value=executor)
+
+        first, *_ = _finalize_page_blocks(
+            image, blocks, "ja", "es", 1.0, 1.0, "ja", "memory-doc")
+        second, *_ = _finalize_page_blocks(
+            image, blocks, "ja", "es", 1.0, 1.0, "ja", "memory-doc")
+
+        assert translate.call_count == 1
+        assert first[0]["translated"] == "Tanaka-san"
+        assert second[0]["translated"] == "Tanaka-san"
+
+    def test_document_memory_no_salta_gate_de_idioma_origen(self, mocker):
+        """Una entrada antigua sin traducir debe volver al motor existente."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [{
+            "x": 10, "y": 10, "w": 20, "h": 10, "text": "hola mundo",
+            "confidence": 0.95, "fontSize": 10, "textColor": "#000",
+        }]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+
+        memory = DocumentTranslationMemory("stale-memory-doc", persist=False)
+        memory.learn("hola mundo", "hola mundo grande", "es", "en", quality=0.95)
+        mocker.patch("routes.api.get_document_memory", return_value=memory)
+        translate = mocker.patch("server._translate_one", return_value="hello world")
+
+        executor = MagicMock()
+
+        def submit(fn, *args):
+            future = Future()
+            future.set_result(fn(*args))
+            return future
+
+        executor.submit.side_effect = submit
+        mocker.patch("server._get_executor", return_value=executor)
+
+        result, *_ = _finalize_page_blocks(
+            image, blocks, "es", "en", 1.0, 1.0, "es", "stale-memory-doc")
+
+        translate.assert_called_once()
+        assert result[0]["translated"] == "hello world"
+
+    def test_memoria_no_aprende_salida_que_conserva_idioma_origen(self, mocker):
+        from routes.api import _learn_translation_if_valid
+
+        memory = MagicMock()
+
+        _learn_translation_if_valid(
+            memory,
+            "hola mundo",
+            "hola mundo grande",
+            "es",
+            "en",
+            quality=0.95,
+        )
+
+        memory.learn.assert_not_called()
+
+    def test_low_confidence_translation_is_not_learned(self, mocker):
+        """Un OCR dudoso no debe fijar una traducción para páginas futuras."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [{
+            "x": 10, "y": 10, "w": 20, "h": 10, "text": "田中さん",
+            "confidence": 0.40, "fontSize": 10, "textColor": "#000",
+        }]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+
+        memory = DocumentTranslationMemory("low-confidence-doc", persist=False)
+        mocker.patch("routes.api.get_document_memory", return_value=memory)
+        translate = mocker.patch(
+            "server._translate_one", side_effect=["Primera", "Segunda"])
+
+        executor = MagicMock()
+
+        def submit(fn, *args):
+            future = Future()
+            try:
+                future.set_result(fn(*args))
+            except Exception as exc:
+                future.set_exception(exc)
+            return future
+
+        executor.submit.side_effect = submit
+        mocker.patch("server._get_executor", return_value=executor)
+
+        first, *_ = _finalize_page_blocks(
+            image, blocks, "ja", "es", 1.0, 1.0, "ja", "low-confidence-doc")
+        second, *_ = _finalize_page_blocks(
+            image, blocks, "ja", "es", 1.0, 1.0, "ja", "low-confidence-doc")
+
+        assert translate.call_count == 2
+        assert first[0]["translated"] == "Primera"
+        assert second[0]["translated"] == "Segunda"
+
+    def test_reutiliza_nombre_cjk_con_un_error_ocr_si_es_confiable(self, mocker):
+        """Una variante CJK de alta confianza conserva el nombre del documento."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [{
+            "x": 10, "y": 10, "w": 20, "h": 10, "text": "田中さ人",
+            "confidence": 0.90, "fontSize": 10, "textColor": "#000",
+        }]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+
+        memory = DocumentTranslationMemory("variant-doc", persist=False)
+        memory.learn("田中さん", "Tanaka-san", "ja", "es", quality=0.96)
+        memory.learn("田中さん", "Tanaka-san", "ja", "es", quality=0.96)
+        mocker.patch("routes.api.get_document_memory", return_value=memory)
+        translate = mocker.patch("server._translate_one", return_value="INCORRECTO")
+
+        result, *_ = _finalize_page_blocks(
+            image, blocks, "ja", "es", 1.0, 1.0, "ja", "variant-doc")
+
+        translate.assert_not_called()
+        assert result[0]["translated"] == "Tanaka-san"
+
+    def test_escala_fontsize_al_restaurar_pagina_larga(self, mocker):
+        """El texto conserva proporción al devolver coordenadas originales."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [{
+            "x": 10, "y": 10, "w": 20, "h": 10, "text": "Hola",
+            "confidence": 0.90, "fontSize": 10, "textColor": "#000",
+        }]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+        mocker.patch("server._translate_one", return_value="Hello")
+
+        result, *_ = _finalize_page_blocks(
+            image, blocks, "es", "en", 2.0, 2.0, "es", "long-page")
+
+        assert result[0]["x"] == 20
+        assert result[0]["w"] == 40
+        assert result[0]["fontSize"] == 20
+
+    def test_inpainting_se_solapa_con_traduccion(self, mocker):
+        """El borrado de texto puede avanzar mientras se traduce el bloque."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [{
+            "x": 10, "y": 10, "w": 20, "h": 10, "text": "Hola",
+            "confidence": 0.90, "fontSize": 10, "textColor": "#000",
+        }]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        translation_started = threading.Event()
+        observed_overlap = []
+
+        def fake_inpaint(*_args, **_kwargs):
+            observed_overlap.append(translation_started.wait(timeout=0.5))
+            return image
+
+        def fake_translate(*_args, **_kwargs):
+            translation_started.set()
+            return "Hello"
+
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", side_effect=fake_inpaint)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+        mocker.patch("routes.api.get_document_memory", return_value=None)
+        mocker.patch("server._translate_one", side_effect=fake_translate)
+        executor = MagicMock()
+
+        def submit(fn, *args, **kwargs):
+            future = Future()
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                future.set_exception(exc)
+            return future
+
+        executor.submit.side_effect = submit
+        mocker.patch("server._get_executor", return_value=executor)
+
+        result, *_ = _finalize_page_blocks(
+            image, blocks, "es", "en", 1.0, 1.0, "es")
+
+        assert observed_overlap == [True]
+        assert result[0]["translated"] == "Hello"
+
+    def test_tiempo_inpaint_no_incluye_espera_de_traduccion(self, mocker):
+        """t_inpaint debe medir OpenCV, no el tiempo solapado del traductor."""
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        blocks = [{
+            "x": 10, "y": 10, "w": 20, "h": 10, "text": "Hola",
+            "confidence": 0.90, "fontSize": 10, "textColor": "#000",
+        }]
+        mocker.patch("ocr_utils._filter_watermarks_from_blocks",
+                     side_effect=lambda value: value)
+        mocker.patch("ocr_utils._build_inpaint_mask", return_value=image)
+        mocker.patch("ocr_utils._inpaint_image", return_value=image)
+        mocker.patch("ocr_utils._sample_bg_color", return_value="#ffffff")
+        mocker.patch("ocr_utils._cv2_to_base64", return_value="b64")
+        mocker.patch("routes.api.get_document_memory", return_value=None)
+
+        def slow_translate(*_args, **_kwargs):
+            time.sleep(0.15)
+            return "Hello"
+
+        mocker.patch("server._translate_one", side_effect=slow_translate)
+        executor = MagicMock()
+
+        def submit(fn, *args, **kwargs):
+            future = Future()
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                future.set_exception(exc)
+            return future
+
+        executor.submit.side_effect = submit
+        mocker.patch("server._get_executor", return_value=executor)
+
+        result, _b64, _lang, inpaint_elapsed = _finalize_page_blocks(
+            image, blocks, "es", "en", 1.0, 1.0, "es")
+
+        assert result[0]["translated"] == "Hello"
+        assert inpaint_elapsed < 0.12
 
     def test_html_content_type_returns_415(self, client):
         resp = client.post(
@@ -573,6 +1290,32 @@ class TestTranslate:
         assert "translatedText" in data
         mock_translate.assert_called_once()
 
+    def test_translate_reuses_document_memory(self, mocker, client):
+        """El endpoint manual comparte memoria con el resto del documento."""
+        memory = DocumentTranslationMemory("api-memory-doc", persist=False)
+        mocker.patch("routes.api.get_document_memory", return_value=memory)
+        translate = mocker.patch(
+            "server._translate_one", side_effect=["Primera", "Segunda"])
+        payload = {
+            "text": "  Hola   mundo ",
+            "source": "es",
+            "target": "en",
+            "doc_id": "api-memory-doc",
+        }
+
+        first = client.post(
+            "/api/translate", data=json.dumps(payload),
+            content_type="application/json")
+        second = client.post(
+            "/api/translate", data=json.dumps({**payload, "text": "Hola mundo"}),
+            content_type="application/json")
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.get_json()["translatedText"] == "Primera"
+        assert second.get_json()["translatedText"] == "Primera"
+        translate.assert_called_once()
+
     def test_missing_text_field_returns_400(self, client):
         resp = client.post(
             "/api/translate",
@@ -660,7 +1403,9 @@ class TestTranslate:
 
     def test_valid_lang_codes_accepted(self, client):
         """Todos los códigos de idioma válidos deben funcionar."""
-        for lang in ("es", "en", "fr", "de", "pt", "it", "ja", "ko", "zh", "zh-cn", "zh-tw", "auto"):
+        for lang in (
+            "es", "en", "pt", "ja", "ko", "zh", "zh-cn", "zh-tw", "auto",
+        ):
             target = "en" if lang != "en" else "es"
             resp = client.post(
                 "/api/translate",
@@ -669,6 +1414,15 @@ class TestTranslate:
             )
             # Debe pasar validación de idioma (aunque el mock traduzca)
             assert resp.status_code in (200, 400), f"Lang {lang} falló con {resp.status_code}"
+
+    @pytest.mark.parametrize("lang", ["fr", "de", "it"])
+    def test_idiomas_temporalmente_desactivados_rechazados(self, client, lang):
+        resp = client.post(
+            "/api/translate",
+            data=json.dumps({"text": "test", "source": lang, "target": "es"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
 
     def test_null_text_returns_empty(self, client):
         """text=null debe tratarse como vacío."""
@@ -707,6 +1461,47 @@ class TestTranslateBatch:
         assert len(data["results"]) == 3
         # El mock devuelve "translated" para cada texto
         assert data["results"] == ["translated", "translated", "translated"]
+
+    def test_batch_deduplicates_texts_with_document_memory(self, mocker, client):
+        """Un batch no debe traducir dos veces el mismo texto normalizado."""
+        memory = DocumentTranslationMemory("batch-memory-doc", persist=False)
+        mocker.patch("routes.api.get_document_memory", return_value=memory)
+        translate = mocker.patch("server._translate_one", return_value="Primera")
+        resp = client.post(
+            "/api/translate-batch",
+            data=json.dumps({
+                "texts": [" Hola   mundo ", "Hola mundo"],
+                "source": "es",
+                "target": "en",
+                "doc_id": "batch-memory-doc",
+            }),
+            content_type="application/json",
+        )
+
+        assert resp.status_code == 200
+        assert resp.get_json()["results"] == ["Primera", "Primera"]
+        translate.assert_called_once()
+
+    def test_batch_persiste_memoria_una_vez_para_varios_textos(self, mocker, client):
+        """La persistencia se agrupa para no hacer una escritura por texto."""
+        memory = DocumentTranslationMemory("batch-save-doc", persist=False)
+        mocker.patch("routes.api.get_document_memory", return_value=memory)
+        save = mocker.spy(memory, "save")
+        mocker.patch("server._translate_one", side_effect=["Primera", "Segunda"])
+
+        resp = client.post(
+            "/api/translate-batch",
+            data=json.dumps({
+                "texts": ["Hola", "Adiós"],
+                "source": "es",
+                "target": "en",
+                "doc_id": "batch-save-doc",
+            }),
+            content_type="application/json",
+        )
+
+        assert resp.status_code == 200
+        save.assert_called_once()
 
     def test_batch_missing_texts_returns_400(self, client):
         resp = client.post(
@@ -800,6 +1595,16 @@ def _make_small_b64_image() -> str:
 class TestProcessPage:
     """Endpoint /api/process-page — POST con OCR, inpainting y traducción."""
 
+    @pytest.fixture(autouse=True)
+    def _limpia_cache_pagina(self):
+        """El cache de página completa (2.7) es global: se limpia entre
+        tests para que una entrada de un test no contamine otro con la
+        misma imagen de entrada (_make_small_b64_image)."""
+        import routes.api
+        routes.api._page_cache.clear()
+        yield
+        routes.api._page_cache.clear()
+
     def test_missing_image_returns_400(self, client):
         resp = client.post(
             "/api/process-page",
@@ -857,6 +1662,8 @@ class TestProcessPage:
         assert data is not None
         assert "blocks" in data
         assert "inpainted_image" in data
+        assert data["diagnostics"]["schema_version"] == 1
+        assert data["diagnostics"]["blocks"]["final"] == 1
 
     def test_ocr_no_blocks_returns_empty(self, client, mocker):
         """Sin bloques OCR, inpainted_image y blocks vacío.
@@ -920,6 +1727,27 @@ class TestProcessPage:
         assert data["ocr_engine"] == "fusion"
         assert data.get("engines_used") == ["easyocr+rapid"]
         uocr_mock.assert_not_called()
+
+    def test_source_auto_pasa_marca_auto_al_ocr(self, client, mocker):
+        """source=auto habilita la recuperación selectiva de alfabetos mixtos."""
+        b64 = _make_small_b64_image()
+        mock_img = MagicMock()
+        mock_img.shape = (100, 100, 3)
+        mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
+        run_ocr_mock = mocker.patch(
+            "ocr_engine.OCRManager.run_ocr",
+            return_value=([], "fusion", ["easyocr+rapid"]),
+        )
+        mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
+
+        resp = client.post(
+            "/api/process-page",
+            data=json.dumps({"image": b64, "source": "auto"}),
+            content_type="application/json",
+        )
+
+        assert resp.status_code == 200
+        assert run_ocr_mock.call_args.args[1] == "auto"
 
     def test_invalid_target_lang_returns_400(self, client):
         b64 = _make_small_b64_image()
@@ -1165,6 +1993,9 @@ class TestProcessPage:
             content_type="application/json",
         )
         assert resp.status_code == 500
+        payload = resp.get_json()
+        assert payload["error"] == "Error interno procesando la página"
+        assert "crash" not in str(payload)
 
     def test_image_too_large_returns_413(self, client):
         """Imagen base64 > 50MB debe ser rechazada."""
@@ -1175,6 +2006,184 @@ class TestProcessPage:
             content_type="application/json",
         )
         assert resp.status_code == 413
+
+    def test_response_format_invalido_returns_400(self, client):
+        """response_format solo acepta png/jpeg (jpg se normaliza)."""
+        b64 = _make_small_b64_image()
+        resp = client.post(
+            "/api/process-page",
+            data=json.dumps({"image": b64, "response_format": "webp"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+        assert "response_format" in resp.get_json()["error"]
+
+    def test_response_format_jpeg_se_propaga_al_pipeline(self, client, mocker):
+        """Optimización 2.3: response_format=jpeg llega a _finalize_page_blocks."""
+        import routes.api
+        b64 = _make_small_b64_image()
+        mock_img = MagicMock()
+        mock_img.shape = (200, 200, 3)
+        mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
+        ocr_mgr = mocker.patch("ocr_engine.OCRManager")
+        ocr_mgr.return_value.run_ocr.return_value = ([], "easyocr", ["easyocr"])
+        ocr_mgr.return_value.last_diagnostics = None
+        finalize = mocker.patch(
+            "routes.api._finalize_page_blocks",
+            return_value=([], "b64", "es", 0.0),
+        )
+
+        resp = client.post(
+            "/api/process-page",
+            data=json.dumps({"image": b64, "response_format": "jpg"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        assert finalize.call_args.args[-1] == "jpeg"  # jpg normalizado
+
+    def test_process_page_binario_usa_bytes_y_query_params(self, client, mocker):
+        """Optimización 2.4: body binario (canvas.toBlob) + flags en query
+        string; el servidor decodifica request.data y pasa los params."""
+        import routes.api
+        mock_img = MagicMock()
+        mock_img.shape = (200, 200, 3)
+        bytes_decode = mocker.patch("ocr_utils._bytes_to_cv2", return_value=mock_img)
+        base64_decode = mocker.patch("ocr_utils._base64_to_cv2")
+        ocr_mgr = mocker.patch("ocr_engine.OCRManager")
+        ocr_mgr.return_value.run_ocr.return_value = (
+            [{"x": 0, "y": 0, "w": 10, "h": 10, "text": "Hola"}],
+            "easyocr", ["easyocr"])
+        ocr_mgr.return_value.last_diagnostics = None
+        finalize = mocker.patch(
+            "routes.api._finalize_page_blocks",
+            return_value=([], "b64", "es", 0.0),
+        )
+
+        raw_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01fake-jpeg"
+        resp = client.post(
+            "/api/process-page?target=es&source=auto&ocr_mode=fusion"
+            "&doc_id=cap_1&response_format=jpeg",
+            data=raw_jpeg,
+            content_type="image/jpeg",
+        )
+        assert resp.status_code == 200
+        bytes_decode.assert_called_once_with(raw_jpeg)
+        base64_decode.assert_not_called()
+        args = finalize.call_args.args
+        assert args[3] == "es"  # target
+        assert args[0] is mock_img  # imagen decodificada
+        assert args[-1] == "jpeg"  # response_format
+
+    def test_process_page_binario_vacio_returns_400(self, client):
+        """Body binario vacío → 400 sin decodificar nada."""
+        resp = client.post("/api/process-page", data=b"",
+                           content_type="image/jpeg")
+        assert resp.status_code == 400
+
+    def test_page_cache_hit_devuelve_sin_reprocesar(self, client, mocker):
+        """Optimización 2.7: la segunda vez con la misma imagen+params se
+        devuelve la respuesta cacheada sin re-correr OCR ni traducción."""
+        import routes.api
+        b64 = _make_small_b64_image()
+        mock_img = MagicMock()
+        mock_img.shape = (200, 200, 3)
+        mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
+        ocr_mgr = mocker.patch("ocr_engine.OCRManager")
+        ocr_mgr.return_value.run_ocr.return_value = (
+            [{"x": 0, "y": 0, "w": 10, "h": 10, "text": "Hola"}],
+            "easyocr", ["easyocr"])
+        ocr_mgr.return_value.last_diagnostics = None
+        finalize = mocker.patch(
+            "routes.api._finalize_page_blocks",
+            return_value=([{"x": 0, "y": 0, "w": 10, "h": 10,
+                            "source": "Hola", "translated": "Hello"}],
+                           "b64", "es", 0.0),
+        )
+
+        payload = json.dumps({"image": b64})
+        resp1 = client.post("/api/process-page", data=payload,
+                            content_type="application/json")
+        resp2 = client.post("/api/process-page", data=payload,
+                            content_type="application/json")
+        assert resp1.status_code == 200
+        assert resp2.status_code == 200
+        # El pipeline (OCR + finalize) corrió UNA sola vez; la segunda
+        # respuesta es el cache hit.
+        assert ocr_mgr.return_value.run_ocr.call_count == 1
+        assert finalize.call_count == 1
+        assert resp2.get_json()["blocks"] == resp1.get_json()["blocks"]
+
+    def test_page_cache_respeta_doc_id(self, client, mocker):
+        """Optimización 2.7: doc_id distinto → distinta clave (capítulos
+        de la misma serie no colisionan)."""
+        import routes.api
+        b64 = _make_small_b64_image()
+        mock_img = MagicMock()
+        mock_img.shape = (200, 200, 3)
+        mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
+        ocr_mgr = mocker.patch("ocr_engine.OCRManager")
+        ocr_mgr.return_value.run_ocr.return_value = (
+            [{"x": 0, "y": 0, "w": 10, "h": 10, "text": "Hola"}],
+            "easyocr", ["easyocr"])
+        ocr_mgr.return_value.last_diagnostics = None
+        mocker.patch(
+            "routes.api._finalize_page_blocks",
+            return_value=([{"x": 0, "y": 0, "w": 10, "h": 10,
+                            "source": "Hola", "translated": "Hello"}],
+                           "b64", "es", 0.0),
+        )
+
+        p1 = json.dumps({"image": b64, "doc_id": "cap_1"})
+        p2 = json.dumps({"image": b64, "doc_id": "cap_2"})
+        client.post("/api/process-page", data=p1,
+                    content_type="application/json")
+        client.post("/api/process-page", data=p1,
+                    content_type="application/json")
+        client.post("/api/process-page", data=p2,
+                    content_type="application/json")
+        # cap_1 se cacheó (2ª llamada = hit); cap_2 es miss.
+        assert ocr_mgr.return_value.run_ocr.call_count == 2
+
+    def test_page_cache_no_guarda_respuesta_vacia(self, client, mocker):
+        """Optimización 2.7: la respuesta sin bloques (0 tras filtrar
+        watermarks) no debe quedar cacheada."""
+        import routes.api
+        b64 = _make_small_b64_image()
+        mock_img = MagicMock()
+        mock_img.shape = (200, 200, 3)
+        mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
+        ocr_mgr = mocker.patch("ocr_engine.OCRManager")
+        ocr_mgr.return_value.run_ocr.return_value = ([], "easyocr", ["easyocr"])
+        ocr_mgr.return_value.last_diagnostics = None
+        mocker.patch(
+            "routes.api._finalize_page_blocks",
+            return_value=([], "b64", "es", 0.0),
+        )
+        routes.api._page_cache.clear()
+
+        payload = json.dumps({"image": b64})
+        client.post("/api/process-page", data=payload,
+                    content_type="application/json")
+        assert len(routes.api._page_cache) == 0
+        routes.api._page_cache.clear()
+
+    def test_ocr_with_unlimited_rejects_known_low_vram(self, mocker):
+        import numpy as np
+        import routes.api
+        import uocr_client
+
+        mocker.patch.object(uocr_client, "health", return_value={"state": "ready"})
+        mocker.patch.object(routes.api, "gpu_memory_snapshot", return_value={
+            "available": True,
+            "device": "cuda:0",
+            "allocated_mb": 3500.0,
+            "reserved_mb": 3600.0,
+            "free_mb": 200.0,
+            "total_mb": 4096.0,
+        })
+
+        with pytest.raises(RuntimeError, match="VRAM insuficiente"):
+            routes.api._ocr_with_unlimited(np.zeros((100, 100, 3), dtype=np.uint8))
 
     def test_ocr_with_unlimited_propaga_tipo_semantico(self, mocker):
         """Fase 3: los bloques U-OCR conservan el type semántico
@@ -1212,6 +2221,24 @@ class TestProcessPage:
         assert "p. 12" not in by_text
         assert len(panels) == 1
         assert panels[0]["w"] == 500
+
+    def test_parse_daemon_blocks_clampa_cajas_fuera_de_pagina(self):
+        import routes.api
+
+        image = np.zeros((100, 80, 3), dtype=np.uint8)
+        blocks, panels = routes.api._parse_daemon_blocks([
+            {"x": -20, "y": -5, "w": 200, "h": 200,
+             "type": "text", "text": "fuera"},
+            {"x": 10, "y": 10, "w": 0, "h": 20,
+             "type": "text", "text": "invalido"},
+        ], image)
+
+        assert panels == []
+        assert len(blocks) == 1
+        assert blocks[0]["x"] == 0
+        assert blocks[0]["y"] == 0
+        assert blocks[0]["w"] == 80
+        assert blocks[0]["h"] == 100
 
     def test_ocr_with_unlimited_batch_parsea_multi_imagen(self, mocker):
         """Fase 1: _ocr_with_unlimited_batch mapea los bloques del batch
@@ -1303,6 +2330,8 @@ class TestProcessPage:
             assert r["engines_used"] == ["easyocr+rapid"]
             assert len(r["blocks"]) == 3
             assert "inpainted_image" in r
+            assert r["diagnostics"]["schema_version"] == 1
+            assert r["diagnostics"]["blocks"]["final"] == 3
 
     def test_process_page_batch_doc_id_se_pasa_a_ocrmanager(self, client, mocker):
         """Sesión 126: doc_id del payload batch llega a run_ocr_batch."""
@@ -1370,6 +2399,26 @@ class TestProcessPage:
         assert len(batch_mock.call_args.args[0]) == 2
         engines = data["results"][0]["engines_used"]
         assert "unlimited-batch" in engines
+
+    def test_process_page_batch_rechaza_presupuesto_total_de_pixeles(
+        self, client, mocker
+    ):
+        """Varias páginas comprimidas no deben acumular un OOM de RAM."""
+        b64 = _make_small_b64_image()
+        mock_img = MagicMock()
+        mock_img.shape = (100, 100, 3)
+        decode = mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
+        mocker.patch("routes.api.MAX_BATCH_DECODE_PIXELS", 15_000)
+
+        resp = client.post(
+            "/api/process-page-batch",
+            data=json.dumps({"images": [b64, b64]}),
+            content_type="application/json",
+        )
+
+        assert resp.status_code == 413
+        assert decode.call_args_list[0].kwargs["max_pixels"] == 15_000
+        assert decode.call_args_list[1].kwargs["max_pixels"] == 5_000
 
 
 # ═══════════════════════════════════════════════════════════════

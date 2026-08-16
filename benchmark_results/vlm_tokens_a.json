@@ -1,0 +1,32 @@
+{
+ "21": {
+  "wall_s": 299.526,
+  "n_generate_calls": 2,
+  "total_new_tokens": 1949,
+  "per_call": [
+   {
+    "new_tokens": 16,
+    "infer_call_s": 22.671
+   },
+   {
+    "new_tokens": 1933,
+    "infer_call_s": 275.097
+   }
+  ],
+  "texto_chars": 18,
+  "n_blocks_raw": 95
+ },
+ "25": {
+  "wall_s": 30.449,
+  "n_generate_calls": 1,
+  "total_new_tokens": 202,
+  "per_call": [
+   {
+    "new_tokens": 202,
+    "infer_call_s": 30.364
+   }
+  ],
+  "texto_chars": 246,
+  "n_blocks_raw": 6
+ }
+}

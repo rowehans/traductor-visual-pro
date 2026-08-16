@@ -55,6 +55,15 @@ APP_VERSION: Final[str] = "20260715"
 MAX_TEXT_LENGTH: Final[int] = 20_000           # ~20k chars por texto a traducir
 MAX_BATCH_SIZE: Final[int] = 500               # max textos por batch
 MAX_IMAGE_BYTES: Final[int] = 50 * 1024 * 1024 # 50MB raw base64 (evitar OOM)
+# Límite de píxeles DESCOMPRIMIDOS inspeccionado antes de cv2.imdecode().
+# 64M permite páginas largas (p.ej. 4096x16000) sin reservar cientos de MB
+# indefinidamente ante un PNG/JPEG comprimido con dimensiones abusivas.
+MAX_IMAGE_DECODE_PIXELS: Final[int] = 64 * 1024 * 1024
+# Presupuesto acumulado para /process-page-batch. Una sola página larga
+# legítima puede usar casi el límite individual, pero cuatro páginas
+# comprimidas con dimensiones máximas no deben reservar ~GB de RAM a la vez.
+# 96M px son ~288MB en BGR antes de las copias temporales del pipeline.
+MAX_BATCH_DECODE_PIXELS: Final[int] = 96 * 1024 * 1024
 
 
 # ─── Fusión de motores OCR (modo "fusion") ────────────────────────
@@ -67,13 +76,33 @@ MAX_IMAGE_BYTES: Final[int] = 50 * 1024 * 1024 # 50MB raw base64 (evitar OOM)
 UOCR_TRIGGER_CONF: Final[float] = 0.20          # confianza media mínima del híbrido (v4.2: <0.2 para disparar refuerzo)
 UOCR_TRIGGER_MIN_BLOCKS: Final[int] = 3          # mínimo de bloques para no reforzar
 UOCR_IMAGE_BLOCK_RATIO: Final[float] = 0.15      # bloque image ≥15% de la página
+# Un panel oscuro no basta por sí solo para pagar 60-110 s de VLM si el OCR
+# ya encontró suficientes bloques con confianza alta. Se conserva el trigger
+# para páginas con detección incompleta o dudosa, donde sí puede recuperar
+# texto artístico perdido.
+UOCR_PANEL_SKIP_MIN_CONF: Final[float] = 0.75
 OCR_ENGINE_WEIGHTS: Final[dict[str, float]] = {
     "easyocr": 1.0,     # motor base (GPU, fiable)
     "rapid": 0.9,        # complemento CPU (menos preciso en general)
     "unlimited": 1.1,    # VLM 3B 4-bit (el más preciso donde detecta)
-    "yolo": 0.9,         # Fase 6: bloques re-OCR de regiones YOLO (EasyOCR sobre
-                          # crops 3.5× — misma fiabilidad que el híbrido, peso rapid)
+    "yolo": 0.9,         # Fase 6: bloques re-OCR de regiones YOLO (RapidOCR
+                         # primario sobre crops 3.5×, EasyOCR como fallback)
 }
+
+# ─── RapidOCR condicional (Fase 1 del plan de optimización, ítem 2.1) ──
+# El híbrido corría RapidOCR (CPU ONNX, ~1.1-1.5s) SIEMPRE, en paralelo con
+# EasyOCR, aunque la página ya estuviera bien detectada — el wait del hilo
+# paralelo pagaba ~1.5s/pág incluso en páginas fáciles donde la fusión solo
+# deduplica. Con RAPID_COND_ENABLED, RapidOCR se omite cuando EasyOCR ya
+# resolvió la página con el MISMO criterio del trigger v4.2 (>= 3 bloques y
+# conf >= 0.20): la página está bien detectada y el pase CPU no aporta. En
+# páginas débiles o vacías corre igual (serial, después de EasyOCR) para
+# capturar texto estilizado y títulos. Desactivar el flag restaura el
+# comportamiento histórico (siempre en paralelo).
+RAPID_COND_ENABLED: Final[bool] = True
+RAPID_COND_MIN_BLOCKS: Final[int] = UOCR_TRIGGER_MIN_BLOCKS
+RAPID_COND_MIN_CONF: Final[float] = UOCR_TRIGGER_CONF
+
 
 # ─── Reintento agresivo de RapidOCR (Fase 2) ──────────────────────
 # ANTES de disparar el VLM (daemon U-OCR, ~2-8 min/pág), se reintenta
@@ -137,12 +166,21 @@ RUTA_C_CLS_ENABLED: Final[bool] = True
 # pondría el texto cabeza abajo.
 RUTA_C_CLS_THRESH: Final[float] = 0.9
 
+# Ruta C: los benchmarks sobre globos artísticos mostraron que RapidOCR CPU
+# lee mejor el texto del crop que EasyOCR GPU. Se usa como primer intento y
+# EasyOCR queda como fallback cuando RapidOCR no entrega texto suficientemente
+# fiable. Esto evita cargar/usar otro lector GPU en el camino habitual.
+RUTA_C_RAPID_PRIMARY: Final[bool] = True
+RUTA_C_RAPID_MIN_CONF: Final[float] = 0.45
+
 # ─── Detector YOLO de regiones de texto (Fase 6) ──────────────────
 # Tier 3.5 de detección: un YOLO fine-tuned (nano/small, ~3M params) detecta
 # regiones de diálogo — globos (speech bubbles), cartelas narrativas y títulos
 # tipográficos grandes — como OBJETOS (no como texto). Cada región detectada
-# alimenta la Ruta C existente (_recover_regions_with_easyocr, upscale 3.5× +
-# cls de rotación + degradación CPU) — la brecha central: los OCR solo ven
+# alimenta la Ruta C existente (_recover_regions_with_easyocr, upscale 3.5× —
+# A/B corregido 2026-08-15: 3.5× recupera 2 bloques más que 2× a tiempo
+# neutro; el 2× se revierte (su A/B estaba roto y el −24% era deriva — + cls
+# de rotación + degradación CPU) — la brecha central: los OCR solo ven
 # "texto" si detectan glifos, pero un globo/título artístico puede no tenerlos
 # detectables. Recupera parte del ~12.2% de bloques perdidos SIN la inferencia
 # VLM (2-8 min/pág).
@@ -170,7 +208,10 @@ YOLO_MODEL_PATH: Final[str] = str(ROOT / "models" / "comic-speech-bubble-detecto
 YOLO_AUTODOWNLOAD: Final[bool] = False
 YOLO_CONF_THRESH: Final[float] = 0.25        # confianza mínima de detección
 YOLO_IOU_THRESH: Final[float] = 0.45         # NMS
-YOLO_IMGSZ: Final[int] = 1280                # tamaño de inferencia (balance velocidad/precisión)
+YOLO_IMGSZ: Final[int] = 1024                # tamaño de inferencia (balance velocidad/precisión):
+                                               # 1280→1024 acelera ~2× la detección en páginas débiles con
+                                               # pérdida mínima de recall (el re-OCR es sobre crops 3.5×,
+                                               # no sobre la detección). Validado con benchmark_ruta_c_v2.py.
 # device: "cpu" por defecto (200-400ms, compatible con cualquier máquina);
 # "0" (GPU) solo si CUDA está disponible. Se decide en runtime.
 #
@@ -195,7 +236,8 @@ YOLO_GATE_MAX_CONF: Final[float] = 0.35      # o conf media < 0.35 → correr
 # globos, cartelas narrativas, títulos y cajas de texto. Las clases que no
 # matcheen (p.ej. "person", "face") se ignoran — el tier solo recupera texto.
 YOLO_CLASS_KEYWORDS: Final[tuple[str, ...]] = (
-    "bubble", "balloon", "speech", "caption", "narration",
+    "bubble", "balloon", "speech", "dialog", "thought",
+    "caption", "narration", "narrative", "cartel",
     "title", "text", "letter", "sfx", "sound",
 )
 
@@ -269,6 +311,41 @@ EASYOCR_ROTATION_INFO: Final[tuple[int, ...]] = (0, 90, 180, 270)
 # disparar inferencias de 2-8 min/pág sin pedirlo (--vlm). Se lee en runtime
 # dentro de _reforzar_con_unlimited (mutar config desde el CLI surte efecto).
 UOCR_ENABLED: Final[bool] = True
+
+# Tope de generación del VLM (Fase 2.3/3.3): acota el PEOR caso. El tiempo de
+# generación es proporcional a los tokens de salida; una página que divaga
+# con 4096 puede pagar 8 min. 1280 es el punto calibrado con datos
+# (2026-08-15, benchmark_vlm_maxlen.py + vlm_tokens_dist.json): las 8/9
+# páginas del trigger generan 32-376 tokens (EOS temprano) y SOLO la
+# patológica (pág 21) llegaba a 1949 — el cap a 1280 la recorta de 300 a
+# ~170 s (−43 %) sin tocar las normales ni perder texto real (los bloques
+# perdidos son duplicados [Unreadable] que el merge elimina; 1024 SÍ pierde
+# texto real y < 768 falla por el prefijo de imagen). Mismo valor en el
+# daemon (default del POST) y en el cliente (uocr_client).
+UOCR_MAX_LENGTH: Final[int] = 1280
+
+# ─── Preset modo_cpu: soporte oficial sin GPU dedicada ────────────
+# Máquinas sin CUDA (o con GPU muy débil): un solo flag desactiva lo que
+# EXIGE GPU y baja la resolución de trabajo. Combinación (leída en runtime,
+# mismo patrón que UOCR_ENABLED — mutar desde CLI/launcher surte efecto):
+#   1. VLM apagado: MODO_CPU anula el refuerzo U-OCR aunque UOCR_ENABLED=True
+#      (el VLM es el único componente GPU-only del pipeline).
+#   2. YOLO forzado a CPU: _resolver_device_yolo() ignora YOLO_DEVICE='auto'
+#      (no intenta CUDA aunque el torch del proceso la detecte).
+#   3. Escala de render menor: el servidor sugiere MODO_CPU_OCR_SCALE al
+#      frontend vía /api/config (menos píxeles a procesar por página — el
+#      análogo a "bajar la resolución de video").
+# El resto degrada solo: EasyOCR (GPU si CUDA, si no CPU), RapidOCR (siempre
+# CPU) y CT2 (GPU si disponible, si no CPU) no requieren cambios.
+# Se activa desde el entorno (UOCR_MODO_CPU=1, que el launcher con --cpu
+# inyecta al subproceso del servidor) o mutando el atributo en runtime
+# (monkeypatch/tests). Leer aquí en import evita tocar el archivo para
+# arrancar sin GPU dedicada: `python launcher.py --cpu`.
+MODO_CPU: Final[bool] = os.getenv("UOCR_MODO_CPU", "0") in {"1", "true", "True", "yes"}
+# Escala de render PDF sugerida al frontend con MODO_CPU. 0.8 ≈ 0.31 MP/pág
+# (vs 0.72 MP a 1.2 — ~2.3× menos píxeles). El frontend usa 1.2 si el server
+# no envía ocr_scale (compatibilidad con builds previos).
+MODO_CPU_OCR_SCALE: Final[float] = 0.8
 
 # Si una página con una firma de layout concreta ya disparó el refuerzo U-OCR
 # y NO recuperó nada (0 bloques nuevos), las páginas repetitivas del capítulo
@@ -362,6 +439,15 @@ TRIGGER_CACHE_MAX_ENTRIES: Final[int] = 256      # eviction LRU
 YOLO_GPU_LOCK_BLOQUEANTE: Final[bool] = True
 YOLO_GPU_LOCK_TIMEOUT_S: Final[float] = 30.0
 
+# Presupuesto defensivo para la GTX 1050 Ti de 4 GB. El snapshot es
+# observacional cuando CUDA no está disponible; si CUDA informa presión real,
+# las operaciones VLM se rechazan antes de provocar un OOM del proceso.
+GPU_VRAM_BUDGET_MB: Final[float] = 3600.0
+GPU_MIN_FREE_VRAM_MB: Final[float] = 384.0
+# Margen adicional para cargar un par CT2 nuevo sin competir con EasyOCR,
+# RapidOCR y el daemon U-OCR. Los pares ya cargados no se desalojan.
+CT2_NEW_MODEL_MIN_FREE_VRAM_MB: Final[float] = 768.0
+
 
 # ─── Timeouts (single source of truth — shared via /api/config) ────
 TIMEOUT_OPENCV_INIT_MS: Final[int] = 15000       # app.js: OpenCV init + poll timeout
@@ -370,15 +456,21 @@ TIMEOUT_PDFJS_ES_MODULE_MS: Final[int] = 10000    # app.js: PDF.js ES module imp
 TIMEOUT_PDF_RENDER_MS: Final[int] = 60000          # app.js: PDF page render (60s para PDFs escaneados pesados)
 TIMEOUT_TRANSLATE_MS: Final[int] = 30000           # app.js: translate single request
 TIMEOUT_TRANSLATE_BATCH_MS: Final[int] = 60000     # app.js: translate batch request
-TIMEOUT_PROCESS_PAGE_MS: Final[int] = 120000       # app.js: server process-page
+TIMEOUT_PROCESS_PAGE_MS: Final[int] = 300000       # app.js: server process-page (5 min para U-OCR)
 TIMEOUT_INPAINTED_IMAGE_MS: Final[int] = 15000     # app.js: inpainted image decode
 TIMEOUT_EXPORT_REVOKE_MS: Final[int] = 10000       # app.js: export URL.revokeObjectURL
 TIMEOUT_CDN_LOAD_MS: Final[int] = 8000             # index.html: __loadCdn default
 
+# Idiomas activos del pipeline. Francés, alemán e italiano quedan fuera de
+# la UI, la detección automática y la API por ahora; sus modelos CT2 no se
+# borran para poder reactivarlos sin reinstalar nada.
+ACTIVE_LANGUAGE_CODES: Final[frozenset[str]] = frozenset({
+    "es", "en", "pt", "ja", "ko", "zh",
+})
+DISABLED_LANGUAGES: Final[frozenset[str]] = frozenset({"fr", "de", "it"})
 LANGUAGES: Final[dict[str, str]] = {
     "es": "spanish", "en": "english", "pt": "portuguese",
-    "fr": "french",  "de": "german",  "it": "italian",
-    "ja": "japanese","ko": "korean",  "zh": "chinese (simplified)",
+    "ja": "japanese", "ko": "korean", "zh": "chinese (simplified)",
     "zh-cn": "chinese (simplified)", "zh-tw": "chinese (traditional)",
     "auto": "auto",
 }

@@ -1,349 +1,55 @@
+"""CLI de auditoría de calidad multilingüe.
+
+Uso:
+    python analisis_calidad.py
+    python analisis_calidad.py --input resultados_progreso_ja_es.json --source ja --target es
 """
-analisis_calidad.py — Auditoría de calidad de traducción del PDF completo.
-Analiza los 261 pares traducidos y los categoriza por calidad.
-"""
-import json, re, sys
-sys.stdout.reconfigure(encoding='utf-8')
 
-with open('resultados_progreso.json','r',encoding='utf-8') as f:
-    cp = json.load(f)
+from __future__ import annotations
 
-# ── Spanish common words (short, all-caps frequent in manga) ──
-SHORT_SPANISH = {
-    'EL','LA','LOS','LAS','UN','UNA','UNOS','UNAS',
-    'DEL','CON','POR','QUE','QUÉ','SER','ESTA','ESTE',
-    'ES','NO','SI','YA','PERO','MAS','MÁS','SUS','ERA',
-    'HAN','LES','LE','TUS','NOS','SON','AL','MI','TU',
-    'SE','TE','ME','LO','LA','LE','DE','EN','A','Y','O',
-    'NI','DOY','DA','VA','VE','FUE','ERA','IR','HAY',
-    'HE','HA','HAS','SOY','ERES','SOMOS','SON','SEA',
-    'TAN','TAL','AH','OH','EH','AY','OK','BIEN','MAL',
-    'CADA','TODO','OTRO','OTRA','GRAN','SIN','SOBRE',
-    'TIPO','ALGO','NADA','ALGUIEN','NADIE','SIEMPRE',
-    'NUNCA','TAMBIEN','TAMBIÉN','SOLO','SÓLO','MUY',
-    'TANTO','NADA','VALE','LISTO','CLARO','CIERTO',
-    'BUENO','MALO','COMO','CÓMO','DONDE','DÓNDE',
-    'CUANDO','CUÁNDO','QUIEN','QUIÉN','AHORA','HOY',
-    'AYER','MAÑANA','NUNCA','SIEMPRE','LUEGO','DESPUES',
-    'DESPUÉS','ANTES','DURANTE','HASTA','DESDE','ENTRE',
-    'SEGUN','SEGÚN','CONTRA','HACIA','PARA','POR',
-}
-# Common English words that might appear in manga
-COMMON_ENGLISH = {
-    'the','and','for','you','with','this','that','from',
-    'have','not','but','are','was','his','her','all','can',
-    'out','has','its','say','who','get','she','new','now',
-    'how','one','two','three','four','five','six','seven',
-    'eight','nine','ten','yes','no','ok','okay','hello',
-    'good','bad','big','small','great','well','very','too',
-}
-CJK_RX = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]')
-SPANISH_ACCENTS = set('áéíóúñüÁÉÍÓÚÑÜ¿¡')
+import argparse
+import json
+from pathlib import Path
+import sys
 
-def has_cjk(t): return bool(CJK_RX.search(t))
-def has_accent(t): return any(c in SPANISH_ACCENTS for c in t)
-def is_ocr_garbage(t):
-    """Check if OCR output is clearly garbage (not valid text)."""
-    stripped = t.strip()
-    if not stripped: return False
+from quality_analysis import analyze_checkpoint, render_report
 
-    # ── Filtro 1: Solo digitos, puntuacion y simbolos ────────────
-    if re.match(r'^[\d\s.,;:\'\"\-_~]+$', stripped):
-        return True
+try:
+    sys.stdout.reconfigure(  # type: ignore[union-attr]
+        encoding="utf-8", errors="replace")
+except AttributeError:
+    pass
 
-    # ── Filtro 2: Patrones mixtos numero+letra ruidosos ───────────
-    garbage_pats = [r'\d{4,}', r'\d[A-Z]{5,}', r'[A-Z]{6,}\d', r'\d{2,}[A-Z]{2,}\d{2,}']
-    if any(re.search(p, t) for p in garbage_pats):
-        return True
 
-    # ── Filtro 3: Mas de 40% digitos ─────────────────────────────
-    digits = sum(1 for c in t if c.isdigit())
-    if digits > 0 and digits / max(len(t), 1) > 0.4:
-        return True
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Audita traducciones OCR por par de idiomas")
+    parser.add_argument(
+        "--input", default="resultados_progreso.json",
+        help="Checkpoint JSON a analizar",
+    )
+    parser.add_argument("--source", default=None, help="Idioma origen (si falta en el checkpoint)")
+    parser.add_argument("--target", default=None, help="Idioma destino (si falta en el checkpoint)")
+    args = parser.parse_args(argv)
 
-    # ── Filtro 4: 3+ caracteres especiales (@#$%^&*+=) ────────────
-    special = re.findall(r'[@#$%^&*+=<>\[\]{}|\\/]', t)
-    if len(special) >= 3:
-        return True
+    path = Path(args.input)
+    if not path.is_file():
+        print(f"[SKIP] Corpus no encontrado: {path}", file=sys.stderr)
+        return 2
+    try:
+        checkpoint = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"[ERROR] No se pudo leer {path}: {exc}", file=sys.stderr)
+        return 2
 
-    # ── Filtro 5: Texto de 1-2 caracteres sin vocales ────────────
-    # "N", "kc", "rt" son OCR noise, no texto real
-    letters_only = re.sub(r'[^a-zA-Z]', '', stripped)
-    if len(letters_only) <= 2 and not re.search(r'[aeiouAEIOU]', letters_only):
-        return True
+    # Los checkpoints antiguos del proyecto eran español→inglés, aunque no
+    # guardaban idiomas en su raíz. Conservamos ese default solo para ellos;
+    # los runs nuevos llevan source_lang/target_lang explícitos.
+    source = args.source if args.source is not None else checkpoint.get("source_lang", "auto")
+    target = args.target if args.target is not None else checkpoint.get("target_lang", "en")
+    report = analyze_checkpoint(checkpoint, source_lang=source, target_lang=target)
+    sys.stdout.write(render_report(report))
+    return 0
 
-    # ── Filtro 6: Case inconsistency patologica ──────────────────
-    # "sRESPONDERMFR" (empieza minuscula, TODO lo demas mayuscula)
-    # "ADelAntE." (alterna mayuscula/minuscula como AaaAaaA)
-    letters = re.findall(r'[a-zA-Z]', stripped)
-    if len(letters) >= 4:
-        has_lower = any(c.islower() for c in letters)
-        has_upper = any(c.isupper() for c in letters)
-        if has_lower and has_upper:
-            # Caso A: "sRESPONDERMFR" - empieza minuscula, resto mayuscula
-            if letters[0].islower():
-                rest = stripped[1:]
-                rest_let = re.findall(r'[a-zA-Z]', rest)
-                if rest_let and all(c.isupper() for c in rest_let):
-                    return True
-            # Caso B: "ADelAntE" - patron (1-2 mayus)(2+ minus)(mayus)(2+ minus)(mayus)
-            # Permite 1-2 mayusculas al inicio para cubrir "ADelAntE" (A-D-el-A-nt-E)
-            # pero NO "McDonald" (Mc = mayus+minus, solo 1 mayus)
-            if re.match(r'^[A-Z]{1,2}[a-z]{2,}[A-Z][a-z]{2,}[A-Z]', stripped):
-                return True
-            # Caso C: "saaaAALIR!" - empieza minuscula, termina con 3+ mayusculas
-            if re.match(r'^[a-z]+[A-Z]{3,}', stripped):
-                return True
 
-    # ── Filtro 7: Texto muy corto con espacios internos ──────────
-    # "M 4", "9 2" son fragmentos con digitos sueltos y espacios
-    if len(stripped) <= 4 and ' ' in stripped:
-        # Verificar que no sea una frase real tipo "a 2" o "en 3"
-        parts = stripped.split()
-        # Si todas las partes son de 1-2 chars y hay al menos un digito
-        if all(len(p) <= 2 for p in parts) and any(p.isdigit() for p in parts):
-            return True
-
-    # ── Filtro 8: Caracteres especiales al inicio/fin ────────────
-    # "~YSILA acePtaba _" tiene tilde/underscore en bordes
-    if stripped.startswith(('~', '_', '-', '=')) or stripped.endswith(('~', '_', '-', '=')):
-        # Si ademas tiene otros indicios de ruido
-        letters_only = re.sub(r'[^a-zA-Z]', '', stripped)
-        if len(letters_only) <= 3 or (len(stripped) - len(letters_only)) >= 2:
-            return True
-
-    return False
-
-def is_onomatopoeia(t):
-    """Check if text is a sound effect / onomatopoeia that should stay untranslated."""
-    t_stripped = t.strip(' \'"\u00a1\u00bf!?.,;:~-_()')
-    t_upper = t_stripped.upper()
-    if not t_upper: return False
-    if has_cjk(t): return True
-    if not t_upper.isalpha(): return False  # Must be purely letters
-    if len(t_upper) < 3: return False  # Too short to be SFX (NO, SI, YA etc are dialogue)
-    if len(t_upper) > 8: return False  # Too long for typical SFX
-    if t_upper in SHORT_SPANISH: return False  # It's a Spanish word, not SFX
-    
-    # Known Korean/Japanese/English SFX romanizations
-    known_sfx = {
-        'BOOM','PUM','PUM','ZAS','CRASH','CLICK','PLOP','TOC','RING',
-        'FLASH','BOING','POW','BANG','SMASH','SPLASH','BUMP','THUD',
-        'WHAM','BUH','BOF','GRRR','GRR','BAAA','CLANG','SNIFF','GROAN',
-        'SLAM','BEEP','WOOSH','NYOOM','FWOOOSH','KABOOM','KABOOM',
-        'RUMBLE','SQUEAK','TWITTER','WHIR','ZOOM','VROOM','SCREECH',
-        'GROWL','HOWL','SNAP','CRACKLE','POP','FIZZ','HISS','BUZZ',
-        'WHISTLE','CHIME','DING','DONG','SPLAT','SQUISH','OOZE',
-        'WHOOSH','AH','HUH','HEH','HAH','HMPH','PSST','SHH','SHH',
-        'GASP','PANT','PHEW','WHEW','SIGH','UFF','UF','OH','OW',
-        'OUCH','AY','OY','EH','BAH','MEH','BLEH','ACK','EEK','Eek','EEK',
-        'TAP','TAP','KNOCK','KNOCK','RAP','RAP','PIT','PAT','PIT','PAT',
-    }
-    if t_upper in known_sfx: return True
-    
-    # Repeated letter pattern typical of SFX: GRRRR, BOOOOOOOM (3+ same letters)
-    if re.search(r'(.)\1{2,}', t_upper):
-        return True
-    
-    return False  # No clasificar automaticamente mayusculas sueltas como SFX;
-                   # esos casos caen a UNTRANSLATED para revision manual
-
-def quality(src, tgt):
-    """Classify a translation pair into a quality category."""
-    # Step 1: If source is OCR garbage, mark it regardless
-    src_is_garbage = is_ocr_garbage(src)
-    
-    if src == tgt:
-        if src_is_garbage:
-            return "OCR_GARBAGE"
-        if is_onomatopoeia(src):
-            return "ONOMATOPOEIA"
-        if is_english(src):
-            return "ENGLISH"
-        return "UNTRANSLATED"
-    
-    # Check if cleanup equals
-    src_clean = src.strip(' \'"\u00a1\u00bf!?.,;:~-_()').upper()
-    tgt_clean = tgt.strip(' \'"\u00a1\u00bf!?.,;:~-_()').upper()
-    if src_clean == tgt_clean:
-        if src_is_garbage:
-            return "OCR_GARBAGE"
-        return "UNTRANSLATED"
-    
-    if src_is_garbage:
-        return "OCR_GARBAGE"
-    
-    # If translation recovered something from garbaged OCR, it's OCR_NOISY
-    weird_chars = sum(1 for c in src if c.isdigit() or c in '@#$%^&*+=<>[]{}|\\/')
-    if weird_chars >= 3:
-        return "OCR_NOISY"
-    
-    # Natural vs literal: heuristic based on target naturalness
-    # If target has contractions (don't, isn't, I'm), articles used naturally, etc
-    natural_markers = ["'s", "n't", "'m", "'re", "'ve", "'ll", "the ", " a ", " an "]
-    has_natural = any(m in tgt.lower() for m in natural_markers)
-    
-    if has_natural:
-        return "BUENA"
-    
-    # Long translations with comparable word count = likely literal
-    src_words = src.split()
-    tgt_words = tgt.split()
-    if len(src_words) >= 3 and len(tgt_words) >= 3:
-        ratio = len(tgt_words) / max(len(src_words), 1)
-        if 0.5 < ratio < 1.5:  # similar word count
-            return "LITERAL"
-    
-    # Default for short translations
-    return "BUENA"
-
-def is_english(t):
-    """Check if text appears to be English already."""
-    words = t.lower().split()
-    eng_count = sum(1 for w in words for ew in COMMON_ENGLISH if w.strip('.,;:\'"!?') == ew)
-    if eng_count >= 2 and not has_accent(t):
-        return True
-    return False
-
-# ── Process all pairs ──────────────────────────────────────────
-categories = {
-    "BUENA":        [],
-    "LITERAL":      [],
-    "OCR_NOISY":    [],
-    "OCR_GARBAGE":  [],
-    "UNTRANSLATED": [],
-    "ONOMATOPOEIA": [],
-    "ENGLISH":      [],
-}
-
-all_pairs = []
-for r in cp['results']:
-    pg = r['page']
-    for t in r.get('texts', []):
-        src = t.get('src', '')
-        tgt = t.get('tgt', '')
-        if not src and not tgt:
-            continue
-        cat = quality(src, tgt)
-        all_pairs.append((pg, cat, src, tgt))
-        categories[cat].append((pg, src, tgt))
-
-# ── Print report ───────────────────────────────────────────────
-DIV = "=" * 90
-SDIV = "\u2500" * 80  # ─
-
-print(DIV)
-print("  INFORME DE CALIDAD DE TRADUCCION — " + str(len(all_pairs)) + " pares analizados")
-print(DIV)
-print()
-header = f"  {'Categoria':<22s} {'Cant.':>6s} {'Porc.':>7s}"
-print(header)
-print("  " + SDIV[:38])
-total = len(all_pairs)
-for cat in ["BUENA", "LITERAL", "OCR_NOISY", "OCR_GARBAGE", "ONOMATOPOEIA", "ENGLISH", "UNTRANSLATED"]:
-    count = len(categories[cat])
-    pct = count / total * 100 if total else 0
-    icon = {"BUENA": "\u2705", "LITERAL": "\U0001f4d6", "OCR_NOISY": "\u26a0\ufe0f",
-            "OCR_GARBAGE": "\u274c", "ONOMATOPOEIA": "\U0001f50a",
-            "ENGLISH": "\U0001f310", "UNTRANSLATED": "\u2753"}[cat]
-    print(f"  {icon} {cat:<20s} {count:>6d} {pct:>6.1f}%")
-print()
-print(f"  {'TOTAL':<22s} {total:>6d} {100:>6.1f}%")
-print()
-
-# ── Detailed samples ───────────────────────────────────────────
-print()
-print(DIV)
-print("  EJEMPLOS POR CATEGORIA")
-print(DIV)
-
-print()
-print("  \u2705 BUENAS (traducciones correctas y naturales)")
-print("  " + SDIV)
-for pg, src, tgt in categories["BUENA"][:10]:
-    print(f"     Pg {pg:3d}: \"{src[:45]:45s}\"  ->  \"{tgt[:45]:45s}\"")
-
-print()
-print("  \U0001f4d6 LITERALES (correctas pero palabra-por-palabra)")
-print("  " + SDIV)
-for pg, src, tgt in categories["LITERAL"][:10]:
-    print(f"     Pg {pg:3d}: \"{src[:45]:45s}\"  ->  \"{tgt[:45]:45s}\"")
-
-if categories["OCR_NOISY"]:
-    print()
-    print("  \u26a0\ufe0f  OCR RUIDOSO (OCR alucino pero traduccion se recupera)")
-    print("  " + SDIV)
-    for pg, src, tgt in categories["OCR_NOISY"][:10]:
-        print(f"     Pg {pg:3d}: \"{src[:45]:45s}\"  ->  \"{tgt[:45]:45s}\"")
-
-print()
-print("  \u274c OCR BASURA (OCR tan ruidoso que la traduccion es inservible)")
-print("  " + SDIV)
-for pg, src, tgt in categories["OCR_GARBAGE"][:15]:
-    print(f"     Pg {pg:3d}: \"{src[:45]:45s}\"  ->  \"{tgt[:45]:45s}\"")
-
-if categories["ONOMATOPOEIA"]:
-    print()
-    print("  \U0001f50a ONOMATOPEYAS (efectos de sonido, correctamente sin traducir)")
-    print("  " + SDIV)
-    for pg, src, tgt in categories["ONOMATOPOEIA"][:10]:
-        print(f"     Pg {pg:3d}: \"{src[:45]:45s}\"")
-
-if categories["ENGLISH"]:
-    print()
-    print("  \U0001f310 YA EN INGLES (texto ya estaba en ingles)")
-    print("  " + SDIV)
-    for pg, src, tgt in categories["ENGLISH"][:10]:
-        print(f"     Pg {pg:3d}: \"{src[:45]:45s}\"")
-
-if categories["UNTRANSLATED"]:
-    print()
-    print("  \u2753 SIN TRADUCIR (texto quedo igual sin razon aparente)")
-    print("  " + SDIV)
-    for pg, src, tgt in categories["UNTRANSLATED"][:10]:
-        print(f"     Pg {pg:3d}: \"{src[:45]:45s}\"")
-
-# ── Summary ────────────────────────────────────────────────────
-print()
-print(DIV)
-print("  RESUMEN DE CALIDAD")
-print(DIV)
-print()
-good = len(categories["BUENA"]) + len(categories["LITERAL"]) + len(categories["OCR_NOISY"])
-sfx = len(categories["ONOMATOPOEIA"])
-garbage = len(categories["OCR_GARBAGE"])
-other = len(categories["ENGLISH"]) + len(categories["UNTRANSLATED"])
-
-print(f"  \U0001f7e2 Aceptables (BUENA + LITERAL + OCR_NOISY):   {good:3d}/{total} ({good/total*100:5.1f}%)")
-print(f"  \U0001f50a Onomatopeyas correctamente ignoradas:     {sfx:3d}/{total} ({sfx/total*100:5.1f}%)")
-print(f"  \U0001f534 Traducciones basura (OCR_GARBAGE):         {garbage:3d}/{total} ({garbage/total*100:5.1f}%)")
-print(f"  \u26aa Otros (ingles + sin traducir):               {other:3d}/{total} ({other/total*100:5.1f}%)")
-print()
-acceptance = (good + sfx) / total * 100
-print(f"  \U0001f3c6 Tasa de aceptacion global: {acceptance:.1f}%")
-print(f"     (aceptamos: traducciones correctas + onomatopeyas)")
-print()
-
-# ── All garbage list ──────────────────────────────────────────
-if categories["OCR_GARBAGE"]:
-    print()
-    print("  LISTA COMPLETA DE TRADUCCIONES BASURA:")
-    print("  " + SDIV)
-    for pg, src, tgt in categories["OCR_GARBAGE"]:
-        print(f"     Pg {pg:3d}: \"{src[:50]:50s}\"  ->  \"{tgt[:50]:50s}\"")
-
-# ── Summary by page ────────────────────────────────────────────
-print()
-print(DIV)
-print("  PAGINAS CON PEOR CALIDAD")
-print(DIV)
-print()
-# Rank pages by number of garbage blocks
-from collections import Counter
-garbage_by_page = Counter()
-for pg, cat, src, tgt in all_pairs:
-    if cat == "OCR_GARBAGE":
-        garbage_by_page[pg] += 1
-if garbage_by_page:
-    for pg, count in garbage_by_page.most_common(10):
-        print(f"     Pag {pg:3d}: {count} bloque(s) basura")
+if __name__ == "__main__":
+    raise SystemExit(main())

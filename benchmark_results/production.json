@@ -1,0 +1,104 @@
+{
+ "benchmark": "benchmark_production.py",
+ "pdf": "Capítulo 43 de Cómo criar villanos correctamente.pdf",
+ "scale_pdfjs": 1.2,
+ "pages": [
+  1,
+  4,
+  7,
+  8,
+  11
+ ],
+ "avg_s_per_page": 8.889,
+ "total_s": 44.443,
+ "trigger_v42_count": 0,
+ "yolo_pages": 0,
+ "ctd_pages": 0,
+ "per_page": {
+  "1": {
+   "total_s": 15.539,
+   "n_blocks": 7,
+   "avg_conf": 0.808,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "stages": {
+    "prefilter": 0.514,
+    "rapid": 7.667,
+    "ruta_c": 6.596
+   },
+   "calls": {
+    "prefilter": 5,
+    "rapid": 34,
+    "ruta_c": 6
+   }
+  },
+  "4": {
+   "total_s": 11.644,
+   "n_blocks": 9,
+   "avg_conf": 0.831,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "stages": {
+    "prefilter": 0.544,
+    "rapid": 8.586,
+    "ruta_c": 8.432
+   },
+   "calls": {
+    "prefilter": 4,
+    "rapid": 27,
+    "ruta_c": 5
+   }
+  },
+  "7": {
+   "total_s": 6.962,
+   "n_blocks": 7,
+   "avg_conf": 0.951,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "stages": {
+    "prefilter": 0.584,
+    "rapid": 4.501,
+    "ruta_c": 4.325
+   },
+   "calls": {
+    "prefilter": 3,
+    "rapid": 18,
+    "ruta_c": 3
+   }
+  },
+  "8": {
+   "total_s": 4.875,
+   "n_blocks": 8,
+   "avg_conf": 0.917,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "stages": {
+    "prefilter": 0.512,
+    "rapid": 3.799,
+    "ruta_c": 3.619
+   },
+   "calls": {
+    "prefilter": 2,
+    "rapid": 12,
+    "ruta_c": 2
+   }
+  },
+  "11": {
+   "total_s": 5.422,
+   "n_blocks": 9,
+   "avg_conf": 0.781,
+   "engine": "fusion",
+   "trigger_v42": false,
+   "stages": {
+    "prefilter": 0.505,
+    "rapid": 4.207,
+    "ruta_c": 3.891
+   },
+   "calls": {
+    "prefilter": 1,
+    "rapid": 7,
+    "ruta_c": 1
+   }
+  }
+ }
+}

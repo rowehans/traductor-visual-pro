@@ -1,0 +1,325 @@
+{
+ "interp": {
+  "param": "interp",
+  "label": "interpolación del upscale",
+  "desc": "INTER_CUBIC → INTER_LINEAR (más rápido en CPU)",
+  "reps": 3,
+  "avg_base_s": 2.816,
+  "avg_alt_s": 2.693,
+  "delta_avg_s": -0.123,
+  "pct_change": -4.4,
+  "control_pages": [
+   2,
+   5
+  ],
+  "control_drift_s": 0.181,
+  "control_drift_max_s": 0.456,
+  "effect_affected_s": -0.245,
+  "verdict": "✗ NO CONCLUYENTE — el noise-floor de control (0.456s) es del orden o mayor que el Δ de las afectadas (-0.245s); re-corre con --reps N",
+  "blocks_base": 49,
+  "blocks_alt": 47,
+  "delta_blocks": -2,
+  "easyocr_crops_base": 7,
+  "easyocr_crops_alt": 8,
+  "per_page": {
+   "1": {
+    "base": {
+     "total_s": 2.3687267303466797,
+     "n_blocks": 6,
+     "avg_conf": 0.747,
+     "texts": [
+      "AAHH...",
+      "LUCHUUJINNANGASCOM",
+      "RIMER ARAY",
+      "S E",
+      "SEOLLANG OIIEN SEOLLANG OUIEN",
+      "け"
+     ],
+     "stages": {
+      "prefilter": 0.648,
+      "rapid": 0.272,
+      "yolo": 0.179,
+      "ruta_c": 0.731
+     },
+     "easyocr_crops": 1
+    },
+    "alt": {
+     "total_s": 2.3974685668945312,
+     "n_blocks": 5,
+     "avg_conf": 0.757,
+     "texts": [
+      "AAHH...",
+      "RIMER ARAY",
+      "SEOLLANGOUEN SEOLLANG OWEN",
+      "UCHUUJINMANGASCOM",
+      "け"
+     ],
+     "stages": {
+      "prefilter": 0.682,
+      "rapid": 0.431,
+      "yolo": 0.089,
+      "ruta_c": 0.788
+     },
+     "easyocr_crops": 2
+    }
+   },
+   "4": {
+    "base": {
+     "total_s": 4.475269556045532,
+     "n_blocks": 8,
+     "avg_conf": 0.779,
+     "texts": [
+      "BABAYAGA.QUESIEMPREHA SIDO TANIMPREDECIBLE Y-por_supuestol.gu Y.por_supuesto!.gu presfigjosareputacion presfigjosdreputacion seria uf buen agregado! seria un buen agregado",
+      "CONTROLARALAPRIMERA",
+      "ESTA RELACIONADO CON",
+      "LA CARDENALDELSANTO REINO, YUTIA BLOODIA...",
+      "PODRIA USARLO PARA",
+      "Wojyrgmiwimmml",
+      "YA QUETAMBIEN",
+      "鼻"
+     ],
+     "stages": {
+      "prefilter": 0.72,
+      "rapid": 0.254,
+      "yolo": 0.09,
+      "ruta_c": 1.447
+     },
+     "easyocr_crops": 4
+    },
+    "alt": {
+     "total_s": 4.823092222213745,
+     "n_blocks": 7,
+     "avg_conf": 0.943,
+     "texts": [
+      "BABAYAGA.QUESIEMPREHA SIDO TANIMPREDECIBLE Y.por_supuesto!.su prestigioso reputación prestigioso reputación seria u buenagregadol seria un buen agregado",
+      "CONTROLARALAPRIMERA",
+      "ESTARELACIONADO CON",
+      "LACARDENALDELSANTO REINO, YUTIA BLOODIA...",
+      "PODRIA USARLO PARA",
+      "YA QUETAMBIEN",
+      "por_supuesto!.su"
+     ],
+     "stages": {
+      "prefilter": 0.844,
+      "rapid": 0.263,
+      "yolo": 0.201,
+      "ruta_c": 1.516
+     },
+     "easyocr_crops": 4
+    }
+   },
+   "7": {
+    "base": {
+     "total_s": 4.251467704772949,
+     "n_blocks": 7,
+     "avg_conf": 0.859,
+     "texts": [
+      "HHONSINOSNS E",
+      "LASTRADICIONESSON IMPORTANTES.PERO ASEGURARSUAPOYO ESPRIORIDAD.",
+      "LQUEESLO QUE HABRA",
+      "MAJESTAD",
+      "PENSEQUENUES- TRA RELACIONIBA ENLA DIRECCION CORRECTA...",
+      "SUCEDIDOP",
+      "Su"
+     ],
+     "stages": {
+      "prefilter": 0.845,
+      "rapid": 0.188,
+      "yolo": 0.177,
+      "ruta_c": 1.045
+     },
+     "easyocr_crops": 0
+    },
+    "alt": {
+     "total_s": 3.9488399028778076,
+     "n_blocks": 7,
+     "avg_conf": 0.924,
+     "texts": [
+      "LASTRADICIONESSON IMPORTANTES.PERO ASSSURARSUAPOYO ESPRIORIDAD",
+      "MAJESTAD",
+      "PENSEQUENUES- TRRRELACIONIBA ENLADIRECCION CORRECTA...",
+      "QUE HABRA SUCEDIDO?",
+      "QUEESLO",
+      "SUSONRISANOHA DESAPARECIDODESU ROSTRODESDE QUELLEGO.",
+      "Su"
+     ],
+     "stages": {
+      "prefilter": 0.625,
+      "rapid": 0.312,
+      "yolo": 0.091,
+      "ruta_c": 0.756
+     },
+     "easyocr_crops": 0
+    }
+   },
+   "8": {
+    "base": {
+     "total_s": 2.7418439388275146,
+     "n_blocks": 8,
+     "avg_conf": 0.912,
+     "texts": [
+      "DIGO,A",
+      "EME PODPiA..",
+      "EUNREGALOTAN",
+      "MIPROFESOR",
+      "OFRECIOALCONDE PRLATIO...",
+      "PROBLEMATICO'P",
+      "SVERDAD QUELE",
+      "UCHUUJINNANGASCON"
+     ],
+     "stages": {
+      "prefilter": 0.644,
+      "rapid": 0.386,
+      "yolo": 0.094,
+      "ruta_c": 1.079
+     },
+     "easyocr_crops": 1
+    },
+    "alt": {
+     "total_s": 1.9680638313293457,
+     "n_blocks": 8,
+     "avg_conf": 0.906,
+     "texts": [
+      "DIGO,A",
+      "EME PODPiA..",
+      "LNREGALOTAN",
+      "MIPROFESOR",
+      "OFRECIORLCONDE PRLATIO....",
+      "PROBLEMATICO'?",
+      "SVERDRDQUELE",
+      "UCHUUJINMANGASCON"
+     ],
+     "stages": {
+      "prefilter": 0.777,
+      "rapid": 0.223,
+      "yolo": 0.092,
+      "ruta_c": 0.488
+     },
+     "easyocr_crops": 1
+    }
+   },
+   "11": {
+    "base": {
+     "total_s": 3.0928823947906494,
+     "n_blocks": 10,
+     "avg_conf": 0.714,
+     "texts": [
+      "1 目",
+      "JINO QUJERO IR AHI!!!",
+      "MELF",
+      "POR FAVOR!!",
+      "S O ONG",
+      "SERRE",
+      "iAAAHI iNO!",
+      "iPOR.",
+      "iiME OPONGO!!",
+      "‥"
+     ],
+     "stages": {
+      "prefilter": 0.65,
+      "rapid": 0.582,
+      "yolo": 0.09,
+      "ruta_c": 1.068
+     },
+     "easyocr_crops": 1
+    },
+    "alt": {
+     "total_s": 2.5693602561950684,
+     "n_blocks": 10,
+     "avg_conf": 0.71,
+     "texts": [
+      "7 目",
+      "JINO QUJERO IR AHI!!",
+      "MELF",
+      "POR FAVORII",
+      "S O ON",
+      "SERRE",
+      "iAAAHI iNO!",
+      "iPOR.",
+      "iiMEOPONGO!!",
+      "‥"
+     ],
+     "stages": {
+      "prefilter": 0.751,
+      "rapid": 0.29,
+      "yolo": 0.104,
+      "ruta_c": 1.043
+     },
+     "easyocr_crops": 1
+    }
+   },
+   "2": {
+    "base": {
+     "total_s": 1.3712754249572754,
+     "n_blocks": 7,
+     "avg_conf": 0.788,
+     "texts": [
+      "AJNQUE HAVASIOC",
+      "ETRAICION,NPOURIA ARRESTARLA..",
+      "QUEDAN2BABAYAGAS2ELAS5 RGNAIFSVNECESI3JNA FUERZAABRMADORA",
+      "SUI DISTANCAAMENOS QUE NECESARAALGO,SE HA VUELTO HOSTIL.",
+      "UNFIAGRANIE ACO",
+      "VAACTUAIMENSGLO",
+      "鑑"
+     ],
+     "stages": {
+      "prefilter": 0.622,
+      "rapid": 0.364
+     },
+     "easyocr_crops": 0
+    },
+    "alt": {
+     "total_s": 1.8271987438201904,
+     "n_blocks": 7,
+     "avg_conf": 0.788,
+     "texts": [
+      "AJNQUE HAVASIOC",
+      "ETRAICION,NPOURIA ARRESTARLA..",
+      "QUEDAN2BABAYAGAS2ELAS5 RGNAIFSVNECESI3JNA FUERZAABRMADORA",
+      "SUI DISTANCAAMENOS QUE NECESARAALGO,SE HA VUELTO HOSTIL.",
+      "UNFIAGRANIE ACO",
+      "VAACTUAIMENSGLO",
+      "鑑"
+     ],
+     "stages": {
+      "prefilter": 0.511,
+      "rapid": 0.617
+     },
+     "easyocr_crops": 0
+    }
+   },
+   "5": {
+    "base": {
+     "total_s": 1.4093270301818848,
+     "n_blocks": 3,
+     "avg_conf": 0.828,
+     "texts": [
+      ".HOY, LUEGO DE",
+      "EE",
+      "VERLASAAMBAS...."
+     ],
+     "stages": {
+      "prefilter": 0.396,
+      "rapid": 0.416
+     },
+     "easyocr_crops": 0
+    },
+    "alt": {
+     "total_s": 1.315068006515503,
+     "n_blocks": 3,
+     "avg_conf": 0.828,
+     "texts": [
+      ".HOY, LUEGO DE",
+      "EE",
+      "VERLASAAMBAS...."
+     ],
+     "stages": {
+      "prefilter": 0.459,
+      "rapid": 0.457
+     },
+     "easyocr_crops": 0
+    }
+   }
+  }
+ }
+}

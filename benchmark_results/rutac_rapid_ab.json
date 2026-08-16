@@ -1,0 +1,1175 @@
+{
+ "rapid_box": {
+  "param": "rapid_box",
+  "label": "box_thresh de RapidOCR en crops de la Ruta C",
+  "desc": "0.5 (default) → 0.35: detecta cajas más débiles (más bloques, más lento)",
+  "avg_base_s": 6.692,
+  "avg_alt_s": 5.256,
+  "delta_avg_s": -1.436,
+  "pct_change": -21.5,
+  "blocks_base": 107,
+  "blocks_alt": 106,
+  "delta_blocks": -1,
+  "easyocr_crops_base": 13,
+  "easyocr_crops_alt": 13,
+  "per_page": {
+   "base": {
+    "1": {
+     "total_s": 4.7,
+     "n_blocks": 7,
+     "avg_conf": 0.808,
+     "texts": [
+      "AAHH...",
+      "INCREIBLE",
+      "INCREIBLE",
+      "RIMER ARAY",
+      "SEOLLANG O!WIEN SEOLLANG OIEN",
+      "UEHUUJINMANGAS.CON",
+      "け"
+     ],
+     "stages": {
+      "prefilter": 0.496,
+      "rapid": 3.667,
+      "ruta_c": 3.395
+     },
+     "easyocr_crops": 1
+    },
+    "4": {
+     "total_s": 12.907,
+     "n_blocks": 9,
+     "avg_conf": 0.831,
+     "texts": [
+      "CONTROLARALAPRIMERA BABAYAGA.QUESIEMPREHA SIDOTANIMPREDECIBLE prestigiosa reputación",
+      "ESTARELACIONADO CON",
+      "LACARDENALDELSANTO REINO,YUTIA BLOODIA...",
+      "PODRIAUSARLOPARA",
+      "YAQUETAMBIEN",
+      "YSIHUBIESE ACEPTADO..",
+      "nsosondns-od nsosondns-od- osareputacion",
+      "心",
+      "目 1"
+     ],
+     "stages": {
+      "prefilter": 0.543,
+      "rapid": 8.997,
+      "ruta_c": 8.817
+     },
+     "easyocr_crops": 2
+    },
+    "7": {
+     "total_s": 6.613,
+     "n_blocks": 7,
+     "avg_conf": 0.951,
+     "texts": [
+      "DESAPARECIDODESU HONSINOSS ROSTRODESDE QUELLEGO..",
+      "LASTRADICIONESSON IMPORTANTES,PERO ASEGURARSUAPOYO ESPRIORIDAD.",
+      "MAJESTAD.",
+      "PENSEQUENUES- TRRRELACIONIBA ENLADIRECCION CORRECTA...",
+      "QUEHABRA",
+      "SUCEDIDO?",
+      "ns"
+     ],
+     "stages": {
+      "prefilter": 0.572,
+      "rapid": 4.169,
+      "ruta_c": 4.034
+     },
+     "easyocr_crops": 0
+    },
+    "8": {
+     "total_s": 4.562,
+     "n_blocks": 8,
+     "avg_conf": 0.917,
+     "texts": [
+      "DIGO,A",
+      "EME PODPiA..",
+      "EUNREGALOTAN",
+      "MIPROFESOR",
+      "OFRECIOALCONDE PRLATIO",
+      "PROBLEMATICO'?",
+      "SVERDRDQUELE",
+      "UCHUUJINMANGAS.CON"
+     ],
+     "stages": {
+      "prefilter": 0.499,
+      "rapid": 3.485,
+      "ruta_c": 3.319
+     },
+     "easyocr_crops": 1
+    },
+    "11": {
+     "total_s": 5.129,
+     "n_blocks": 9,
+     "avg_conf": 0.781,
+     "texts": [
+      "ION!IHUUU!",
+      "JINOQUJERO IRAHI!!",
+      "JiMEOPONGO!!",
+      "MELF",
+      "NODEESTA FORMA...",
+      "PORFAVOR!!",
+      "SERRE",
+      "iPOR.",
+      "‥"
+     ],
+     "stages": {
+      "prefilter": 0.505,
+      "rapid": 3.928,
+      "ruta_c": 3.678
+     },
+     "easyocr_crops": 1
+    },
+    "2": {
+     "total_s": 1.816,
+     "n_blocks": 7,
+     "avg_conf": 0.788,
+     "texts": [
+      "AJNQUE HAVASIOC",
+      "ETRAICION,NPOURIA ARRESTARLA..",
+      "QUEDAN2BABAYAGAS2ELAS5 RGNAIFSVNECESI3JNA FUERZAABRMADORA",
+      "SUI DISTANCAAMENOS QUE NECESARAALGO,SE HA VUELTO HOSTIL.",
+      "UNFIAGRANIE ACO",
+      "VAACTUAIMENSGLO",
+      "鑑"
+     ],
+     "stages": {
+      "prefilter": 0.442,
+      "rapid": 0.996
+     },
+     "easyocr_crops": 0
+    },
+    "5": {
+     "total_s": 1.091,
+     "n_blocks": 3,
+     "avg_conf": 0.828,
+     "texts": [
+      ".HOY, LUEGO DE",
+      "EE",
+      "VERLASAAMBAS...."
+     ],
+     "stages": {
+      "prefilter": 0.423,
+      "rapid": 0.291
+     },
+     "easyocr_crops": 0
+    },
+    "29": {
+     "total_s": 10.616,
+     "n_blocks": 9,
+     "avg_conf": 0.859,
+     "texts": [
+      "330 SUVOLUNTAD?",
+      "ASiQUESEGUi",
+      "CULESELVEDADE RONOMBREOEIOS PIOSES CYTURNOS?",
+      "POSMISTEA9OSVOOSCOSOSNITUAISDEL CEANDIOSCMIDADO?",
+      "PREGUNTANDOENELORDEN QUELASPREPARE,PERO.",
+      "SCOSOSRTUASDCI CREN DIOSCODACDP YICSARCHIVOSDC 10MASPRCGUNDO DELATORREY YICSARCHIVOSDC 10MASPRCSUNDO DELATORRE?",
+      "SIEMPREFUERON SIMPLES.",
+      "SUSRESPUESTAS",
+      "YSIMPIEMENTEDESCRIBENLA SITLACIONACTUALESO ESTCDO IOCUCPUEDODECIR."
+     ],
+     "stages": {
+      "prefilter": 0.549,
+      "rapid": 8.03,
+      "ruta_c": 8.052
+     },
+     "easyocr_crops": 2
+    },
+    "39": {
+     "total_s": 8.78,
+     "n_blocks": 7,
+     "avg_conf": 0.902,
+     "texts": [
+      "EVAN SEOLLANG. SEOLLANG",
+      "EVAN,",
+      "FLAP",
+      "PERDONPOR LADEMORA.",
+      "U",
+      "UETUNAGATLUEGU TEPUEDESIR. TEPUEDESIR.",
+      "口"
+     ],
+     "stages": {
+      "prefilter": 0.524,
+      "rapid": 6.173,
+      "ruta_c": 6.187
+     },
+     "easyocr_crops": 2
+    },
+    "43": {
+     "total_s": 8.536,
+     "n_blocks": 12,
+     "avg_conf": 0.907,
+     "texts": [
+      "ACUERDOBIEN,",
+      "AHBUENO,QUERIA",
+      "AUN Así AUN Así",
+      "DESEARTEENPERSONA",
+      "ELREYDEKOLONIEN LRSPUERTASDELA CIUDRD?",
+      "ENVIEUNMENSAJE,PERO GRACIRSPORVENIR.",
+      "ESTREMECERSE INCLINARSE ESTREMECERSE INCLINARSE",
+      "NS?EONO? MAJESTAD?",
+      "O",
+      "PARECIASESTAR",
+      "SIME",
+      "TENIASUNREGALO QUEOFRECERLE,"
+     ],
+     "stages": {
+      "prefilter": 0.533,
+      "rapid": 6.205,
+      "ruta_c": 6.014
+     },
+     "easyocr_crops": 0
+    },
+    "46": {
+     "total_s": 8.064,
+     "n_blocks": 7,
+     "avg_conf": 0.961,
+     "texts": [
+      "ARGH ARGH",
+      "GRACIAS,PERONO MEREZCOTANTO.",
+      "INSISTO. INSISTO.",
+      "ISOLO ESUN REGALO! iSINMOTIVOS",
+      "OCULTOS!",
+      "SERRE ACEPTELO! OE jASi",
+      "SOLAMENTETELO OFREZCOPORQUEME AGRADAS,NOCREAS QUETENGOOTRAS INTENCIONES!"
+     ],
+     "stages": {
+      "prefilter": 0.528,
+      "rapid": 5.73,
+      "ruta_c": 5.592
+     },
+     "easyocr_crops": 0
+    },
+    "47": {
+     "total_s": 6.987,
+     "n_blocks": 7,
+     "avg_conf": 0.917,
+     "texts": [
+      "..ESTABIEN.",
+      "CLUNG",
+      "CLUNG CLUNG",
+      "CLUNG' CLUNG",
+      "ESECASO..",
+      "TOOOS LOS JUEVES Y MAS EN",
+      "UUH...E EN"
+     ],
+     "stages": {
+      "prefilter": 0.543,
+      "rapid": 4.536,
+      "ruta_c": 4.463
+     },
+     "easyocr_crops": 2
+    },
+    "50": {
+     "total_s": 6.627,
+     "n_blocks": 5,
+     "avg_conf": 0.886,
+     "texts": [
+      "CLARO Si H CLARO QUESi. 'S",
+      "EAuNQUIE-",
+      "HACE MUCHO TIEMPO QUE NO MESENTIA TAN Tranquilo LO.PARECESER QUE PORFIN PODREMOS PALIAR ALGO DEL DEFICIT DELCONDADO.",
+      "RESUNAVIDA TRANQUILA?",
+      "SEPAROSUS MONEOASDEOROEN PEDUENASBOLSAS PARACALMARSUS NERVIOS."
+     ],
+     "stages": {
+      "prefilter": 0.523,
+      "rapid": 4.134,
+      "ruta_c": 4.03
+     },
+     "easyocr_crops": 1
+    },
+    "52": {
+     "total_s": 7.266,
+     "n_blocks": 10,
+     "avg_conf": 0.919,
+     "texts": [
+      "EPERDON?",
+      "EVAN,QUIERO",
+      "JENVERDAD",
+      "PATATASPARA LACENA.",
+      "PORLO",
+      "PROFESIONALDE LAPATATA",
+      "QUEVIAYER",
+      "QUIERESVOLVERA COMERLASHOY?",
+      "er DIGASQUE..? NO ENOME",
+      "irnnnn"
+     ],
+     "stages": {
+      "prefilter": 0.498,
+      "rapid": 4.776,
+      "ruta_c": 4.674
+     },
+     "easyocr_crops": 1
+    }
+   },
+   "alt": {
+    "1": {
+     "total_s": 4.54,
+     "n_blocks": 7,
+     "avg_conf": 0.808,
+     "texts": [
+      "AAHH...",
+      "INCREIBLE",
+      "INCREIBLE",
+      "RIMER ARAY",
+      "SEOLLANG O!WIEN SEOLLANG OIEN",
+      "UEHUUJINMANGAS.CON",
+      "け"
+     ],
+     "stages": {
+      "prefilter": 0.534,
+      "rapid": 3.497,
+      "ruta_c": 3.244
+     },
+     "easyocr_crops": 1
+    },
+    "4": {
+     "total_s": 7.876,
+     "n_blocks": 8,
+     "avg_conf": 0.832,
+     "texts": [
+      "CONTROLARALAPRIMERA BABAYAGA.QUESIEMPREHA SIDOTANIMPREDECIBLE prestigiosa reputación seria buen agregado! nsosondns-od- prestiak osareputacion nsosondns-od seria uni buen agregadol",
+      "ESTARELACIONADO CON",
+      "LACARDENALDELSANTO REINO,YUTIA BLOODIA...",
+      "PODRIAUSARLOPARA",
+      "YAQUETAMBIEN",
+      "YSIHUBIESE ACEPTADO..",
+      "心",
+      "目 1"
+     ],
+     "stages": {
+      "prefilter": 0.522,
+      "rapid": 5.407,
+      "ruta_c": 5.344
+     },
+     "easyocr_crops": 2
+    },
+    "7": {
+     "total_s": 4.561,
+     "n_blocks": 7,
+     "avg_conf": 0.951,
+     "texts": [
+      "DESAPARECIDODESU HONSINOSS ROSTRODESDE QUELLEGO..",
+      "LASTRADICIONESSON IMPORTANTES,PERO ASEGURARSUAPOYO ESPRIORIDAD.",
+      "MAJESTAD.",
+      "PENSEQUENUES- TRRRELACIONIBA ENLADIRECCION CORRECTA...",
+      "QUEHABRA",
+      "SUCEDIDO?",
+      "ns"
+     ],
+     "stages": {
+      "prefilter": 0.563,
+      "rapid": 2.24,
+      "ruta_c": 2.059
+     },
+     "easyocr_crops": 0
+    },
+    "8": {
+     "total_s": 3.291,
+     "n_blocks": 8,
+     "avg_conf": 0.917,
+     "texts": [
+      "DIGO,A",
+      "EME PODPiA..",
+      "EUNREGALOTAN",
+      "MIPROFESOR",
+      "OFRECIOALCONDE PRLATIO",
+      "PROBLEMATICO'?",
+      "SVERDRDQUELE",
+      "UCHUUJINMANGAS.CON"
+     ],
+     "stages": {
+      "prefilter": 0.504,
+      "rapid": 2.225,
+      "ruta_c": 2.092
+     },
+     "easyocr_crops": 1
+    },
+    "11": {
+     "total_s": 3.808,
+     "n_blocks": 9,
+     "avg_conf": 0.781,
+     "texts": [
+      "ION!IHUUU!",
+      "JINOQUJERO IRAHI!!",
+      "JiMEOPONGO!!",
+      "MELF",
+      "NODEESTA FORMA...",
+      "PORFAVOR!!",
+      "SERRE",
+      "iPOR.",
+      "‥"
+     ],
+     "stages": {
+      "prefilter": 0.505,
+      "rapid": 2.665,
+      "ruta_c": 2.459
+     },
+     "easyocr_crops": 1
+    },
+    "2": {
+     "total_s": 1.276,
+     "n_blocks": 7,
+     "avg_conf": 0.788,
+     "texts": [
+      "AJNQUE HAVASIOC",
+      "ETRAICION,NPOURIA ARRESTARLA..",
+      "QUEDAN2BABAYAGAS2ELAS5 RGNAIFSVNECESI3JNA FUERZAABRMADORA",
+      "SUI DISTANCAAMENOS QUE NECESARAALGO,SE HA VUELTO HOSTIL.",
+      "UNFIAGRANIE ACO",
+      "VAACTUAIMENSGLO",
+      "鑑"
+     ],
+     "stages": {
+      "prefilter": 0.45,
+      "rapid": 0.367
+     },
+     "easyocr_crops": 0
+    },
+    "5": {
+     "total_s": 1.073,
+     "n_blocks": 3,
+     "avg_conf": 0.828,
+     "texts": [
+      ".HOY, LUEGO DE",
+      "EE",
+      "VERLASAAMBAS...."
+     ],
+     "stages": {
+      "prefilter": 0.411,
+      "rapid": 0.293
+     },
+     "easyocr_crops": 0
+    },
+    "29": {
+     "total_s": 8.196,
+     "n_blocks": 9,
+     "avg_conf": 0.859,
+     "texts": [
+      "330 SUVOLUNTAD?",
+      "ASiQUESEGUi",
+      "CULESELVEDADE RONOMBREOEIOS PIOSES CYTURNOS?",
+      "POSMISTEA9OSVOOSCOSOSNITUAISDEL CEANDIOSCMIDADO?",
+      "PREGUNTANDOENELORDEN QUELASPREPARE,PERO.",
+      "SCOSOSRTUASDCI CREN DIOSCODACDP YICSARCHIVOSDC 10MASPRCGUNDO DELATORREY YICSARCHIVOSDC 10MASPRCSUNDO DELATORRE?",
+      "SIEMPREFUERON SIMPLES.",
+      "SUSRESPUESTAS",
+      "YSIMPIEMENTEDESCRIBENLA SITLACIONACTUALESO ESTCDO IOCUCPUEDODECIR."
+     ],
+     "stages": {
+      "prefilter": 0.53,
+      "rapid": 5.766,
+      "ruta_c": 5.66
+     },
+     "easyocr_crops": 2
+    },
+    "39": {
+     "total_s": 6.982,
+     "n_blocks": 7,
+     "avg_conf": 0.902,
+     "texts": [
+      "EVAN SEOLLANG. SEOLLANG",
+      "EVAN,",
+      "FLAP",
+      "PERDONPOR LADEMORA.",
+      "U",
+      "UETUNAGATLUEGU TEPUEDESIR. TEPUEDESIR.",
+      "口"
+     ],
+     "stages": {
+      "prefilter": 0.527,
+      "rapid": 4.511,
+      "ruta_c": 4.5
+     },
+     "easyocr_crops": 2
+    },
+    "43": {
+     "total_s": 6.875,
+     "n_blocks": 12,
+     "avg_conf": 0.907,
+     "texts": [
+      "ACUERDOBIEN,",
+      "AHBUENO,QUERIA",
+      "AUN Así AUN Así",
+      "DESEARTEENPERSONA",
+      "ELREYDEKOLONIEN LRSPUERTASDELA CIUDRD?",
+      "ENVIEUNMENSAJE,PERO GRACIRSPORVENIR.",
+      "ESTREMECERSE INCLINARSE ESTREMECERSE INCLINARSE",
+      "NS?EONO? MAJESTAD?",
+      "O",
+      "PARECIASESTAR",
+      "SIME",
+      "TENIASUNREGALO QUEOFRECERLE,"
+     ],
+     "stages": {
+      "prefilter": 0.537,
+      "rapid": 4.678,
+      "ruta_c": 4.26
+     },
+     "easyocr_crops": 0
+    },
+    "46": {
+     "total_s": 6.821,
+     "n_blocks": 7,
+     "avg_conf": 0.961,
+     "texts": [
+      "ARGH ARGH",
+      "GRACIAS,PERONO MEREZCOTANTO.",
+      "INSISTO. INSISTO.",
+      "ISOLO ESUN REGALO! iSINMOTIVOS",
+      "OCULTOS!",
+      "SERRE ACEPTELO! OE jASi",
+      "SOLAMENTETELO OFREZCOPORQUEME AGRADAS,NOCREAS QUETENGOOTRAS INTENCIONES!"
+     ],
+     "stages": {
+      "prefilter": 0.502,
+      "rapid": 4.521,
+      "ruta_c": 4.387
+     },
+     "easyocr_crops": 0
+    },
+    "47": {
+     "total_s": 6.262,
+     "n_blocks": 7,
+     "avg_conf": 0.917,
+     "texts": [
+      "..ESTABIEN.",
+      "CLUNG",
+      "CLUNG CLUNG",
+      "CLUNG' CLUNG",
+      "ESECASO..",
+      "TOOOS LOS JUEVES Y MAS EN",
+      "UUH...E EN"
+     ],
+     "stages": {
+      "prefilter": 0.533,
+      "rapid": 3.802,
+      "ruta_c": 3.765
+     },
+     "easyocr_crops": 2
+    },
+    "50": {
+     "total_s": 5.459,
+     "n_blocks": 5,
+     "avg_conf": 0.886,
+     "texts": [
+      "CLARO Si H CLARO QUESi. 'S",
+      "EAuNQUIE-",
+      "HACE MUCHO TIEMPO QUE NO MESENTIA TAN Tranquilo LO.PARECESER QUE PORFIN PODREMOS PALIAR ALGO DEL DEFICIT DELCONDADO.",
+      "RESUNAVIDA TRANQUILA?",
+      "SEPAROSUS MONEOASDEOROEN PEDUENASBOLSAS PARACALMARSUS NERVIOS."
+     ],
+     "stages": {
+      "prefilter": 0.52,
+      "rapid": 2.993,
+      "ruta_c": 2.861
+     },
+     "easyocr_crops": 1
+    },
+    "52": {
+     "total_s": 6.564,
+     "n_blocks": 10,
+     "avg_conf": 0.916,
+     "texts": [
+      "EPERDON?",
+      "EVAN,QUIERO",
+      "JENVERDAD",
+      "PATATASPARA LACENA.",
+      "PORLO",
+      "PROFESIONALDE LAPATATA",
+      "QUEVIAYER",
+      "QUIERESVOLVERA COMERLASHOY?",
+      "er DIGASQUE..? NO ENOME",
+      "ia irnnnn"
+     ],
+     "stages": {
+      "prefilter": 0.507,
+      "rapid": 4.062,
+      "ruta_c": 3.982
+     },
+     "easyocr_crops": 1
+    }
+   }
+  }
+ },
+ "rapid_unclip": {
+  "param": "rapid_unclip",
+  "label": "unclip_ratio de RapidOCR en crops de la Ruta C",
+  "desc": "1.6 (default) → 2.2 (params agresivos): cajas más grandes tras la máscara",
+  "avg_base_s": 5.299,
+  "avg_alt_s": 6.167,
+  "delta_avg_s": 0.868,
+  "pct_change": 16.4,
+  "blocks_base": 107,
+  "blocks_alt": 93,
+  "delta_blocks": -14,
+  "easyocr_crops_base": 13,
+  "easyocr_crops_alt": 17,
+  "per_page": {
+   "base": {
+    "1": {
+     "total_s": 4.705,
+     "n_blocks": 7,
+     "avg_conf": 0.808,
+     "texts": [
+      "AAHH...",
+      "INCREIBLE",
+      "INCREIBLE",
+      "RIMER ARAY",
+      "SEOLLANG O!WIEN SEOLLANG OIEN",
+      "UEHUUJINMANGAS.CON",
+      "け"
+     ],
+     "stages": {
+      "prefilter": 0.51,
+      "rapid": 3.666,
+      "ruta_c": 3.397
+     },
+     "easyocr_crops": 1
+    },
+    "4": {
+     "total_s": 7.48,
+     "n_blocks": 9,
+     "avg_conf": 0.831,
+     "texts": [
+      "CONTROLARALAPRIMERA BABAYAGA.QUESIEMPREHA SIDOTANIMPREDECIBLE prestigiosa reputación",
+      "ESTARELACIONADO CON",
+      "LACARDENALDELSANTO REINO,YUTIA BLOODIA...",
+      "PODRIAUSARLOPARA",
+      "YAQUETAMBIEN",
+      "YSIHUBIESE ACEPTADO..",
+      "nsosondns-od nsosondns-od- osareputacion",
+      "心",
+      "目 1"
+     ],
+     "stages": {
+      "prefilter": 0.564,
+      "rapid": 4.877,
+      "ruta_c": 4.813
+     },
+     "easyocr_crops": 2
+    },
+    "7": {
+     "total_s": 4.876,
+     "n_blocks": 7,
+     "avg_conf": 0.951,
+     "texts": [
+      "DESAPARECIDODESU HONSINOSS ROSTRODESDE QUELLEGO..",
+      "LASTRADICIONESSON IMPORTANTES,PERO ASEGURARSUAPOYO ESPRIORIDAD.",
+      "MAJESTAD.",
+      "PENSEQUENUES- TRRRELACIONIBA ENLADIRECCION CORRECTA...",
+      "QUEHABRA",
+      "SUCEDIDO?",
+      "ns"
+     ],
+     "stages": {
+      "prefilter": 0.58,
+      "rapid": 2.431,
+      "ruta_c": 2.25
+     },
+     "easyocr_crops": 0
+    },
+    "8": {
+     "total_s": 3.185,
+     "n_blocks": 8,
+     "avg_conf": 0.917,
+     "texts": [
+      "DIGO,A",
+      "EME PODPiA..",
+      "EUNREGALOTAN",
+      "MIPROFESOR",
+      "OFRECIOALCONDE PRLATIO",
+      "PROBLEMATICO'?",
+      "SVERDRDQUELE",
+      "UCHUUJINMANGAS.CON"
+     ],
+     "stages": {
+      "prefilter": 0.501,
+      "rapid": 2.153,
+      "ruta_c": 1.986
+     },
+     "easyocr_crops": 1
+    },
+    "11": {
+     "total_s": 3.99,
+     "n_blocks": 9,
+     "avg_conf": 0.781,
+     "texts": [
+      "ION!IHUUU!",
+      "JINOQUJERO IRAHI!!",
+      "JiMEOPONGO!!",
+      "MELF",
+      "NODEESTA FORMA...",
+      "PORFAVOR!!",
+      "SERRE",
+      "iPOR.",
+      "‥"
+     ],
+     "stages": {
+      "prefilter": 0.616,
+      "rapid": 2.733,
+      "ruta_c": 2.605
+     },
+     "easyocr_crops": 1
+    },
+    "2": {
+     "total_s": 1.262,
+     "n_blocks": 7,
+     "avg_conf": 0.788,
+     "texts": [
+      "AJNQUE HAVASIOC",
+      "ETRAICION,NPOURIA ARRESTARLA..",
+      "QUEDAN2BABAYAGAS2ELAS5 RGNAIFSVNECESI3JNA FUERZAABRMADORA",
+      "SUI DISTANCAAMENOS QUE NECESARAALGO,SE HA VUELTO HOSTIL.",
+      "UNFIAGRANIE ACO",
+      "VAACTUAIMENSGLO",
+      "鑑"
+     ],
+     "stages": {
+      "prefilter": 0.445,
+      "rapid": 0.423
+     },
+     "easyocr_crops": 0
+    },
+    "5": {
+     "total_s": 1.135,
+     "n_blocks": 3,
+     "avg_conf": 0.828,
+     "texts": [
+      ".HOY, LUEGO DE",
+      "EE",
+      "VERLASAAMBAS...."
+     ],
+     "stages": {
+      "prefilter": 0.438,
+      "rapid": 0.314
+     },
+     "easyocr_crops": 0
+    },
+    "29": {
+     "total_s": 8.409,
+     "n_blocks": 9,
+     "avg_conf": 0.859,
+     "texts": [
+      "330 SUVOLUNTAD?",
+      "ASiQUESEGUi",
+      "CULESELVEDADE RONOMBREOEIOS PIOSES CYTURNOS?",
+      "POSMISTEA9OSVOOSCOSOSNITUAISDEL CEANDIOSCMIDADO?",
+      "PREGUNTANDOENELORDEN QUELASPREPARE,PERO.",
+      "SCOSOSRTUASDCI CREN DIOSCODACDP YICSARCHIVOSDC 10MASPRCGUNDO DELATORREY YICSARCHIVOSDC 10MASPRCSUNDO DELATORRE?",
+      "SIEMPREFUERON SIMPLES.",
+      "SUSRESPUESTAS",
+      "YSIMPIEMENTEDESCRIBENLA SITLACIONACTUALESO ESTCDO IOCUCPUEDODECIR."
+     ],
+     "stages": {
+      "prefilter": 0.544,
+      "rapid": 5.89,
+      "ruta_c": 5.778
+     },
+     "easyocr_crops": 2
+    },
+    "39": {
+     "total_s": 6.949,
+     "n_blocks": 7,
+     "avg_conf": 0.902,
+     "texts": [
+      "EVAN SEOLLANG. SEOLLANG",
+      "EVAN,",
+      "FLAP",
+      "PERDONPOR LADEMORA.",
+      "U",
+      "UETUNAGATLUEGU TEPUEDESIR. TEPUEDESIR.",
+      "口"
+     ],
+     "stages": {
+      "prefilter": 0.549,
+      "rapid": 4.45,
+      "ruta_c": 4.423
+     },
+     "easyocr_crops": 2
+    },
+    "43": {
+     "total_s": 7.437,
+     "n_blocks": 12,
+     "avg_conf": 0.907,
+     "texts": [
+      "ACUERDOBIEN,",
+      "AHBUENO,QUERIA",
+      "AUN Así AUN Así",
+      "DESEARTEENPERSONA",
+      "ELREYDEKOLONIEN LRSPUERTASDELA CIUDRD?",
+      "ENVIEUNMENSAJE,PERO GRACIRSPORVENIR.",
+      "ESTREMECERSE INCLINARSE ESTREMECERSE INCLINARSE",
+      "NS?EONO? MAJESTAD?",
+      "O",
+      "PARECIASESTAR",
+      "SIME",
+      "TENIASUNREGALO QUEOFRECERLE,"
+     ],
+     "stages": {
+      "prefilter": 0.561,
+      "rapid": 5.089,
+      "ruta_c": 4.864
+     },
+     "easyocr_crops": 0
+    },
+    "46": {
+     "total_s": 7.005,
+     "n_blocks": 7,
+     "avg_conf": 0.961,
+     "texts": [
+      "ARGH ARGH",
+      "GRACIAS,PERONO MEREZCOTANTO.",
+      "INSISTO. INSISTO.",
+      "ISOLO ESUN REGALO! iSINMOTIVOS",
+      "OCULTOS!",
+      "SERRE ACEPTELO! OE jASi",
+      "SOLAMENTETELO OFREZCOPORQUEME AGRADAS,NOCREAS QUETENGOOTRAS INTENCIONES!"
+     ],
+     "stages": {
+      "prefilter": 0.563,
+      "rapid": 4.601,
+      "ruta_c": 4.443
+     },
+     "easyocr_crops": 0
+    },
+    "47": {
+     "total_s": 6.179,
+     "n_blocks": 7,
+     "avg_conf": 0.917,
+     "texts": [
+      "..ESTABIEN.",
+      "CLUNG",
+      "CLUNG CLUNG",
+      "CLUNG' CLUNG",
+      "ESECASO..",
+      "TOOOS LOS JUEVES Y MAS EN",
+      "UUH...E EN"
+     ],
+     "stages": {
+      "prefilter": 0.552,
+      "rapid": 3.674,
+      "ruta_c": 3.652
+     },
+     "easyocr_crops": 2
+    },
+    "50": {
+     "total_s": 5.488,
+     "n_blocks": 5,
+     "avg_conf": 0.886,
+     "texts": [
+      "CLARO Si H CLARO QUESi. 'S",
+      "EAuNQUIE-",
+      "HACE MUCHO TIEMPO QUE NO MESENTIA TAN Tranquilo LO.PARECESER QUE PORFIN PODREMOS PALIAR ALGO DEL DEFICIT DELCONDADO.",
+      "RESUNAVIDA TRANQUILA?",
+      "SEPAROSUS MONEOASDEOROEN PEDUENASBOLSAS PARACALMARSUS NERVIOS."
+     ],
+     "stages": {
+      "prefilter": 0.535,
+      "rapid": 3.026,
+      "ruta_c": 2.865
+     },
+     "easyocr_crops": 1
+    },
+    "52": {
+     "total_s": 6.092,
+     "n_blocks": 10,
+     "avg_conf": 0.919,
+     "texts": [
+      "EPERDON?",
+      "EVAN,QUIERO",
+      "JENVERDAD",
+      "PATATASPARA LACENA.",
+      "PORLO",
+      "PROFESIONALDE LAPATATA",
+      "QUEVIAYER",
+      "QUIERESVOLVERA COMERLASHOY?",
+      "er DIGASQUE..? NO ENOME",
+      "irnnnn"
+     ],
+     "stages": {
+      "prefilter": 0.501,
+      "rapid": 3.54,
+      "ruta_c": 3.434
+     },
+     "easyocr_crops": 1
+    }
+   },
+   "alt": {
+    "1": {
+     "total_s": 4.869,
+     "n_blocks": 6,
+     "avg_conf": 0.773,
+     "texts": [
+      "AAHH....",
+      "INCREIBLE",
+      "INCREIBLE,",
+      "RIMER ARAY",
+      "SEOLLANG OIEN SEOLLANG OIEN",
+      "け"
+     ],
+     "stages": {
+      "prefilter": 0.522,
+      "rapid": 3.736,
+      "ruta_c": 3.536
+     },
+     "easyocr_crops": 2
+    },
+    "4": {
+     "total_s": 13.113,
+     "n_blocks": 7,
+     "avg_conf": 0.832,
+     "texts": [
+      "CONTROLARALAPRIMERA BABAYAGA,QUESIEMPREHA SIDO TANIMPREDECIBLE prestgiosareputacion",
+      "ESTARELACIONADO CON LACARDENALDELSANTO REINO,YUTIABLOODIA...",
+      "PODRIAUSARLOPARA",
+      "Y SIHUBIESE ACEPTADO..",
+      "YAQUETAMBIEN",
+      "nsosonans-od -Ypor_supuesto.cu sosareputacion",
+      "目 1"
+     ],
+     "stages": {
+      "prefilter": 0.529,
+      "rapid": 7.616,
+      "ruta_c": 10.579
+     },
+     "easyocr_crops": 3
+    },
+    "7": {
+     "total_s": 5.435,
+     "n_blocks": 7,
+     "avg_conf": 0.961,
+     "texts": [
+      "LASTRADICIONESSON IMPORTANTES,PERO ASEGURARSUAPOYO ESPRIORIDAD.",
+      "MAJESTAD.",
+      "PENSE QUENUES- TRARELACIONIBA EN LA DIRECCION CORRECTA...",
+      "QUEHABRA",
+      "ROSTRODESDE QUELLEGO..",
+      "SUCEDIDO?",
+      "ns"
+     ],
+     "stages": {
+      "prefilter": 0.561,
+      "rapid": 3.052,
+      "ruta_c": 2.898
+     },
+     "easyocr_crops": 0
+    },
+    "8": {
+     "total_s": 3.631,
+     "n_blocks": 7,
+     "avg_conf": 0.909,
+     "texts": [
+      "DIGO,A",
+      "EME PODPiA..",
+      "EUNREGALOTAN",
+      "MIPROFESOR,",
+      "PROBLEMATICO'?",
+      "SVERDAD QUELE OFRECIOALCONDE PRLATIO.",
+      "UCHUUJINMANGAS.CON"
+     ],
+     "stages": {
+      "prefilter": 0.5,
+      "rapid": 2.52,
+      "ruta_c": 2.429
+     },
+     "easyocr_crops": 1
+    },
+    "11": {
+     "total_s": 4.085,
+     "n_blocks": 9,
+     "avg_conf": 0.778,
+     "texts": [
+      "JINO QUJERO IRAHI!!!",
+      "MELF",
+      "NO DE ESTA FORMA..",
+      "POR FAVOR!!!",
+      "SERRE",
+      "iAAHIL iNO!",
+      "iME OPONGO!!!",
+      "iiPOR.",
+      "‥"
+     ],
+     "stages": {
+      "prefilter": 0.51,
+      "rapid": 2.925,
+      "ruta_c": 2.791
+     },
+     "easyocr_crops": 1
+    },
+    "2": {
+     "total_s": 1.287,
+     "n_blocks": 7,
+     "avg_conf": 0.788,
+     "texts": [
+      "AJNQUE HAVASIOC",
+      "ETRAICION,NPOURIA ARRESTARLA..",
+      "QUEDAN2BABAYAGAS2ELAS5 RGNAIFSVNECESI3JNA FUERZAABRMADORA",
+      "SUI DISTANCAAMENOS QUE NECESARAALGO,SE HA VUELTO HOSTIL.",
+      "UNFIAGRANIE ACO",
+      "VAACTUAIMENSGLO",
+      "鑑"
+     ],
+     "stages": {
+      "prefilter": 0.516,
+      "rapid": 0.384
+     },
+     "easyocr_crops": 0
+    },
+    "5": {
+     "total_s": 1.12,
+     "n_blocks": 3,
+     "avg_conf": 0.828,
+     "texts": [
+      ".HOY, LUEGO DE",
+      "EE",
+      "VERLASAAMBAS...."
+     ],
+     "stages": {
+      "prefilter": 0.432,
+      "rapid": 0.322
+     },
+     "easyocr_crops": 0
+    },
+    "29": {
+     "total_s": 9.603,
+     "n_blocks": 8,
+     "avg_conf": 0.807,
+     "texts": [
+      "ASI QUE SEGUi",
+      "OSMNTLRIOSV OSCASTOSRTUAES DGI CUENDIOSCOIDAOOT YICSARCIVOSCC 10MASPRCSUNDO DELATORRE? YICSARCIVOSDC 10MASPROUNDO DELATORRE?",
+      "POSMSTASOCESOSAISDGL CRAN DOOSCIMIDADO?",
+      "PREGUNTANDO ENELORDEN QUELASPREPAREPERO.",
+      "SCUECSCIVEDADE 80130100 OIOSESCXTURNOS",
+      "SUSRESPUESTAS SIEMPREFUERON SIMPLES.",
+      "YSIMPEMENIEDESCREENLA SITUACIONACTUALESO ESTOOO IOCUEPUEDO DCCIR.",
+      "ZLLHERECRODE SU VOLUNIAD?"
+     ],
+     "stages": {
+      "prefilter": 0.642,
+      "rapid": 6.939,
+      "ruta_c": 6.771
+     },
+     "easyocr_crops": 2
+    },
+    "39": {
+     "total_s": 7.26,
+     "n_blocks": 6,
+     "avg_conf": 0.756,
+     "texts": [
+      "DETUNAGATLUEGU DETUNAGATLUEGU TEPUEDESIR. TEPUEDESIR.",
+      "EVAN SEOLLANG. SEOLLANG. EVAN,",
+      "PERDONPOR LADEMORA.",
+      "n",
+      "sVng",
+      "口"
+     ],
+     "stages": {
+      "prefilter": 0.622,
+      "rapid": 4.545,
+      "ruta_c": 4.645
+     },
+     "easyocr_crops": 3
+    },
+    "43": {
+     "total_s": 8.955,
+     "n_blocks": 9,
+     "avg_conf": 0.905,
+     "texts": [
+      "ACUERDOBIEN, TENIASUNREGALO QUEOFRECERLE,",
+      "AHBUENO,QUERIA DESEARTEENPERSONA UNBUENVIAJE.",
+      "AUN Así \"SH NN",
+      "ENVIEUNMENSAJE,PERO GRACIRSPORVENIR.",
+      "ESTREMECERSE INCLINARSE INCLINARSE ESTREMECERSE",
+      "NS?EONO? MAJESTAD?",
+      "PARECIASESTAR",
+      "QUE DIABLOSHACE ELREYDEKOLONIEN LRSPUERTASDELA CIUDRD?",
+      "SIME"
+     ],
+     "stages": {
+      "prefilter": 0.581,
+      "rapid": 6.287,
+      "ruta_c": 6.022
+     },
+     "easyocr_crops": 0
+    },
+    "46": {
+     "total_s": 8.076,
+     "n_blocks": 6,
+     "avg_conf": 0.957,
+     "texts": [
+      "ARGH ARGH",
+      "GRACIAS,PERO NO MEREZCOTANTO.",
+      "INSISTO. INSISTO.",
+      "SERRE ACEPTELO! iQUE iASi",
+      "SOLAMENTETELO OFREZCOPORQUEME AGRADAS,NOCREAS QUETENGOOTRRS INTENCIONES!",
+      "iSOLO ES UN REGALO! iSINMOTINOS OCULTOS!"
+     ],
+     "stages": {
+      "prefilter": 0.536,
+      "rapid": 5.689,
+      "ruta_c": 5.535
+     },
+     "easyocr_crops": 0
+    },
+    "47": {
+     "total_s": 6.83,
+     "n_blocks": 7,
+     "avg_conf": 0.884,
+     "texts": [
+      "..ESTABIEN.",
+      "CLUNG",
+      "CLUNG CLUNG",
+      "CLUNG' CLWNG",
+      "ESECRSO..",
+      "TOOOS LOS JUEVES Y MAS EN",
+      "UUH...E EN"
+     ],
+     "stages": {
+      "prefilter": 0.534,
+      "rapid": 4.17,
+      "ruta_c": 4.147
+     },
+     "easyocr_crops": 2
+    },
+    "50": {
+     "total_s": 5.652,
+     "n_blocks": 4,
+     "avg_conf": 0.9,
+     "texts": [
+      "CLARO Si E CLARO 'S HO QUESi. QUE",
+      "HACE MUCHO TIEMPO QUE NOMESENTIA TAN TRANQUI- LO.PARECESERQUEPORFIN PODREMOS PALIARALGO DEL DEFICIT DEL CONDADO. EAUNQUIE-",
+      "RESUNAVIDA TRANQUILA?",
+      "SEPAROSUS MONEDASDEORO EN PEQUENAS BOLSAS PARA CALNAR SUS NERVIOS."
+     ],
+     "stages": {
+      "prefilter": 0.526,
+      "rapid": 3.185,
+      "ruta_c": 3.053
+     },
+     "easyocr_crops": 1
+    },
+    "52": {
+     "total_s": 6.427,
+     "n_blocks": 7,
+     "avg_conf": 0.945,
+     "texts": [
+      "EENVERDAD QUIERESVOLVERA COMERLASHOY?",
+      "EPERDON?",
+      "EVAN,QUIERO PATATASPARA LA CENA.",
+      "NO. DIGAS QUE..? NOME",
+      "PORLO",
+      "PROFESIONALDE LAPATATA.",
+      "QUEVIAYER,"
+     ],
+     "stages": {
+      "prefilter": 0.552,
+      "rapid": 3.865,
+      "ruta_c": 3.76
+     },
+     "easyocr_crops": 2
+    }
+   }
+  }
+ }
+}

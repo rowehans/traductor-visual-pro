@@ -1,0 +1,9 @@
+{
+  "benchmark": "stress_test_memory.py",
+  "config": {"pages": 50, "workers": 4, "ocr_mode": "easyocr", "server": "waitress"},
+  "result": {"success": 50, "errors": 0, "total": 50, "avg_time_s": 3.2,
+             "mem_before_mb": 75.3, "mem_after_mb": 147.0, "mem_growth_mb": 71.8,
+             "leak_detected": false},
+  "latency_distribution_s": {"min": 2.0, "p25": 2.5, "median": 2.7, "p75": 3.7, "p90": 4.2, "max": 6.1},
+  "conclusion": "Semáforo NO satura: sin timeouts ni errores; latencia acotada. Serialización por VRAM (GTX 1050 Ti 4GB), no por diseño. Fase 3.4.2 no procede."
+}

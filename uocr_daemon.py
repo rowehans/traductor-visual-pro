@@ -8,11 +8,11 @@ El servidor Flask (server.py) lo lanza en background vía uocr_client.py.
 Endpoints (JSON):
   GET  /health -> {"state": "loading"|"ready"|"error",
                    "load_s": float, "vram_gb": float, "error": str|null}
-  POST /ocr    -> body: {"image_path": "...", "max_length": 4096}
+  POST /ocr    -> body: {"image_path": "...", "max_length": 1280}
                   resp: {"text": "...", "infer_s": float, "vram_gb": float,
                          "blocks": [{"type","x","y","w","h","text"}],
                          "recovered_from_art": int}
-  POST /ocr-batch -> body: {"images": ["...", ...] (1-4), "max_length": 4096}
+  POST /ocr-batch -> body: {"images": ["...", ...] (1-4), "max_length": 1280}
                   resp: {"pages": [{"blocks": [...], "recovered_from_art": int}, ...],
                          "infer_s": float, "vram_gb": float, "n_images": int}
                   Usa _model.infer_multi(): N páginas en UNA inferencia VLM
@@ -36,12 +36,15 @@ import json
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 
-sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
+sys.stdout.reconfigure(  # type: ignore[union-attr]
+    encoding="utf-8", line_buffering=True)
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 # Regla "no tocar C:": toda la caché HF en D:
@@ -52,9 +55,9 @@ os.environ.setdefault("HF_HUB_CACHE", os.path.join(ROOT, "hf_cache", "hub"))
 MODEL_DIR = os.path.join(ROOT, "models_unlimited_patched")
 
 # ─── Estado global ───────────────────────────────────────────────
-_model = None
-_tokenizer = None
-_status = {"state": "loading", "load_s": 0.0, "vram_gb": 0.0, "error": None}
+_model: Any = None
+_tokenizer: Any = None
+_status: dict[str, Any] = {"state": "loading", "load_s": 0.0, "vram_gb": 0.0, "error": None}
 _infer_lock = threading.Lock()  # una inferencia a la vez (GPU única)
 
 # Formato de las líneas de detección que emite el modelo por stdout:
@@ -70,7 +73,7 @@ _DET_RE = re.compile(
 )
 
 
-def _parse_blocks(text: str) -> list[dict]:
+def _parse_blocks(text: str) -> list[dict[str, Any]]:
     blocks = []
     for m in _DET_RE.finditer(text):
         typ, x, y, w, h = (
@@ -96,10 +99,12 @@ def _load_model() -> None:
             bnb_4bit_quant_type="nf4",
             bnb_4bit_use_double_quant=True,
         )
-        _tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, trust_remote_code=True)
+        # MODEL_DIR es un directorio local del bundle; no se descarga desde la
+        # petición HTTP ni desde una ruta controlada por el usuario.
+        _tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, trust_remote_code=True)  # nosec B615
         _model = AutoModel.from_pretrained(
             MODEL_DIR,
-            trust_remote_code=True,
+            trust_remote_code=True,  # nosec B615
             use_safetensors=True,
             torch_dtype=torch.float16,
             quantization_config=quant,
@@ -120,6 +125,36 @@ def _load_model() -> None:
 
 
 _MAX_REQ_DIRS = 20  # máx directorios de salida por request conservados en disco
+_MAX_JSON_BODY_BYTES = 64 * 1024  # solo contiene rutas y parámetros pequeños
+
+
+def _is_allowed_input_path(value: object) -> bool:
+    """Valida rutas de entrada del daemon contra raíces locales conocidas.
+
+    El servidor Flask usa archivos temporales para enviar páginas y el propio
+    proyecto puede contener imágenes de prueba. Resolver la ruta real antes
+    de comparar bloquea escapes mediante ``..`` o symlinks y evita que el
+    endpoint loopback procese archivos arbitrarios de otras carpetas.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        candidate = os.path.normcase(os.path.realpath(os.path.abspath(value)))
+        if not os.path.isfile(candidate):
+            return False
+        roots = (ROOT, tempfile.gettempdir())
+        for root in roots:
+            root_real = os.path.normcase(os.path.realpath(os.path.abspath(root)))
+            try:
+                if os.path.commonpath((candidate, root_real)) == root_real:
+                    return True
+            except ValueError:
+                # En Windows, D:\proyecto y C:\Temp no comparten unidad;
+                # una raíz incompatible no invalida las siguientes.
+                continue
+    except (OSError, ValueError, TypeError):
+        return False
+    return False
 
 
 def _cleanup_old_out_dirs() -> None:
@@ -129,7 +164,7 @@ def _cleanup_old_out_dirs() -> None:
         if not os.path.isdir(base):
             return
         dirs = sorted(
-            (d for d in os.listdir(base) if d.startswith("req_")),
+            (d for d in os.listdir(base) if d.startswith(("req_", "art_"))),
             key=lambda d: os.path.getmtime(os.path.join(base, d)),
         )
         for d in dirs[:-_MAX_REQ_DIRS]:
@@ -140,7 +175,7 @@ def _cleanup_old_out_dirs() -> None:
 
 
 def _infer_once(image_path: str, out_dir: str, max_length: int,
-                crop_mode: bool = True, image_size: int = 640) -> tuple[str, list[dict], float]:
+                crop_mode: bool = True, image_size: int = 640) -> tuple[str, list[dict[str, Any]], float]:
     """Ejecuta UNA inferencia del modelo y devuelve (texto_md, bloques, infer_s).
 
     Captura stdout (el modelo emite <|det|>...<|/det|> con coordenadas por
@@ -179,8 +214,8 @@ _ART_RECOVER_MIN_AREA_RATIO = 0.30
 _ART_RECOVER_CANVAS = 640  # el modelo con crop_mode=False procesa a 640x640
 
 
-def _recover_art_dialogue(image_path: str, blocks: list[dict],
-                          max_length: int) -> tuple[list[dict], int]:
+def _recover_art_dialogue(image_path: str, blocks: list[dict[str, Any]],
+                          max_length: int) -> tuple[list[dict[str, Any]], int]:
     """Re-OCR de bloques type="image" grandes para recuperar diálogo en arte.
 
     Para cada bloque image con área >30% de la página:
@@ -211,7 +246,7 @@ def _recover_art_dialogue(image_path: str, blocks: list[dict],
     if not big:
         return blocks, 0
 
-    recovered: list[dict] = []
+    recovered: list[dict[str, Any]] = []
     pad = 8
     for bi, b in enumerate(big):
         # ── 1. Recorte (clamp a la página) ────────────────────────
@@ -226,7 +261,7 @@ def _recover_art_dialogue(image_path: str, blocks: list[dict],
         s = _ART_RECOVER_CANVAS / max(cw, ch)  # s>1 → upscale, s<1 → downscale
         nw = max(1, int(round(cw * s)))
         nh = max(1, int(round(ch * s)))
-        resized = crop.resize((nw, nh), Image.LANCZOS)
+        resized = crop.resize((nw, nh), Image.Resampling.LANCZOS)
         canvas = Image.new("RGB", (_ART_RECOVER_CANVAS, _ART_RECOVER_CANVAS), (255, 255, 255))
         ox, oy = (_ART_RECOVER_CANVAS - nw) // 2, (_ART_RECOVER_CANVAS - nh) // 2
         canvas.paste(resized, (ox, oy))
@@ -272,7 +307,7 @@ def _recover_art_dialogue(image_path: str, blocks: list[dict],
     return blocks, len(recovered)
 
 
-def _parse_blocks_multi(stream_text: str, n_images: int) -> list[list[dict]]:
+def _parse_blocks_multi(stream_text: str, n_images: int) -> list[list[dict[str, Any]]]:
     """Divide el stream de stdout de infer_multi() en páginas y parsea cada una.
 
     infer_multi() genera TODAS las imágenes en una sola pasada y separa las
@@ -311,7 +346,7 @@ def _parse_blocks_multi(stream_text: str, n_images: int) -> list[list[dict]]:
     # Semántica oficial: secciones[1:] (la primera es ruido). Sin filtro de
     # vacíos para no desalinear páginas sin texto.
     usable = sections[1:]
-    results: list[list[dict]] = []
+    results: list[list[dict[str, Any]]] = []
     for sec in usable[:n_images]:
         results.append(_parse_blocks(sec))
     while len(results) < n_images:
@@ -319,8 +354,8 @@ def _parse_blocks_multi(stream_text: str, n_images: int) -> list[list[dict]]:
     return results
 
 
-def _map_multi_blocks_to_page(blocks: list[dict], page_w: int,
-                              page_h: int, canvas: int = 640) -> list[dict]:
+def _map_multi_blocks_to_page(blocks: list[dict[str, Any]], page_w: int,
+                              page_h: int, canvas: int = 640) -> list[dict[str, Any]]:
     """Mapea bloques del espacio 640x640 (infer_multi) al espacio de página.
 
     infer_multi() redimensiona cada imagen a canvas×canvas (resize directo a
@@ -328,7 +363,7 @@ def _map_multi_blocks_to_page(blocks: list[dict], page_w: int,
     El mapeo lineal px = x/canvas * page_w, py = y/canvas * page_h devuelve
     los bloques al espacio de píxeles de la página original.
     """
-    mapped: list[dict] = []
+    mapped: list[dict[str, Any]] = []
     for b in blocks:
         mapped.append({
             "type": b.get("type", "text"),
@@ -344,7 +379,7 @@ def _map_multi_blocks_to_page(blocks: list[dict], page_w: int,
 _MAX_BATCH_IMAGES = 4  # límite VRAM: 4 páginas 640x640 prefill simultáneo en GTX 4GB
 
 
-def _run_ocr_batch(image_paths: list[str], max_length: int) -> dict:
+def _run_ocr_batch(image_paths: list[str], max_length: int) -> dict[str, Any]:
     """OCR de VARIAS páginas en una sola inferencia VLM (infer_multi).
 
     Fase 1 del plan: amortiza el prefill del modelo (el costo por página cae
@@ -385,7 +420,7 @@ def _run_ocr_batch(image_paths: list[str], max_length: int) -> dict:
             )
         infer_s = time.time() - t0
         pages_blocks = _parse_blocks_multi(stream.getvalue(), len(image_paths))
-        result_pages: list[dict] = []
+        result_pages: list[dict[str, Any]] = []
         for i, (path, blocks) in enumerate(zip(image_paths, pages_blocks)):
             try:
                 with Image.open(path) as im:
@@ -410,7 +445,7 @@ def _run_ocr_batch(image_paths: list[str], max_length: int) -> dict:
         _infer_lock.release()
 
 
-def _run_ocr(image_path: str, max_length: int) -> dict:
+def _run_ocr(image_path: str, max_length: int) -> dict[str, Any]:
     import torch  # noqa: PLC0415 — import diferido (ya cargado por _load_model)
     # Timeout de espera: si otra inferencia cuelga (OOM, etc.), no bloquear
     # la siguiente petición indefinidamente.
@@ -436,10 +471,10 @@ def _run_ocr(image_path: str, max_length: int) -> dict:
 
 
 class _Handler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args):  # nosec — silenciar logs por request
+    def log_message(self, fmt: str, *args: Any) -> None:  # nosec — silenciar logs
         pass
 
-    def _send(self, code: int, obj: dict) -> None:
+    def _send(self, code: int, obj: dict[str, Any]) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -453,11 +488,17 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, {"error": "not found"})
 
-    def _read_json_body(self) -> dict | None:
+    def _read_json_body(self) -> dict[str, Any] | None:
         """Lee y parsea el body JSON. Retorna dict o None si es inválido."""
         try:
             n = int(self.headers.get("Content-Length", 0))
-            return json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+            if n < 0 or n > _MAX_JSON_BODY_BYTES:
+                return None
+            raw = self.rfile.read(n) if n else b"{}"
+            if len(raw) != n and n:
+                return None
+            body = json.loads(raw.decode("utf-8"))
+            return body if isinstance(body, dict) else None
         except Exception:
             return None
 
@@ -473,7 +514,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": "json inválido"})
             return
         try:
-            max_length = int(body.get("max_length", 4096))
+            from config import UOCR_MAX_LENGTH as _DEF_MAX_LEN
+            max_length = int(body.get("max_length", _DEF_MAX_LEN))
         except (TypeError, ValueError):
             self._send(400, {"error": "max_length debe ser un entero"})
             return
@@ -489,17 +531,18 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send(400, {"error": f"images debe ser una lista de "
                                               f"1-{_MAX_BATCH_IMAGES} paths"})
                     return
-                bad = [p for p in images if not (isinstance(p, str) and os.path.exists(p))]
+                bad = [p for p in images if not _is_allowed_input_path(p)]
                 if bad:
-                    self._send(400, {"error": f"paths inexistentes: {bad}"})
+                    self._send(400, {"error": "paths de imagen no permitidos"})
                     return
                 result = _run_ocr_batch(images, max_length)
                 self._send(200, result)
                 return
             image_path = body.get("image_path")
-            if not image_path or not os.path.exists(image_path):
-                self._send(400, {"error": "image_path inválido o inexistente"})
+            if not _is_allowed_input_path(image_path):
+                self._send(400, {"error": "image_path no permitido"})
                 return
+            assert isinstance(image_path, str)  # _is_allowed_input_path ya lo validó
             result = _run_ocr(image_path, max_length)
             self._send(200, result)
         except Exception as e:  # nosec

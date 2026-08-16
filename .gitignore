@@ -72,6 +72,7 @@ reporte_final.html
 
 # ─── Coverage / Reports ──────────────────────────
 .coverage
+coverage_html/
 bandit_*.json
 ci_results.json
 pytest_stderr.txt
@@ -81,10 +82,12 @@ benchmark_*.json
 tests/archive/
 
 # ─── Legacy / Temp ───────────────────────────────
+/.tmp_pytest_*/
 /no uso/
 /manga-image-translator/
 profiles/
 *.prof
+/Ultralytics/
 
 # ─── Test PDFs ──────────────────────────────────
 *_compressed.pdf

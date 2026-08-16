@@ -6,12 +6,21 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from flask import Flask, jsonify, send_from_directory, abort
+from flask import Flask, jsonify, send_from_directory, abort, request as _flask_request
 
 # Force UTF-8 on Windows stdout
 if sys.platform == "win32":
     try:
-        sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
+        # Algunos lanzadores/pytest reemplazan stdout por un wrapper con
+        # codificaciÃ³n cp1252. Los logs de precarga contienen flechas y otros
+        # sÃ­mbolos; `errors=replace` evita que un print aborte el hilo de
+        # precarga aunque el proceso se haya iniciado fuera de UTF-8.
+        # Los wrappers de pytest pueden no exponer reconfigure; el try/except
+        # ya cubre ese caso en runtime.
+        sys.stdout.reconfigure(  # type: ignore[union-attr]
+            encoding="utf-8", errors="replace", line_buffering=True)
+        sys.stderr.reconfigure(  # type: ignore[union-attr]
+            encoding="utf-8", errors="replace")
     except Exception:  # nosec
         pass
 
@@ -48,6 +57,46 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_IMAGE_BYTES
 # Prohibir framebusting via Flask-Talisman no disponible, usamos CSP + headers
 # Limitar tipos de contenido aceptados en POST
 app.config["MAX_FORM_MEMORY_SIZE"] = 1024 * 100  # 100KB form data
+
+
+# ─── Compresión gzip de respuestas (Fase 2.2) ────────────────────
+# Sin dependencias extra (stdlib gzip). Solo comprime texto/JSON > 1 KB
+# cuando el cliente lo anuncia (fetch envía Accept-Encoding: gzip por
+# defecto). Las imágenes base64 ya comprimidas (JPEG/PNG) se saltan para
+# no quemar CPU sin ganancia.
+import gzip as _gzip
+
+
+@app.after_request
+def _compress_response(response: Any) -> Any:
+    accept = _flask_request.headers.get("Accept-Encoding", "")
+    if "gzip" not in accept.lower():
+        return response
+    ctype = (response.mimetype or "").lower()
+    # text/* (html, css, js, plain, markdown...) + json/xml: comprimibles.
+    # Las imágenes (base64 en JSON ya cuentan como json; binarios png/jpeg
+    # NO entran por text/* ni json) se saltan — no ganan nada y queman CPU.
+    if not (ctype.startswith("text/") or ctype in ("application/json", "application/javascript",
+                                                   "application/xml")):
+        return response
+    # send_from_directory (estáticos) va en modo passthrough: no tocar,
+    # ya son archivos en disco servidos por el WSGI directamente.
+    if getattr(response, "direct_passthrough", False):
+        return response
+    data = response.get_data()
+    if data is None or len(data) < 1024:
+        return response
+    try:
+        gz = _gzip.compress(data, compresslevel=6)
+    except Exception:  # nosec — nunca dejar caer la respuesta por compresión
+        return response
+    if len(gz) >= len(data):
+        return response
+    response.set_data(gz)
+    response.headers["Content-Encoding"] = "gzip"
+    response.headers["Vary"] = "Accept-Encoding"
+    response.headers["Content-Length"] = str(len(gz))
+    return response
 
 
 # ─── Database init ──────────────────────────────────────────────
@@ -110,11 +159,49 @@ def _preload_background() -> None:
     except Exception as e:
         print(f"[preload] Error en precarga: {e}")
 
+    # RapidOCR usa ONNX en CPU y no compite por la VRAM de EasyOCR/CT2.
+    # Precargarlo aquí evita que la primera página pague la inicialización
+    # del detector/reconocedor del tier híbrido.
+    try:
+        from ocr_utils import _get_rapid_engine
+        t0 = time.time()
+        engine_rapid = _get_rapid_engine()
+        if engine_rapid:
+            print(f"[preload] RapidOCR cargado en {time.time()-t0:.1f}s")
+        else:
+            print("[preload] RapidOCR no disponible")
+    except Exception as e:
+        print(f"[preload] RapidOCR no disponible: {e}")
+
     # ── Paso 3 (Fase 6): detector YOLO de regiones (CPU, ~1-2s one-time) ──
     # Se precarga para que la PRIMERA página no pague los ~20s de carga del
     # modelo. Sin ultralytics/modelo, _get_yolo_engine degrada a None y el
     # tier YOLO no aporta (el pipeline sigue igual). Se precarga DESPUÉS de
     # EasyOCR/CT2 (los modelos de ultralytics viven en CPU, sin VRAM).
+    # El corrector ortografico post-OCR carga un diccionario grande en memoria.
+    # Prepararlo aqui evita que la primera pagina pague esa inicializacion.
+    try:
+        from ocr_utils import _get_spellchecker, _get_foreign_spellchecker
+        t0 = time.time()
+        spellchecker = _get_spellchecker()
+        if spellchecker:
+            print(f"[preload] Corrector OCR cargado en {time.time()-t0:.1f}s")
+        else:
+            print("[preload] Corrector OCR no disponible")
+        # 2026-08-15: precargar tambien los diccionarios extranjeros (en/pt)
+        # que usa _contains_foreign_latin_tokens para detectar mezcla de
+        # idiomas. Sin esto, la PRIMERA pagina con tokens no espanoles paga
+        # ~350 ms de carga bajo demanda (en 83 ms + pt 266 ms) dentro del
+        # tiempo medido de la pagina.
+        for lang in ("en", "pt"):
+            t1 = time.time()
+            checker = _get_foreign_spellchecker(lang)
+            if checker:
+                print(f"[preload] Diccionario {lang} cargado en "
+                      f"{time.time()-t1:.1f}s")
+    except Exception as e:
+        print(f"[preload] Corrector OCR no disponible: {e}")
+
     try:
         from ocr_utils import _get_yolo_engine
         t0 = time.time()
@@ -200,12 +287,19 @@ def add_security_headers(response: Any) -> Any:
 from translator import _translate_one as _translate_one_impl
 
 
-def _translate_one(text: str, source: str, target: str) -> str:
+def _translate_one(
+    text: str,
+    source: str,
+    target: str,
+    *,
+    block_type: str | None = None,
+) -> str:
     return _translate_one_impl(
         text, source, target,
         cache_get=cache_get if TRANSLATION_CACHE_AVAILABLE else None,
         cache_set=cache_set if TRANSLATION_CACHE_AVAILABLE else None,
         translation_cache_available=TRANSLATION_CACHE_AVAILABLE,
+        block_type=block_type,
     )
 
 
@@ -217,9 +311,16 @@ def _translate_one(text: str, source: str, target: str) -> str:
 # ─── App-level specific routes ────────────────────────────────
 @app.route("/api/config")
 def serve_config() -> Any:
+    # MODO_CPU se lee en runtime (no a nivel módulo) para que los tests y el
+    # launcher puedan mutar config y verificar el preset sin reiniciar.
+    from config import MODO_CPU, MODO_CPU_OCR_SCALE
     return jsonify({
         "version": APP_VERSION,
         "languages": LANGUAGES,
+        "modo_cpu": MODO_CPU,
+        # Escala de render que el frontend debe usar: 1.2 normal, la del preset
+        # con MODO_CPU (menos píxeles a procesar — análogo a bajar resolución).
+        "ocr_scale": MODO_CPU_OCR_SCALE if MODO_CPU else 1.2,
         "timeouts_ms": {
             "opencv_init": TIMEOUT_OPENCV_INIT_MS,
             "pdfjs_cdn": TIMEOUT_PDFJS_CDN_MS,
@@ -237,12 +338,12 @@ def serve_config() -> Any:
 
 @app.route("/app.min.js")
 def serve_js() -> Any:
-    return send_from_directory(".", "app.js")
+    return send_from_directory(str(ROOT), "app.js")
 
 
 @app.route("/styles.min.css")
 def serve_css() -> Any:
-    return send_from_directory(".", "styles.css")
+    return send_from_directory(str(ROOT), "styles.css")
 
 
 # ─── App-level catch-all (BEFORE blueprints) ──────────────────
@@ -252,7 +353,8 @@ def serve_css() -> Any:
 def serve_root(filename: str) -> Any:
     # Path traversal protection: verificar que el archivo este dentro de ROOT
     target = (ROOT / filename).resolve()
-    if not str(target).startswith(str(ROOT)):
+    from routes.main import _is_within
+    if not _is_within(ROOT, target):
         abort(404)
     if not target.exists():
         abort(404)
@@ -272,9 +374,15 @@ app.register_blueprint(api_bp)
 if __name__ == "__main__":
     host = "127.0.0.1"  # Siempre localhost (evita CWE-605)
     port = 5174
-    
+
     print(f"[server] Arrancando en http://{host}:{port}")
     print(f">>> SERVIDOR LISTO <<< http://{host}:{port}")
     sys.stdout.flush()
-    # Flask dev server (waitress tiene problemas con catch-all + blueprints en Flask 3.x)
-    app.run(host=host, port=port, debug=False, use_reloader=False)
+    # Servidor de producción: waitress (multi-threaded, estable).
+    # El problema histórico de waitress con catch-all + blueprints en Flask 3.x
+    # (404s) está resuelto: el catch-all /<path:filename> se registra a nivel
+    # de app ANTES de los blueprints (ver serve_root arriba), y sirve solo
+    # archivos existentes — los 404 reales los emite el framework. Validado
+    # por el job server-test de run_ci.py (health + endpoints + estáticos).
+    from waitress import serve
+    serve(app, host=host, port=port, threads=8)

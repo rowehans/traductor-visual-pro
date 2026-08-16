@@ -1,0 +1,32 @@
+{
+  "pdf": "Capítulo 43 de Cómo criar villanos correctamente.pdf",
+  "reps": 1,
+  "params": {
+    "canvas_size": 2500,
+    "batch_size": 8,
+    "mag_ratio": 1.3
+  },
+  "avg_detect_s": 2.877,
+  "avg_recognize_s": 1.0678,
+  "recognize_pct": 27.1,
+  "pages": {
+    "3": {
+      "detect_s": 6.2608,
+      "recognize_s": 3.0025,
+      "total_s": 9.2633,
+      "n_boxes": 5
+    },
+    "11": {
+      "detect_s": 1.5548,
+      "recognize_s": 0.1552,
+      "total_s": 1.71,
+      "n_boxes": 11
+    },
+    "12": {
+      "detect_s": 0.8153,
+      "recognize_s": 0.0458,
+      "total_s": 0.8611,
+      "n_boxes": 3
+    }
+  }
+}

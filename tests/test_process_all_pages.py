@@ -20,6 +20,7 @@ el flujo completo solo se ejecuta bajo `if __name__ == "__main__"`.
 """
 
 import json
+import hashlib
 import os
 import re
 import sys
@@ -179,6 +180,26 @@ class TestProcesarPagina:
         assert mod.stats["pages_error"] == 1
         assert mod.pages_done == {1}
 
+    def test_conn_error_definitivo_registra_sin_nameerror(self, monkeypatch, tmp_path):
+        """Una excepción de conexión en modo single no pierde la página."""
+        mod = _load_module(_argv_isolado(tmp_path))
+        monkeypatch.setattr(mod, "MAX_RETRIES", 0)
+
+        def boom(*_args, **_kwargs):
+            raise requests.ConnectionError("boom")
+
+        monkeypatch.setattr(mod._http_session, "post", boom)
+        seq = [100.0, 110.0]
+        monkeypatch.setattr(mod.time, "time", lambda: seq.pop(0))
+
+        mod.procesar_pagina(1, "b64", 0.3)
+
+        assert [(r["page"], r["status"], r["time"]) for r in mod.results] == [
+            (1, "conn_error", 10.0)
+        ]
+        assert mod.stats["pages_error"] == 1
+        assert mod.pages_done == {1}
+
     def test_http_error_registra_status(self, monkeypatch, tmp_path):
         """HTTP != 200 → status http_<code>."""
         mod = _load_module(_argv_isolado(tmp_path))
@@ -250,6 +271,38 @@ class TestProcesarPagina:
 
         assert captured["json"].get("doc_id") == mod.DOC_ID
         assert isinstance(mod.DOC_ID, str) and len(mod.DOC_ID) == 12
+
+    def test_doc_id_usa_hash_resistente_a_colisiones(self, tmp_path):
+        """El namespace del documento no debe depender de MD5."""
+        mod = _load_module(_argv_isolado(tmp_path))
+        esperado = hashlib.sha256(
+            os.path.basename(mod.PDF_PATH).encode("utf-8")
+        ).hexdigest()[:12]
+
+        assert mod.DOC_ID == esperado
+
+    def test_checkpoint_persiste_idiomas_y_metadatos_semanticos(self, tmp_path):
+        """La auditoría necesita saber el par y el tipo sin usar glosario."""
+        mod = _load_module(_argv_isolado(tmp_path, [
+            "--source", "ja", "--target", "es",
+        ]))
+        mod.total_pages = 1
+        mod._registrar_resultado(1, 0.1, 0.2, [{
+            "source": "田中",
+            "translated": "Tanaka",
+            "type": "name",
+            "confidence": 0.91,
+            "source_lang": "ja",
+            "target_lang": "es",
+        }])
+
+        checkpoint = mod.build_checkpoint()
+        text = checkpoint["results"][0]["texts"][0]
+        assert checkpoint["source_lang"] == "ja"
+        assert checkpoint["target_lang"] == "es"
+        assert text["type"] == "name"
+        assert text["confidence"] == 0.91
+        assert text["source_lang"] == "ja"
 
     def test_payload_batch_incluye_doc_id(self, monkeypatch, tmp_path):
         """procesar_lote envía doc_id en el payload del batch."""

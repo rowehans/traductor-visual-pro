@@ -34,7 +34,16 @@ if (window.Tesseract) {
 }
 
 // ─── Fetch server config to override defaults ────────────────
-fetchClientConfig(); // async, non-blocking
+fetchClientConfig().then(() => {
+  // Preset modo_cpu (soporte sin GPU dedicada): el server sugiere una escala
+  // de render menor (menos píxeles a procesar por página). Se aplica si el
+  // fetch resolvió antes de cargar el PDF; si no, state.scale queda con el
+  // default y CLIENT_CONFIG.OCR_SCALE se usa al renderizar.
+  if (CLIENT_CONFIG.OCR_SCALE > 0 && Math.abs(CLIENT_CONFIG.OCR_SCALE - state.scale) > 0.001) {
+    state.scale = CLIENT_CONFIG.OCR_SCALE;
+    console.log(`[config] Escala de render OCR ajustada a ${state.scale} (server)`);
+  }
+});
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -124,7 +133,10 @@ const state = {
   image: null,           // Elemento de imagen
   page: 1,               // Página actual
   pageCount: 0,          // Total de páginas
-  scale: 1.8,            // Escala de renderizado PDF para calidad OCR
+  scale: 1.2,            // Escala de renderizado PDF (optimización 2.5):
+                          // process_all_pages.py valida que 1.2 basta para OCR;
+                          // 1.8 era 2.25x píxeles sin ganancia de calidad.
+                          // El server la baja vía /api/config en modo_cpu
   boxesByPage: new Map(),// Número de página -> array de cajas de texto
   selectedId: null,      // ID de la caja seleccionada
   mode: "draw",          // 'draw' o 'move'
@@ -133,6 +145,7 @@ const state = {
   italic: true,          // Estilo de fuente itálica por defecto
   bold: true,            // Estilo de fuente negrita por defecto
   inpaintedBgByPage: new Map(), // Caché de imágenes de fondo limpias por página
+  prefetchedByPage: new Map(),  // Página -> resultado del servidor (pipeline Fase 2.4)
   abortTranslation: false, // Bandera para cancelar traducción automática
   translationPaused: false, // Bandera para pausar/reanudar traducción
   ocrFallbackToastShown: false, // Bandera: aviso de fallback Unlimited-OCR ya mostrado (una vez por lote)
@@ -420,18 +433,15 @@ function checkLanguageWarning() {
     return;
   }
 
-  // Parsear source: "eng+spa+fra+deu" → ["eng","spa","fra","deu"]
+  // Parsear source por si una instalación antigua conserva un selector
+  // compuesto; la UI actual ya no ofrece idiomas desactivados.
   const sourceCodes = src.split("+");
 
   // Mapear códigos ISO a valores del selector
-  // Los códigos del servidor (eng, spa, fra) no son iguales
-  // a los valores del selector destino (en, es, fr)
+  // Los códigos históricos del servidor no siempre coinciden con el selector.
   const isoToSelector = {
     "en": "eng",
     "es": "spa",
-    "fr": "fra",
-    "de": "deu",
-    "it": "ita",
     "pt": "por",
     "ja": "ja",
     "ko": "ko",
@@ -796,7 +806,12 @@ async function translateOnline(text, langDest) {
     const response = await fetch("/api/translate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: trimmed, target: langDest, source: "auto" }),
+      body: JSON.stringify({
+        text: trimmed,
+        target: langDest,
+        source: "auto",
+        doc_id: getDocId(),
+      }),
       signal: controller.signal
     });
     
@@ -818,18 +833,19 @@ async function translateOnline(text, langDest) {
 
 async function translateBatch(texts, langDest) {
   const trimmed = texts.map(t => (t || "").trim());
-  let srcLang = sourceLang.value;
-  // Si contiene el signo + (Occidentales), le pasamos "auto" para que el servidor detecte el idioma exacto
-  if (srcLang.includes("+")) {
-    srcLang = "auto";
-  }
+  const srcLang = sourceLang.value;
   try {
     const controller = new AbortController();    const timeoutId = setTimeout(() => controller.abort(), window.__CLIENT_CONFIG.TIMEOUT_TRANSLATE_BATCH_MS);
 
     const response = await fetch("/api/translate-batch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ texts: trimmed, target: langDest, source: srcLang }),
+      body: JSON.stringify({
+        texts: trimmed,
+        target: langDest,
+        source: srcLang,
+        doc_id: getDocId(),
+      }),
       signal: controller.signal
     });
     
@@ -1294,6 +1310,42 @@ async function updateOcrEngineStatus() {
   }
 }
 
+// Fase 2.4 (pipeline): query string compartido entre el envío normal y el
+// prefetch — target/source/ocr_mode/doc_id/response_format deben ser los
+// mismos en ambos, si no el prefetch serviría un resultado de otra página.
+function buildProcessPageQuery() {
+  const srcPage = sourceLang.value || "auto";
+  return new URLSearchParams({
+    target: targetLang.value,
+    source: srcPage,
+    ocr_mode: getSelectedOcrMode(),
+    doc_id: getDocId(),
+    // Optimización 2.3: la imagen inpaintada solo se muestra; JPEG 95 es
+    // 5-10x más chica que PNG y acelera el parseo JSON del cliente.
+    response_format: "jpeg",
+  });
+}
+
+// Valida un resultado del servidor (zombie + fallback Unlimited-OCR) y lo
+// devuelve si es usable. Compartido por serverProcessPage y el prefetch.
+function finalizeServerResult(result, pageNo) {
+  if (result?.error === "ZOMBIE_SERVER") {
+    console.error(`[serverProcessPage] ¡ZOMBIE DETECTADO! página ${pageNo}:`, result.message);
+    throw new Error(
+      "ZOMBIE_SERVER: " + (result.message || "El servidor está en estado zombie. Reinícialo.")
+    );
+  }
+  // Aviso informativo si se pidió Unlimited-OCR pero el servidor degradó a EasyOCR.
+  // Solo una vez por lote (autoTranslateAllPages resetea la bandera al iniciar).
+  if (getSelectedOcrMode() === "unlimited" && result?.ocr_engine && result.ocr_engine !== "unlimited") {
+    if (!state.ocrFallbackToastShown) {
+      state.ocrFallbackToastShown = true;
+      showToast("Unlimited-OCR no disponible (modelo cargando o VRAM insuficiente); se usó EasyOCR", "warn", 5000);
+    }
+  }
+  return result;
+}
+
 async function serverProcessPage(pageNo = state.page) {  console.log(`[serverProcessPage] INICIO page=${pageNo}, cleanBg=${cleanBgCanvas.width}x${cleanBgCanvas.height}`);
   
   // SIEMPRE re-renderizar la página para garantizar un canvas limpio
@@ -1310,35 +1362,39 @@ async function serverProcessPage(pageNo = state.page) {  console.log(`[serverPro
   }
   console.log(`[serverProcessPage] Tras renderPage: cleanBg=${cleanBgCanvas.width}x${cleanBgCanvas.height}`);
   
-  // Crear una copia FRESCA del canvas limpio (evitar que modificaciones
-  // posteriores del canvas afecten el envío al servidor)
-  const pageCanvas = document.createElement("canvas");
-  pageCanvas.width = cleanBgCanvas.width;
-  pageCanvas.height = cleanBgCanvas.height;
-  const pageCtx = pageCanvas.getContext("2d");
-  pageCtx.drawImage(cleanBgCanvas, 0, 0);
-  const imageB64 = canvasToBase64(pageCanvas);
-  console.log(`[serverProcessPage] imageB64 length=${imageB64?.length || 0}, starts=${imageB64?.substring(0, 30)}`);
-
-  let srcPage = sourceLang.value || "auto";
-  if (srcPage.includes("+")) {
-    srcPage = "auto";
+  // Optimización 2.4: el canvas se envía como JPEG binario (toBlob) en vez
+  // de base64 en JSON — elimina el +33% del base64 y una conversión de
+  // string en el cliente. Los flags van en el query string; el servidor
+  // decodifica request.data directamente cuando el mimetype no es JSON.
+  const imageBlob = await new Promise((resolve) => {
+    cleanBgCanvas.toBlob(resolve, "image/jpeg", 0.92);
+  });
+  if (!imageBlob) {
+    throw new Error("No se pudo codificar el canvas a JPEG");
   }
-  const payload = {
-    image: imageB64,
-    target: targetLang.value,
-    source: srcPage,
-    ocr_mode: getSelectedOcrMode(),
-    doc_id: getDocId(),
-  };
+  console.log(`[serverProcessPage] canvas enviado como JPEG binario (${imageBlob.size} bytes)`);
+
+  // Fase 2.4: si esta página ya fue precargada (pipeline), reusar el
+  // resultado del servidor — el fetch de abajo no se ejecuta. Solo se reusa
+  // si la escala no cambió: los bloques vienen en coordenadas de la imagen
+  // enviada, y un zoom distinto haría que no coincidan con el canvas.
+  const prefetched = state.prefetchedByPage.get(pageNo);
+  if (prefetched && prefetched.scale === state.scale) {
+    state.prefetchedByPage.delete(pageNo);
+    console.log(`[serverProcessPage] Reusando resultado precargado page=${pageNo} (${prefetched.blocks?.length || 0} bloques)`);
+    return finalizeServerResult(prefetched.result, pageNo);
+  }
+  state.prefetchedByPage.delete(pageNo); // descartar si quedó obsoleto
+
+  const query = buildProcessPageQuery();
 
   // Fetch con timeout de 120 segundos
   const controller = new AbortController();  const timeoutId = setTimeout(() => controller.abort(), window.__CLIENT_CONFIG.TIMEOUT_PROCESS_PAGE_MS);
 
-  const resp = await fetch("/api/process-page", {
+  const resp = await fetch(`/api/process-page?${query.toString()}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    headers: { "Content-Type": "image/jpeg" },
+    body: imageBlob,
     signal: controller.signal
   });
   
@@ -1353,29 +1409,7 @@ async function serverProcessPage(pageNo = state.page) {  console.log(`[serverPro
   let result;
   try { result = await resp.json(); } catch (e) { throw new Error("Respuesta inválida del servidor"); }
 
-  // ── Detectar estado zombie ──────────────────────────────────
-  // Si el servidor devuelve el marcador ZOMBIE_SERVER, significa que
-  // EasyOCR no está funcionando correctamente (múltiples OCRs rápidos
-  // sin resultados). Esto ocurre cuando el proceso servidor se queda
-  // en un estado corrupto que requiere reinicio.
-  if (result?.error === "ZOMBIE_SERVER") {
-    console.error("[serverProcessPage] ¡ZOMBIE DETECTADO!:", result.message);
-    throw new Error(
-      "ZOMBIE_SERVER: " + (result.message || "El servidor está en estado zombie. Reinícialo.")
-    );
-  }
-
-  // Aviso informativo si se pidió Unlimited-OCR pero el servidor degradó a EasyOCR.
-  // Solo una vez por lote (autoTranslateAllPages resetea la bandera al iniciar).
-  if (getSelectedOcrMode() === "unlimited" && result?.ocr_engine && result.ocr_engine !== "unlimited") {
-    if (!state.ocrFallbackToastShown) {
-      state.ocrFallbackToastShown = true;
-      showToast("Unlimited-OCR no disponible (modelo cargando o VRAM insuficiente); se usó EasyOCR", "warn", 5000);
-    }
-  }
-
-  console.log(`[serverProcessPage] Respuesta: ${result.blocks?.length || 0} bloques, inpainted=${!!result.inpainted_image}, ocr_engine=${result?.ocr_engine}`);
-  return result; // { inpainted_image, blocks }
+  return finalizeServerResult(result, pageNo);
 }
 
 async function autoTranslateCurrentPage(pageNo = state.page, startedAt = Date.now(), progressIndex = 1, totalProgress = 1, isRetry = false) {
@@ -1462,6 +1496,56 @@ async function autoTranslateCurrentPage(pageNo = state.page, startedAt = Date.no
   }
 }
 
+// Fase 2.4 (pipeline): renderiza la página siguiente en un canvas DETACHED
+// (nunca toca cleanBgCanvas/erasedBgCanvas/pdfCanvas ni state.page) y la envía
+// al servidor mientras la página actual se procesa. El servidor serializa el
+// OCR con semáforo, así que el request de N+1 queda encolado detrás del de N
+// y su OCR arranca en cuanto termina el actual — se ahorra el round-trip
+// cliente→servidor de N+1 (~0.5-1s/pág en render+encode+subida).
+async function prefetchNextPage(pageNo) {
+  if (state.kind !== "pdf" || !state.pdf) return;
+  if (state.abortTranslation || state.translationPaused) return;
+  if (state.prefetchedByPage.has(pageNo)) return; // ya precargada
+  try {
+    const pdfPage = await state.pdf.getPage(pageNo);
+    const viewport = pdfPage.getViewport({ scale: state.scale });
+    const temp = document.createElement("canvas");
+    temp.width = viewport.width;
+    temp.height = viewport.height;
+    const renderTask = pdfPage.render({ canvasContext: temp.getContext("2d"), viewport });
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Timeout render prefetch")), window.__CLIENT_CONFIG.TIMEOUT_PDF_RENDER_MS)
+    );
+    try {
+      await Promise.race([renderTask.promise, timeoutPromise]);
+    } catch (e) {
+      renderTask.cancel();
+      throw e;
+    }
+    const blob = await new Promise((resolve) => temp.toBlob(resolve, "image/jpeg", 0.92));
+    if (!blob) return;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), window.__CLIENT_CONFIG.TIMEOUT_PROCESS_PAGE_MS);
+    const resp = await fetch(`/api/process-page?${buildProcessPageQuery().toString()}`, {
+      method: "POST",
+      headers: { "Content-Type": "image/jpeg" },
+      body: blob,
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    if (!resp.ok) return; // el flujo normal reintentará esta página
+    const result = await resp.json().catch(() => null);
+    if (!result || result.error === "ZOMBIE_SERVER") return;
+    if (state.abortTranslation || state.translationPaused) return; // descartar si cambió
+    state.prefetchedByPage.set(pageNo, { result, scale: state.scale });
+    console.log(`[prefetch] Página ${pageNo} precargada (${result.blocks?.length || 0} bloques)`);
+  } catch (e) {
+    // El prefetch es best-effort: cualquier fallo se descarta silenciosamente
+    // y la página se procesa por el flujo normal.
+    console.warn(`[prefetch] Página ${pageNo} descartada:`, e.message);
+  }
+}
+
 // Traducir todo el PDF / archivo completo
 
 // Verificar que el servidor Flask responde antes de iniciar un batch
@@ -1516,6 +1600,7 @@ async function autoTranslateAllPages() {
   state.abortTranslation = false;
   state.translationPaused = false;
   state.ocrFallbackToastShown = false;
+  state.prefetchedByPage.clear(); // pipeline Fase 2.4: empezar limpio
   const startedAt = Date.now();
   const originalPage = state.page;
   const total = state.kind === "pdf" ? state.pageCount : 1;
@@ -1539,11 +1624,14 @@ async function autoTranslateAllPages() {
       setStatus("Traducción cancelada por el usuario.");
       break;
     }
-    if (state.kind === "pdf") {
-      const result = await renderPage(p);
-      if (result?.aborted) continue;
+    // Fase 2.4 (pipeline): precargar la página siguiente mientras esta se
+    // procesa. El fetch de N+1 queda encolado detrás del OCR de N en el
+    // servidor (semáforo) — su OCR arranca en cuanto termina el actual, sin
+    // esperar el round-trip del cliente. No bloquea el loop (fire-and-forget);
+    // serverProcessPage reusa el resultado si llegó a tiempo.
+    if (p < total && state.kind === "pdf") {
+      prefetchNextPage(p + 1);
     }
-    
     const blocksThisPage = await autoTranslateCurrentPage(p, startedAt, p, total);
     
     if (blocksThisPage > 0) {
@@ -1925,10 +2013,91 @@ function wrapByCharacters(ctx, text, maxWidth) {
   return lines.length ? lines : [""];
 }
 
+// Wrapping híbrido: los tramos CJK se pueden cortar por carácter, pero las
+// palabras latinas/occidentales deben permanecer completas aunque el bloque
+// también contenga japonés, chino o coreano.
+function wrapMixedTextLines(ctx, text, maxWidth) {
+  const cjkRun = /[\u3040-\u30ff\u3130-\u318f\u3200-\u32ff\u3300-\u33ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7a3\uff00-\uffef]+/u;
+  const tokens = text.match(
+    /[\u3040-\u30ff\u3130-\u318f\u3200-\u32ff\u3300-\u33ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7a3\uff00-\uffef]+|[^\s\u3040-\u30ff\u3130-\u318f\u3200-\u32ff\u3300-\u33ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7a3\uff00-\uffef]+|\s+/gu,
+  ) || [];
+  const lines = [];
+  let currentLine = "";
+  let pendingSpace = false;
+  let currentHasCjk = false;
+
+  const flushCurrentLine = () => {
+    if (!currentLine) return;
+    lines.push(currentLine);
+    currentLine = "";
+    pendingSpace = false;
+    currentHasCjk = false;
+  };
+
+  for (const token of tokens) {
+    if (/^\s+$/u.test(token)) {
+      if (currentLine) pendingSpace = true;
+      continue;
+    }
+
+    if (cjkRun.test(token)) {
+      // Mantén separados los tramos CJK y latinos cuando hay espacio entre
+      // ellos. Así una frase como "こんにちは go home" no convierte "go
+      // home" en dos líneas solo porque antes haya texto japonés.
+      if (pendingSpace && currentLine && !currentHasCjk) {
+        flushCurrentLine();
+      }
+      for (const ch of Array.from(token)) {
+        const separator = pendingSpace && currentLine ? " " : "";
+        const testLine = currentLine + separator + ch;
+        if (ctx.measureText(testLine).width > maxWidth && currentLine) {
+          lines.push(currentLine);
+          currentLine = ch;
+          currentHasCjk = true;
+        } else {
+          currentLine = testLine;
+          currentHasCjk = true;
+        }
+        pendingSpace = false;
+      }
+      continue;
+    }
+
+    if (pendingSpace && currentLine && currentHasCjk) {
+      flushCurrentLine();
+    }
+    const separator = pendingSpace && currentLine ? " " : "";
+    const testLine = currentLine + separator + token;
+    if (ctx.measureText(testLine).width > maxWidth && currentLine) {
+      lines.push(currentLine);
+      currentLine = token;
+      currentHasCjk = false;
+    } else {
+      currentLine = testLine;
+      currentHasCjk = false;
+    }
+    pendingSpace = false;
+  }
+  if (currentLine) lines.push(currentLine);
+
+  // Último recurso para una palabra occidental demasiado larga; se conserva
+  // la misma salvaguarda que en el wrapping latino puro.
+  const finalLines = [];
+  for (const line of lines) {
+    if (!line.includes(" ") && ctx.measureText(line).width > maxWidth) {
+      finalLines.push(...wrapByCharacters(ctx, line, maxWidth));
+    } else {
+      finalLines.push(line);
+    }
+  }
+  return finalLines.length ? finalLines : [""];
+}
+
 function wrapTextLines(ctx, text, maxWidth) {
-  // CJK: sin espacios entre palabras, se segmenta por carácter (comportamiento correcto).
+  // En texto mixto solo se segmentan por carácter los tramos CJK; no se
+  // destruyen palabras occidentales por la presencia de un solo glifo CJK.
   if (containsCJK(text)) {
-    return wrapByCharacters(ctx, text, maxWidth);
+    return wrapMixedTextLines(ctx, text, maxWidth);
   }
 
   // Latino/occidental: SIEMPRE por palabras completas, nunca letra por letra,
@@ -2696,7 +2865,7 @@ translateBtn.addEventListener("click", async () => {
       const resp = await fetch("/api/process-page", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: cropB64, target: targetLang.value, source: sourceLang.value || "auto", ocr_mode: getSelectedOcrMode(), doc_id: getDocId() })
+        body: JSON.stringify({ image: cropB64, target: targetLang.value, source: sourceLang.value || "auto", ocr_mode: getSelectedOcrMode(), doc_id: getDocId(), response_format: "jpeg" })
       });
       if (resp.ok) {
         const resData = await resp.json();
@@ -2881,9 +3050,9 @@ function fitPageToStage() {
 fitPage.addEventListener("click", fitPageToStage);// Reset zoom on double-click canvas (back to default 1.8)
   $("#pdfCanvas")?.addEventListener("dblclick", (e) => {
   if (!state.kind || state.kind !== "pdf") return;
-  if (Math.abs(state.scale - 1.8) > 0.05) {
-    state.scale = 1.8;
-    showToast("Zoom restablecido al 180% (default)", "info", 1500);
+  if (Math.abs(state.scale - CLIENT_CONFIG.OCR_SCALE) > 0.05) {
+    state.scale = CLIENT_CONFIG.OCR_SCALE;
+    showToast(`Zoom restablecido al ${Math.round(CLIENT_CONFIG.OCR_SCALE * 100)}% (default)`, "info", 1500);
     renderPage(state.page).catch(err => console.error("[dblclick] Error:", err));
   }
 });

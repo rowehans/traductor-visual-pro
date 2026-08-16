@@ -65,9 +65,7 @@ export function showToast(message, type = "info", duration = 4000) {
     <div class="toast-icon" style="flex-shrink:0; width:20px; height:20px;">
       ${ICONS[type] || ICONS.info}
     </div>
-    <div class="toast-message" style="flex:1; font-size:13px; color:var(--text-primary); line-height:1.4;">
-      ${message}
-    </div>
+    <div class="toast-message" style="flex:1; font-size:13px; color:var(--text-primary); line-height:1.4;"></div>
     <button class="toast-close" style="color:var(--text-muted); cursor:pointer; padding:4px; transition:var(--transition-fast); flex-shrink:0;" aria-label="Cerrar">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
     </button>
@@ -75,6 +73,12 @@ export function showToast(message, type = "info", duration = 4000) {
 
   const c = document.getElementById("toastContainer");
   if (c) c.appendChild(toast);
+
+  // Los mensajes pueden incluir texto devuelto por la API o por una
+  // excepción del navegador. Asignarlos como texto evita que ese contenido
+  // se interprete como HTML dentro de la interfaz local.
+  const messageEl = toast.querySelector(".toast-message");
+  if (messageEl) messageEl.textContent = String(message ?? "");
 
   const closeBtn = toast.querySelector(".toast-close");
   closeBtn.addEventListener("click", () => removeToast(toast));

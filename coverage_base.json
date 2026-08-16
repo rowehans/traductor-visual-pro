@@ -1,0 +1,22 @@
+{
+  "analisis_calidad.py": 75.0,
+  "cache.py": 67.97,
+  "config.py": 81.82,
+  "launcher.py": 97.96,
+  "main.py": 88.0,
+  "models.py": 76.27,
+  "ocr_engine.py": 94.57,
+  "ocr_utils.py": 80.38,
+  "process_all_pages.py": 91.19,
+  "quality_analysis.py": 87.11,
+  "ratelimit.py": 80.0,
+  "runtime_diagnostics.py": 88.89,
+  "server.py": 89.1,
+  "translation_memory.py": 80.08,
+  "translator.py": 85.53,
+  "uocr_client.py": 74.45,
+  "uocr_daemon.py": 91.0,
+  "routes/__init__.py": 100.0,
+  "routes/api.py": 80.65,
+  "routes/main.py": 100.0
+}

@@ -15,6 +15,7 @@ Usa imágenes sintéticas numpy y mocks para EasyOCR.
 import sys
 import os
 import base64
+import threading
 import time
 import numpy as np
 import pytest
@@ -51,6 +52,377 @@ def gray_test_image() -> np.ndarray:
     cv2.putText(img, "OCR Prueba", (10, 75),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (50, 50, 50), 1)
     return img
+
+
+class TestOcrSpellcheckLanguageSafety:
+    """El corrector OCR no debe aplicar diccionario español a otros idiomas."""
+
+    def test_english_text_is_not_rewritten_by_spanish_dictionary(self, mocker):
+        from ocr_utils import _ocr_spellcheck
+
+        spellchecker = MagicMock()
+        spellchecker.correction.return_value = "casa"
+        get_spellchecker = mocker.patch(
+            "ocr_utils._get_spellchecker", return_value=spellchecker)
+
+        assert _ocr_spellcheck("the house") == "the house"
+        get_spellchecker.assert_not_called()
+        spellchecker.correction.assert_not_called()
+
+    def test_cjk_text_is_not_rewritten_by_spanish_dictionary(self, mocker):
+        from ocr_utils import _ocr_spellcheck
+
+        spellchecker = MagicMock()
+        spellchecker.correction.return_value = "casa"
+        get_spellchecker = mocker.patch(
+            "ocr_utils._get_spellchecker", return_value=spellchecker)
+
+        text = "こんにちは 世界"
+        assert _ocr_spellcheck(text) == text
+        get_spellchecker.assert_not_called()
+        spellchecker.correction.assert_not_called()
+
+    def test_spanish_text_still_uses_spellchecker(self, mocker):
+        from ocr_utils import _ocr_spellcheck
+
+        spellchecker = MagicMock()
+        # El camino de corrección consulta el diccionario agrupado por
+        # longitud: si no hay candidatos a edición <= 2, la corrección es
+        # imposible y se omite sp.correction(). Un diccionario con la palabra
+        # objetivo hace que el camino de corrección se ejecute.
+        spellchecker.word_frequency.dictionary = {"correctamente"}
+        spellchecker.correction.side_effect = lambda word: (
+            "correctamente" if word == "corectamente" else word)
+        get_spellchecker = mocker.patch(
+            "ocr_utils._get_spellchecker", return_value=spellchecker)
+
+        assert _ocr_spellcheck("corectamente") == "correctamente"
+        get_spellchecker.assert_called_once_with()
+
+    def test_mixed_latin_phrase_is_kept_intact(self, mocker):
+        from ocr_utils import _ocr_spellcheck
+
+        spanish = MagicMock()
+        spanish.known.return_value = {"quiero"}
+        spanish.correction.return_value = "casa"
+        english = MagicMock()
+        english.known.return_value = {"go", "home"}
+        get_spellchecker = mocker.patch(
+            "ocr_utils._get_spellchecker", return_value=spanish)
+        mocker.patch(
+            "ocr_utils._get_foreign_spellchecker", return_value=english)
+
+        text = "Quiero go home"
+        assert _ocr_spellcheck(text) == text
+        get_spellchecker.assert_called_once_with()
+
+
+class TestSpellcheckFastPath:
+    """El camino de corrección barata no bloquea correcciones reales y
+    evita el costo de pyspellchecker cuando no hay candidatos."""
+
+    @pytest.fixture(autouse=True)
+    def _spanish_detector(self, mocker):
+        # El detector de idioma (langdetect) es estadístico y no es fiable
+        # para palabras sueltas inventadas; forzar español hace los tests
+        # deterministas y aísla el comportamiento del fast-path.
+        return mocker.patch(
+            "translator._detect_language_robust", return_value="es")
+
+    def test_no_candidates_within_edit_2_skips_correction(self, mocker):
+        from ocr_utils import _ocr_spellcheck
+
+        spellchecker = MagicMock()
+        # Ninguna palabra del diccionario está a distancia de edición <= 2
+        # de la palabra larga -> sp.correction() devolvería None (pagaría la
+        # expansión de distancia 2) y el fast-path debe omitir la llamada.
+        spellchecker.word_frequency.dictionary = {"casa"}
+        get_spellchecker = mocker.patch(
+            "ocr_utils._get_spellchecker", return_value=spellchecker)
+
+        assert _ocr_spellcheck(
+            "qzwxecrvtbynumiopasdf") == "qzwxecrvtbynumiopasdf"
+        spellchecker.correction.assert_not_called()
+        get_spellchecker.assert_called_once_with()
+
+    def test_candidate_within_edit_2_still_corrects(self, mocker):
+        from ocr_utils import _ocr_spellcheck
+
+        spellchecker = MagicMock()
+        # 'prestigiosa' está a distancia 1 de 'prestigjosa' -> el fast-path
+        # ve el candidato y la corrección se aplica como antes.
+        spellchecker.word_frequency.dictionary = {"prestigiosa"}
+        spellchecker.correction.side_effect = lambda word: (
+            "prestigiosa" if word == "prestigjosa" else word)
+        mocker.patch(
+            "ocr_utils._get_spellchecker", return_value=spellchecker)
+
+        assert _ocr_spellcheck("prestigjosa") == "prestigiosa"
+        spellchecker.correction.assert_called_once_with("prestigjosa")
+
+    def test_index_no_contamination_between_instances(self, mocker):
+        # El índice se cachea por instancia (dict por id con owner), no por
+        # id() a secas: dos spellcheckers con diccionarios distintos no
+        # comparten candidatos. Usa una palabra >= _SPELL_CORRECTION_MIN_LEN
+        # para que pase por _spellcheck_correction (el camino del índice).
+        # Nota 2026-08-15: el límite de edición dependiente de longitud deja
+        # d2 solo a 6-14 chars (calibración del capítulo), así que el par usa
+        # distancia 1 dentro de ese rango.
+        from ocr_utils import _ocr_spellcheck
+
+        mocker.patch("translator._detect_language_robust",
+                     return_value="es")
+        first = MagicMock()
+        first.word_frequency.dictionary = {"incorrectamente"}
+        mocker.patch("ocr_utils._get_spellchecker", return_value=first)
+        # 'incorrectament' (14 chars) está a distancia 1 de 'incorrectamente'
+        # y solo el índice del primer checker la tiene -> corrige.
+        assert _ocr_spellcheck("incorrectament") == "incorrectamente"
+
+        second = MagicMock()
+        second.word_frequency.dictionary = {"casa"}
+        mocker.patch("ocr_utils._get_spellchecker", return_value=second)
+        # El índice del segundo no tiene 'incorrectamente': sin candidatos.
+        assert _ocr_spellcheck("incorrectament") == "incorrectament"
+        second.correction.assert_not_called()
+
+
+class TestSpellcheckCorrectionFast:
+    """Réplica barata de sp.correction() para palabras largas.
+
+    _spellcheck_correction() debe producir el MISMO resultado que
+    pyspellchecker (candidatos a distancia 1, luego 2; preferencia de
+    diacríticos; max por frecuencia) sin la expansión masiva de distancia 2.
+    Se valida contra el SpellChecker REAL (no mock) — el índice por id con
+    owner arregló que WeakKeyDictionary no soportara SpellChecker.
+    """
+
+    def test_matches_pyspellchecker_on_pathological_words(self):
+        from ocr_utils import _get_spellchecker, _spellcheck_correction
+
+        sp = _get_spellchecker()
+        assert sp is not None
+        words = [
+            # Palabras largas/pegadas del OCR (caso del costo de distancia 2)
+            "cardenaldelsanto", "podriausarlopara", "yutiabloodia",
+            "prestigjosa", "reputacion", "unbuen", "situacion",
+            "cautela", "correctamente", "corectamente",
+            "cardenaldelsantoreino", "jinoquieroirahi", "acuersobien",
+            "teniasunregalo", "contralavoluntad", "poderesocultos",
+            "secretodelreino", "xqwertyuiopasdfghjklzx",
+        ]
+        for w in words:
+            assert _spellcheck_correction(sp, w) == sp.correction(w), w
+
+    def test_short_words_delegate_to_pyspellchecker(self, mocker):
+        # Las palabras cortas (< _SPELL_CORRECTION_MIN_LEN) no pasan por el
+        # scan (más lento que pyspellchecker ahí): el caller delega a
+        # sp.correction(). Se verifica que sp.correction se llama y que el
+        # scan NO (evita regresar al scan lento en cortas).
+        from ocr_utils import _SPELL_CORRECTION_MIN_LEN, _ocr_spellcheck
+
+        spellchecker = MagicMock()
+        spellchecker.word_frequency.dictionary = {"casa"}
+        spellchecker.correction.return_value = "hola"
+        mocker.patch("ocr_utils._get_spellchecker", return_value=spellchecker)
+
+        # 'hola' (4 chars) < umbral -> sp.correction, no _spellcheck_correction
+        assert len("hola") < _SPELL_CORRECTION_MIN_LEN
+        assert _ocr_spellcheck("hola") == "hola"
+        spellchecker.correction.assert_called_once_with("hola")
+
+    def test_diacritics_preference(self):
+        # Preferencia de coincidencia sin diacríticos (réplica de
+        # pyspellchecker.correction): entre candidatos a distancia 1, el que
+        # coincide sin acentos gana aunque no sea el más frecuente.
+        from ocr_utils import _get_spellchecker, _spellcheck_correction
+
+        sp = _get_spellchecker()
+        assert sp is not None
+        # 'situacion' -> 'situación' (mismo sin diacríticos), no otra palabra
+        # igual de frecuente con acento distinto.
+        assert _spellcheck_correction(sp, "situacion") == \
+            sp.correction("situacion")
+        assert _spellcheck_correction(sp, "correccion") == \
+            sp.correction("correccion")
+
+    def test_index_caches_by_instance_with_real_checker(self):
+        # El índice se cachea por id(sp) con owner — el SpellChecker real
+        # (slots sin __weakref__) no rompe el fast-path (bug 2026-08-15: el
+        # WeakKeyDictionary lo hacía inerte en producción).
+        from ocr_utils import _get_spellchecker, _spell_words_by_len
+
+        sp = _get_spellchecker()
+        assert sp is not None
+        idx1 = _spell_words_by_len(sp)
+        idx2 = _spell_words_by_len(sp)
+        assert idx1 is idx2  # cacheado
+        assert sum(len(v) for v in idx1.values()) > 80000
+
+    def test_max_edits_schedule_by_length(self):
+        # Calibración 2026-08-15 (A/B capítulo completo): 3-5 → edición 1,
+        # 6-14 → edición 2 (sin cambio), >14 → edición 1 (se bloquea SOLO la
+        # distancia 2, que produce sugerencias arbitrarias en largas; la
+        # propuesta original de edición 0 perdería d1 legítimas).
+        from ocr_utils import _spell_max_edits
+
+        assert _spell_max_edits(3) == 1
+        assert _spell_max_edits(5) == 1
+        assert _spell_max_edits(6) == 2
+        assert _spell_max_edits(12) == 2
+        assert _spell_max_edits(14) == 2
+        assert _spell_max_edits(15) == 1
+        assert _spell_max_edits(21) == 1
+
+    def test_long_d1_preserved_d2_blocked(self):
+        # En >14 chars se bloquea SOLO la distancia 2: 'inconstitucinal'
+        # (d1 de 'inconstitucional') se corrige, pero 'ncnstitucionalidad'
+        # (solo d2, pyspell diría 'constitucionalidad') queda intacta.
+        from ocr_utils import _get_spellchecker, _spellcheck_correction
+
+        sp = _get_spellchecker()
+        assert sp is not None
+        assert _spellcheck_correction(sp, "inconstitucinal") == \
+            "inconstitucional"
+        assert _spellcheck_correction(sp, "ncnstitucionalidad") is None
+
+    def test_short_d2_correction_rejected(self, mocker):
+        # Palabras de 3-5 chars solo aceptan correcciones a distancia 1: si
+        # sp.correction devuelve una a distancia 2 ('abcd'->'abx', 2
+        # ediciones), el filtro la descarta y se conserva el original.
+        from ocr_utils import _ocr_spellcheck
+
+        mocker.patch("translator._detect_language_robust",
+                     return_value="es")
+        spellchecker = MagicMock()
+        spellchecker.word_frequency.dictionary = {"abx": 1}
+        spellchecker.correction.return_value = "abx"
+        mocker.patch("ocr_utils._get_spellchecker",
+                     return_value=spellchecker)
+
+        assert _ocr_spellcheck("abcd") == "abcd"
+        spellchecker.correction.assert_called_once_with("abcd")
+
+    def test_short_d1_correction_accepted(self, mocker):
+        # 'unf' -> 'un' es distancia 1: el filtro la acepta (una de las 3
+        # correcciones reales medidas en el capítulo completo).
+        from ocr_utils import _ocr_spellcheck
+
+        mocker.patch("translator._detect_language_robust",
+                     return_value="es")
+        spellchecker = MagicMock()
+        spellchecker.word_frequency.dictionary = {"un": 1}
+        spellchecker.correction.return_value = "un"
+        mocker.patch("ocr_utils._get_spellchecker",
+                     return_value=spellchecker)
+
+        assert _ocr_spellcheck("unf") == "un"
+
+
+class TestForeignTokenLengthFilter:
+    """Fast-path por acotación de longitud en _contains_foreign_latin_tokens.
+
+    Ningún token más largo que la palabra más larga del diccionario extranjero
+    (en/pt) puede estar en él (known() es set lookup exacto) — pasarlo sería
+    trabajo inútil. El filtro no debe cambiar la semántica: un token corto de
+    otro idioma sigue detectándose.
+    """
+
+    def test_mixed_latin_short_tokens_still_detected(self, mocker):
+        # Mezcla real con tokens cortos: se sigue detectando aunque el filtro
+        # por longitud esté activo (diccionario real, longest > 2).
+        from ocr_utils import _contains_foreign_latin_tokens, _get_spellchecker
+
+        sp = _get_spellchecker()
+        assert sp is not None
+        assert _contains_foreign_latin_tokens("Quiero go home", sp) is True
+
+    def test_long_ocr_glue_token_never_foreign(self, mocker):
+        # Token largo/pegado del OCR no es conocido por en/pt ni es — el
+        # filtro por longitud lo excluye de la consulta extranjera sin
+        # cambiar el resultado (False).
+        from ocr_utils import _contains_foreign_latin_tokens, _get_spellchecker
+
+        sp = _get_spellchecker()
+        assert sp is not None
+        text = "El cardenaldelsanto reino yutiabloodia"
+        assert _contains_foreign_latin_tokens(text, sp) is False
+
+    def test_mock_without_longest_falls_back_to_full_scan(self, mocker):
+        # Un checker mockeado sin longest_word_length real (MagicMock) no
+        # rompe: se escanean todos los unknown_tokens (comportamiento
+        # histórico).
+        from ocr_utils import _contains_foreign_latin_tokens
+
+        spanish = MagicMock()
+        spanish.known.return_value = {"quiero"}
+        english = MagicMock()
+        english.known.return_value = {"go", "home"}
+        mocker.patch("ocr_utils._get_foreign_spellchecker",
+                     return_value=english)
+        assert _contains_foreign_latin_tokens("Quiero go home",
+                                              spanish) is True
+
+
+class TestSpellcheckLangPrefix:
+    """El langdetect de _ocr_spellcheck se aplica sobre un prefijo acotado.
+
+    Los bloques fusionados del merge final pueden superar miles de caracteres
+    y langdetect escala con la longitud; el caller pasa _SPELL_LANG_MAX_CHARS
+    como máximo, sin cambiar la decisión de idioma en el corpus.
+    """
+
+    def test_long_text_detects_on_trimmed_prefix(self, mocker):
+        from ocr_utils import _SPELL_LANG_MAX_CHARS, _ocr_spellcheck
+
+        detect = mocker.patch("translator._detect_language_robust",
+                              return_value="es")
+        long_text = "el detective investigo el suceso " * 60  # > 600 chars
+        assert len(long_text) > _SPELL_LANG_MAX_CHARS
+
+        _ocr_spellcheck(long_text)
+        # El detector se llamó UNA vez con el prefijo recortado.
+        detect.assert_called_once()
+        arg = detect.call_args.args[0]
+        assert len(arg) <= _SPELL_LANG_MAX_CHARS
+
+    def test_short_text_detects_on_full_text(self, mocker):
+        from ocr_utils import _SPELL_LANG_MAX_CHARS, _ocr_spellcheck
+
+        detect = mocker.patch("translator._detect_language_robust",
+                              return_value="es")
+        short_text = "el detective investigo el suceso"
+        assert len(short_text) < _SPELL_LANG_MAX_CHARS
+
+        _ocr_spellcheck(short_text)
+        detect.assert_called_once()
+        assert detect.call_args.args[0] == short_text
+
+    def test_prefix_does_not_change_language_decision(self):
+        # Propiedad: el prefijo recortado clasifica igual que el texto
+        # completo para textos largos españoles (verificado en el corpus).
+        from ocr_utils import _SPELL_LANG_MAX_CHARS, _ocr_spellcheck
+
+        long_text = ("El detective observó el extraño suceso y decidió "
+                     "investigar la situación con cautela. ") * 25
+        assert len(long_text) > _SPELL_LANG_MAX_CHARS
+        out = _ocr_spellcheck(long_text)
+        assert isinstance(out, str) and len(out) > 0
+
+
+class TestOcrReaderCurrentLanguages:
+    """El lector automático cubre todos los idiomas latinos configurados."""
+
+    def test_auto_reader_excludes_temporarily_disabled_languages(self, mocker):
+        from pathlib import Path
+
+        source = (Path(__file__).parents[1] / "ocr_utils.py").read_text(
+            encoding="utf-8"
+        )
+        assert 'langs = ["es", "en", "pt"]' in source
+        assert 'langs = ["es", "en", "pt", "fr", "de", "it"]' not in source
+        assert 'if lang not in {"en", "pt"}' in source
+        assert 'for lang in ("en", "pt")' in source
 
 
 @pytest.fixture
@@ -115,18 +487,109 @@ class TestBase64Conversion:
         result = _base64_to_cv2("not-a-valid-base64!!")
         assert result is None
 
+    def test_base64_to_cv2_rejects_valid_payload_with_invalid_chars(self, small_bgr):
+        """No debe aceptar caracteres ignorados silenciosamente por b64decode."""
+        from ocr_utils import _cv2_to_base64, _base64_to_cv2
+
+        raw = _cv2_to_base64(small_bgr).split(",", 1)[1]
+        assert _base64_to_cv2(raw + "!") is None
+
     def test_cv2_to_base64_jpg_format(self, small_bgr):
         from ocr_utils import _cv2_to_base64
         b64 = _cv2_to_base64(small_bgr, fmt=".jpg")
         assert isinstance(b64, str)
-        # NOTA: _cv2_to_base64 hardcodea "data:image/png;base64," como prefijo
-        # incluso cuando fmt=".jpg". La imagen codificada SÍ es JPG (/9j/), pero
-        # el prefijo siempre dice PNG. Bug conocido (TODO: corregir prefijo).
+        assert b64.startswith("data:image/jpeg;base64,")
         assert "/9j/" in b64, "El contenido debería ser JPG con fmt=.jpg"
+
+    def test_bytes_to_cv2_roundtrip_jpeg(self, small_bgr):
+        """Optimización 2.4: bytes crudos de imagen se decodifican igual que
+        el flujo base64, sin pasar por string."""
+        import cv2
+        from ocr_utils import _bytes_to_cv2
+        ok, buf = cv2.imencode(".jpg", small_bgr, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        assert ok
+        decoded = _bytes_to_cv2(buf.tobytes())
+        assert decoded is not None
+        assert decoded.shape == small_bgr.shape
+
+    def test_bytes_to_cv2_invalid_returns_none(self):
+        from ocr_utils import _bytes_to_cv2
+        assert _bytes_to_cv2(b"\x00\x01\x02 not an image") is None
+
+    def test_base64_to_cv2_delega_en_bytes(self, mocker):
+        """_base64_to_cv2 debe compartir la lógica de _bytes_to_cv2 (sin
+        duplicación de la validación de píxeles)."""
+        import numpy as np
+        from ocr_utils import _cv2_to_base64, _base64_to_cv2
+        import ocr_utils
+        spy = mocker.spy(ocr_utils, "_bytes_to_cv2")
+        img = np.ones((40, 40, 3), dtype=np.uint8) * 90
+        raw = _cv2_to_base64(img).split(",", 1)[1]
+        assert _base64_to_cv2(raw) is not None
+        spy.assert_called_once()
 
     def test_empty_base64_returns_none(self):
         from ocr_utils import _base64_to_cv2
         assert _base64_to_cv2("") is None
+
+    def test_base64_to_cv2_rejects_excessive_decoded_dimensions(
+        self, small_bgr, monkeypatch
+    ):
+        """Una cabecera enorme no debe reservar un ndarray antes de rechazarla."""
+        from PIL import Image
+        from ocr_utils import _cv2_to_base64, _base64_to_cv2
+
+        raw = _cv2_to_base64(small_bgr).split(",", 1)[1]
+
+        class _HugeHeader:
+            size = (100_000, 100_000)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        monkeypatch.setattr(Image, "open", lambda _stream: _HugeHeader())
+        assert _base64_to_cv2(raw) is None
+
+    def test_base64_to_cv2_respects_budgete_de_pixeles_del_lote(
+        self, small_bgr, monkeypatch
+    ):
+        """El batch puede imponer un límite menor antes de imdecode()."""
+        from PIL import Image
+        from ocr_utils import _cv2_to_base64, _base64_to_cv2
+
+        raw = _cv2_to_base64(small_bgr).split(",", 1)[1]
+
+        class _Header:
+            size = (10, 10)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        monkeypatch.setattr(Image, "open", lambda _stream: _Header())
+        assert _base64_to_cv2(raw, max_pixels=99) is None
+
+
+class TestPageSignature:
+    def test_signature_changes_when_content_changes_with_same_dimensions(self):
+        from ocr_utils import _page_signature
+
+        first = np.full((160, 120, 3), 220, dtype=np.uint8)
+        second = first.copy()
+        second[40:120, 30:90] = 20
+
+        first_signature = _page_signature(first)
+        second_signature = _page_signature(second)
+
+        assert first_signature
+        assert second_signature
+        assert first_signature != second_signature
+        assert len(first_signature.split(":")) == 3
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -402,6 +865,18 @@ class TestOcrResultsToBlocks:
         for b in blocks:
             assert b["confidence"] >= 0.08
 
+    def test_dict_conf_malformed_no_rompe_el_batch(self, small_bgr):
+        """Una respuesta RapidOCR malformada no debe tumbar toda la página."""
+        from ocr_utils import _ocr_results_to_blocks
+        results = [
+            {"x": 10, "y": 20, "w": 80, "h": 15, "text": "RUIDO",
+             "confidence": "no-numero", "fontSize": 14},
+            {"x": 60, "y": 50, "w": 80, "h": 15, "text": "OK",
+             "confidence": 0.80, "fontSize": 14},
+        ]
+        blocks = _ocr_results_to_blocks(results, small_bgr)
+        assert any(block["text"] == "OK" for block in blocks)
+
 
 # ═══════════════════════════════════════════════════════════════
 # _filter_watermarks_from_blocks
@@ -481,6 +956,36 @@ class TestGroupAndMergeBlocks:
         combined = " ".join(texts)
         assert "Hola" in combined and "Mundo" in combined
 
+    def test_merge_preserves_semantic_type(self):
+        """El tipo de Ruta C no debe perderse al unir dos líneas cercanas."""
+        from ocr_utils import _group_and_merge_blocks
+        blocks = [
+            {"x": 10, "y": 20, "w": 50, "h": 15, "text": "CAPÍTULO",
+             "confidence": 0.90, "fontSize": 14, "textColor": "#000000",
+             "type": "title"},
+            {"x": 66, "y": 21, "w": 60, "h": 15, "text": "UNO",
+             "confidence": 0.90, "fontSize": 14, "textColor": "#000000",
+             "type": "title"},
+        ]
+        result = _group_and_merge_blocks(blocks, img_h=200)
+        assert len(result) == 1
+        assert result[0]["type"] == "title"
+
+    def test_different_semantic_types_are_not_merged(self):
+        """Título y diálogo adyacentes son unidades traducibles distintas."""
+        from ocr_utils import _group_and_merge_blocks
+        blocks = [
+            {"x": 10, "y": 20, "w": 50, "h": 15, "text": "TÍTULO",
+             "confidence": 0.90, "fontSize": 14, "textColor": "#000000",
+             "type": "title"},
+            {"x": 66, "y": 21, "w": 60, "h": 15, "text": "Hola",
+             "confidence": 0.90, "fontSize": 14, "textColor": "#000000",
+             "type": "dialogue"},
+        ]
+        result = _group_and_merge_blocks(blocks, img_h=200)
+        assert len(result) == 2
+        assert {item["type"] for item in result} == {"title", "dialogue"}
+
     def test_vertical_merge(self):
         from ocr_utils import _group_and_merge_blocks
         # Dos bloques en misma columna (x overlap) cerca verticalmente
@@ -549,6 +1054,17 @@ class TestGroupAndMergeBlocks:
         assert len(result) == 1
         assert result[0]["text"] == "Hola hermoso mundo"
 
+    def test_sfx_con_marcadores_se_conserva_antes_de_limpiar_simbolos(self):
+        from ocr_utils import _group_and_merge_blocks
+        blocks = [
+            {"x": 10, "y": 50, "w": 60, "h": 15, "text": "*sigh*",
+             "confidence": 0.85, "fontSize": 14, "textColor": "#000000"},
+        ]
+
+        result = _group_and_merge_blocks(blocks, img_h=200)
+
+        assert result and result[0]["text"] == "*sigh*"
+
     def test_punctuation_only_filtered(self):
         from ocr_utils import _group_and_merge_blocks
         blocks = [
@@ -564,6 +1080,25 @@ class TestGroupAndMergeBlocks:
         ]
         result = _group_and_merge_blocks(blocks, img_h=200)
         assert len(result) == 0
+
+    def test_low_confidence_ocr_garbage_is_not_inpainted(self):
+        """Basura alfanumérica débil no debe crear una caja traducible."""
+        from ocr_utils import _group_and_merge_blocks
+        blocks = [
+            {"x": 10, "y": 50, "w": 70, "h": 15, "text": "Q7%zn2",
+             "confidence": 0.18, "fontSize": 14, "textColor": "#000000"},
+        ]
+        assert _group_and_merge_blocks(blocks, img_h=200) == []
+
+    def test_low_confidence_cjk_text_is_not_removed_by_latin_noise_gate(self):
+        """La barrera de ruido latino no debe borrar CJK débil."""
+        from ocr_utils import _group_and_merge_blocks
+        blocks = [
+            {"x": 10, "y": 50, "w": 70, "h": 15, "text": "こんにちは",
+             "confidence": 0.18, "fontSize": 14, "textColor": "#000000"},
+        ]
+        result = _group_and_merge_blocks(blocks, img_h=200)
+        assert result and result[0]["text"] == "こんにちは"
 
     def test_glosario_applied(self):
         from ocr_utils import _group_and_merge_blocks
@@ -681,6 +1216,17 @@ class TestBuildInpaintMask:
         region = mask[25:55, 25:90]
         assert int(region.max()) > 0
 
+    def test_texto_flotante_usa_rectangulo_completo(self, mocker):
+        """En arte no uniforme debe borrarse la caja, no solo glifos aislados."""
+        from ocr_utils import _build_inpaint_mask
+        img = np.zeros((100, 200, 3), dtype=np.uint8)
+        block = {"x": 30, "y": 30, "w": 50, "h": 20, "text": "SFX"}
+        mocker.patch("ocr_utils._is_inside_speech_bubble", return_value=False)
+
+        mask = _build_inpaint_mask(img, [block])
+
+        assert int(mask[block["y"] + 5, block["x"] + 5]) == 255
+
 
 # ═══════════════════════════════════════════════════════════════
 # _inpaint_image
@@ -767,6 +1313,26 @@ class TestSampleBgColor:
 # ═══════════════════════════════════════════════════════════════
 
 class TestRunOcrOnImage:
+    def test_no_ejecuta_reader_si_no_adquiere_semaforo(self, small_bgr, mocker):
+        from ocr_utils import _run_ocr_on_image
+
+        mock_reader = MagicMock()
+        mocker.patch("ocr_utils._ocr_semaphore.acquire", return_value=False)
+
+        assert _run_ocr_on_image(mock_reader, small_bgr) == []
+        mock_reader.readtext.assert_not_called()
+
+    def test_no_copia_bgr_si_no_adquiere_semaforo(self, small_bgr, mocker):
+        """La conversion RGB debe ocurrir solo cuando EasyOCR puede avanzar."""
+        from ocr_utils import _run_ocr_on_image
+
+        mock_reader = MagicMock()
+        mocker.patch("ocr_utils._ocr_semaphore.acquire", return_value=False)
+        convert = mocker.patch("ocr_utils.cv2.cvtColor")
+
+        assert _run_ocr_on_image(mock_reader, small_bgr) == []
+        convert.assert_not_called()
+
     """Ejecución de EasyOCR con semáforo."""
 
     def test_returns_empty_on_error(self, small_bgr):
@@ -788,6 +1354,17 @@ class TestRunOcrOnImage:
         assert "text_threshold" in kwargs
         assert kwargs["paragraph"] is False
 
+    def test_readtext_pasa_batch_size_del_recognizer(self, small_bgr):
+        """Fase 1 (2.2): el recognizer de EasyOCR debe usar el batch de la
+        constante _OCR_BATCH_SIZE (acelera páginas con varios bloques)."""
+        from ocr_utils import _run_ocr_on_image, _OCR_BATCH_SIZE
+        mock_reader = MagicMock()
+        mock_reader.readtext.return_value = [("result",)]
+        _run_ocr_on_image(mock_reader, small_bgr)
+        _, kwargs = mock_reader.readtext.call_args
+        assert kwargs["batch_size"] == _OCR_BATCH_SIZE
+        assert _OCR_BATCH_SIZE > 1
+
     def test_releases_semaphore_on_error(self, small_bgr):
         from ocr_utils import _run_ocr_on_image, _ocr_semaphore
         mock_reader = MagicMock()
@@ -807,6 +1384,52 @@ class TestRunOcrOnImage:
 
 class TestDetectAndOcr:
     """Pipeline de 3 niveles de OCR."""
+
+    def test_script_language_hints_detects_non_latin_text(self):
+        """La evidencia de RapidOCR identifica los alfabetos que requieren un lector específico."""
+        from ocr_utils import _script_language_hints
+
+        blocks = [
+            {"text": "Hola", "confidence": 0.90},
+            {"text": "こんにちは", "confidence": 0.88},
+            {"text": "안녕하세요", "confidence": 0.87},
+            {"text": "你好", "confidence": 0.86},
+        ]
+
+        assert set(_script_language_hints(blocks)) == {"ja", "ko", "zh"}
+
+    def test_mixed_page_reocr_uses_cpu_reader_for_script_hint(self, small_bgr):
+        """Una página mixta recupera el idioma no latino sin cargarlo en GPU."""
+        latin_reader = MagicMock()
+        latin_reader.readtext.return_value = [
+            ([[10, 20], [80, 20], [80, 35], [10, 35]], "Hola", 0.85)
+        ]
+        japanese_reader = MagicMock()
+        japanese_reader.readtext.return_value = [
+            ([[90, 50], [160, 50], [160, 65], [90, 65]], "こんにちは", 0.86)
+        ]
+
+        def get_reader(lang="auto", **kwargs):
+            assert kwargs.get("prefer_gpu", True) is (lang == "auto")
+            return japanese_reader if lang == "ja" else latin_reader
+
+        rapid_blocks = [{
+            "text": "こんにちは",
+            "confidence": 0.88,
+            "x": 90,
+            "y": 50,
+            "w": 70,
+            "h": 15,
+        }]
+        with patch("ocr_utils._get_ocr_reader", side_effect=get_reader):
+            with patch("ocr_utils._run_rapidocr", return_value=rapid_blocks):
+                with patch("ocr_utils._ocr_semaphore.acquire", return_value=True):
+                    with patch("ocr_utils._ocr_semaphore.release"):
+                        from ocr_utils import _detect_and_ocr
+                        result = _detect_and_ocr(small_bgr, lang_hint="auto")
+
+        assert "Hola" in " ".join(block["text"] for block in result)
+        assert "こんにちは" in " ".join(block["text"] for block in result)
 
     def test_returns_empty_when_no_reader(self, small_bgr):
         with patch("ocr_utils._get_ocr_reader", return_value=None):
@@ -829,6 +1452,70 @@ class TestDetectAndOcr:
                     assert len(result) >= 1
                     texts = [b["text"] for b in result]
                     assert "Hola" in " ".join(texts)
+
+    def test_rapid_cond_omite_rapid_en_pagina_fuerte(self, small_bgr):
+        """Fase 1 (2.1): si EasyOCR resuelve la página con fuerza (>= 3 bloques
+        y conf >= 0.20), el pase RapidOCR se omite por completo (ahorro de
+        ~1.1-1.5s/pág en páginas fáciles)."""
+        from ocr_utils import _detect_and_ocr
+
+        mock_reader = MagicMock()
+        # 3 bloques bien separados con confianza alta → página fuerte
+        mock_reader.readtext.return_value = [
+            ([[20, 20], [90, 20], [90, 40], [20, 40]], "Hola", 0.85),
+            ([[20, 70], [90, 70], [90, 90], [20, 90]], "mundo", 0.80),
+            ([[20, 120], [90, 120], [90, 140], [20, 140]], "otro", 0.75),
+        ]
+
+        def fail_rapid(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("RapidOCR no debe correr en página fuerte")
+
+        with patch("ocr_utils._get_ocr_reader", return_value=mock_reader):
+            with patch("ocr_utils._ocr_semaphore.acquire", return_value=True):
+                with patch("ocr_utils._ocr_semaphore.release"):
+                    with patch("ocr_utils._run_rapidocr",
+                               side_effect=fail_rapid):
+                        result = _detect_and_ocr(small_bgr)
+
+        assert len(result) == 3
+        assert "Hola" in " ".join(b["text"] for b in result)
+
+    def test_rapid_cond_ejecuta_rapid_en_pagina_debil(self, small_bgr):
+        """Fase 1 (2.1): con pocos bloques (1 < 3), RapidOCR corre en serie
+        después de EasyOCR para complementar texto estilizado/títulos."""
+        from ocr_utils import _detect_and_ocr
+
+        mock_reader = MagicMock()
+        mock_reader.readtext.return_value = [
+            ([[10, 20], [80, 20], [80, 35], [10, 35]], "Hola", 0.30)
+        ]
+
+        with patch("ocr_utils._get_ocr_reader", return_value=mock_reader):
+            with patch("ocr_utils._ocr_semaphore.acquire", return_value=True):
+                with patch("ocr_utils._ocr_semaphore.release"):
+                    with patch("ocr_utils._preprocess_rapid",
+                               return_value=small_bgr):
+                        with patch("ocr_utils._run_rapidocr",
+                                   return_value=[]) as run_rapid:
+                            result = _detect_and_ocr(small_bgr)
+
+        run_rapid.assert_called_once()
+        assert len(result) == 1
+        assert result[0]["text"] == "Hola"
+
+    def test_preprocess_rapid_reutiliza_imagen_prefiltrada(self, small_bgr):
+        """El camino hibrido no debe repetir el pre-filtro ya calculado."""
+        from ocr_utils import _preprocess_rapid
+
+        with patch("ocr_utils._pre_filter_image") as prefilter:
+            with patch("ocr_utils._preprocess_enhanced", return_value=small_bgr):
+                result = _preprocess_rapid(
+                    small_bgr,
+                    already_prefiltered=True,
+                )
+
+        assert result is small_bgr
+        prefilter.assert_not_called()
 
     def test_tier1_fallback_to_tier2_without_fallback(self, small_bgr):
         """Con allow_fallback=False, si tier 1 da 0 bloques, retorna []."""
@@ -940,6 +1627,139 @@ class TestBubbleRegionDetection:
 class TestRecoverRegionsWithEasyocr:
     """Ruta C: re-OCR de regiones con upscale y mapeo de coordenadas."""
 
+    def test_prioriza_rapidocr_en_crop_y_evita_cargar_easyocr(self):
+        """RapidOCR debe ser el primer motor en el recorte de un globo."""
+        from unittest.mock import patch
+        from ocr_utils import _recover_regions_with_easyocr
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        rapid_blocks = [{
+            "x": 30, "y": 40, "w": 120, "h": 50, "text": "DIALOGO REAL",
+            "confidence": 0.82, "textColor": "#000000",
+        }]
+
+        with patch("ocr_utils._get_ocr_reader") as get_reader:
+            with patch("ocr_utils._rapidocr_strip_batch",
+                       return_value={0: rapid_blocks}) as strip_batch:
+                blocks = _recover_regions_with_easyocr(img, regions, upscale=3.5)
+
+        get_reader.assert_not_called()
+        strip_batch.assert_called_once()
+        assert blocks and blocks[0]["text"] == "DIALOGO REAL"
+        assert blocks[0]["engine"] == "rapidocr-region"
+
+    def test_easyocr_es_fallback_si_rapidocr_no_recupera(self):
+        """EasyOCR queda como fallback cuando RapidOCR no devuelve texto."""
+        from unittest.mock import patch
+        from ocr_utils import _recover_regions_with_easyocr
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        reader = MagicMock()
+        reader.readtext.return_value = [
+            ([[30, 40], [150, 40], [150, 90], [30, 90]], "EASY FALLBACK", 0.91)]
+
+        with patch("ocr_utils._rapidocr_strip_batch",
+                   return_value={}) as strip_batch:
+            with patch("ocr_utils._get_ocr_reader", return_value=reader) as get_reader:
+                with patch("ocr_utils._run_ocr_on_image",
+                           side_effect=lambda r, crop, **kw: r.readtext(crop)):
+                    with patch("ocr_utils._group_and_merge_blocks",
+                               side_effect=lambda b, h: b):
+                        with patch("ocr_utils._classify_rotate_crop",
+                                   side_effect=lambda x: (x, False, 0.0)):
+                            blocks = _recover_regions_with_easyocr(
+                                img, regions, upscale=3.5)
+
+        strip_batch.assert_called_once()
+        get_reader.assert_called_once()
+        assert blocks and blocks[0]["text"] == "EASY FALLBACK"
+        assert blocks[0]["engine"] == "easyocr-region"
+
+    def test_resultado_rapidocr_malformado_no_rompe_fallback(self):
+        """Un bloque RapidOCR corrupto no debe tumbar el procesamiento."""
+        from unittest.mock import patch
+        from ocr_utils import _recover_regions_with_easyocr
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        reader = MagicMock()
+        reader.readtext.return_value = [
+            ([[30, 40], [150, 40], [150, 90], [30, 90]], "SEGURO", 0.91)]
+        malformed = [{"text": "RAPID", "confidence": "nan-no-valido"}]
+
+        with patch("ocr_utils._rapidocr_strip_batch",
+                   return_value={0: malformed}):
+            with patch("ocr_utils._get_ocr_reader", return_value=reader):
+                with patch("ocr_utils._run_ocr_on_image",
+                           side_effect=lambda r, crop, **kw: r.readtext(crop)):
+                    with patch("ocr_utils._group_and_merge_blocks",
+                               side_effect=lambda b, h: b):
+                        with patch("ocr_utils._classify_rotate_crop",
+                                   side_effect=lambda x: (x, False, 0.0)):
+                            blocks = _recover_regions_with_easyocr(
+                                img, regions, upscale=3.5)
+
+        assert blocks and blocks[0]["text"] == "SEGURO"
+        assert blocks[0]["engine"] == "easyocr-region"
+
+    def test_rapidocr_recibe_crop_rotado_y_mapea_de_vuelta(self):
+        """El cls de rotación debe aplicarse también al RapidOCR primario."""
+        from unittest.mock import patch
+        from ocr_utils import _recover_regions_with_easyocr
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        rotated = np.zeros((182, 252, 3), dtype=np.uint8)
+        rapid_blocks = [{
+            "x": 30, "y": 40, "w": 120, "h": 50, "text": "ROTADO",
+            "confidence": 0.84, "textColor": "#000000",
+        }]
+        seen = {}
+
+        def capture_strip(crops, upscale, **_kwargs):
+            seen["crops"] = crops
+            return {0: rapid_blocks}
+
+        with patch("ocr_utils._classify_rotate_crop",
+                   return_value=(rotated, True, 0.97)):
+            with patch("ocr_utils._rapidocr_strip_batch",
+                       side_effect=capture_strip):
+                blocks = _recover_regions_with_easyocr(img, regions, upscale=3.5)
+
+        assert seen["crops"][0]["img"] is rotated
+        assert blocks and blocks[0]["text"] == "ROTADO"
+        assert blocks[0]["engine"] == "rapidocr-region"
+
+    def test_propaga_tipo_semantico_de_region_yolo(self):
+        """La Ruta C no debe perder si la región era título/cartela/SFX."""
+        from unittest.mock import patch
+        from ocr_utils import _recover_regions_with_easyocr
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{
+            "x": 100, "y": 80, "w": 60, "h": 40, "label": "title",
+        }]
+        rapid_blocks = [{
+            "x": 30, "y": 40, "w": 120, "h": 50, "text": "CAPÍTULO",
+            "confidence": 0.84, "textColor": "#000000",
+        }]
+
+        with patch("ocr_utils._rapidocr_strip_batch",
+                   return_value={0: rapid_blocks}):
+            blocks = _recover_regions_with_easyocr(img, regions, upscale=3.5)
+
+        assert blocks and blocks[0]["type"] == "title"
+
+    def test_clasifica_cartela_y_pensamiento(self):
+        """Las etiquetas de detector se convierten a tipos de salida estables."""
+        from ocr_utils import _semantic_type_for_region
+
+        assert _semantic_type_for_region({"label": "cartela narrativa"}) == "header"
+        assert _semantic_type_for_region({"label": "thought"}) == "thought"
+        assert _semantic_type_for_region({"label": "dialogue balloon"}) == "dialogue"
+
     def test_maps_coordinates_back_to_page(self):
         import cv2
         from unittest.mock import patch
@@ -963,14 +1783,15 @@ class TestRecoverRegionsWithEasyocr:
 
         mock_reader.readtext.side_effect = fake_readtext
         with patch("ocr_utils._get_ocr_reader", return_value=mock_reader):
-            with patch("ocr_utils._run_ocr_on_image",
-                       side_effect=lambda reader, up_img, **kw: reader.readtext(up_img)):
-                with patch("ocr_utils._group_and_merge_blocks",
-                           side_effect=lambda b, h: b):
-                    # Fase 3 pt.3: sin rotación (el cls devuelve el crop igual)
-                    with patch("ocr_utils._classify_rotate_crop",
-                               side_effect=lambda x: (x, False, 0.0)):
-                        blocks = _recover_regions_with_easyocr(img, regions, upscale=3.5)
+            with patch("ocr_utils._rapidocr_strip_batch", return_value={}):
+                with patch("ocr_utils._run_ocr_on_image",
+                           side_effect=lambda reader, up_img, **kw: reader.readtext(up_img)):
+                    with patch("ocr_utils._group_and_merge_blocks",
+                               side_effect=lambda b, h: b):
+                        # Fase 3 pt.3: sin rotación (el cls devuelve el crop igual)
+                        with patch("ocr_utils._classify_rotate_crop",
+                                   side_effect=lambda x: (x, False, 0.0)):
+                            blocks = _recover_regions_with_easyocr(img, regions, upscale=3.5)
 
         assert blocks, "Debe recuperar al menos un bloque"
         b = blocks[0]
@@ -1002,7 +1823,8 @@ class TestRecoverRegionsWithEasyocr:
 
         reader_mock = MagicMock()
         with patch("ocr_utils._get_ocr_reader", return_value=reader_mock) as get_reader:
-            with patch("ocr_utils._run_rapidocr", return_value=rapid_blocks) as run_rapid:
+            with patch("ocr_utils._rapidocr_strip_batch",
+                       return_value={0: rapid_blocks}) as strip_batch:
                 with patch("ocr_utils._group_and_merge_blocks",
                            side_effect=lambda b, h: b):
                     try:
@@ -1013,7 +1835,7 @@ class TestRecoverRegionsWithEasyocr:
 
         # El reader de EasyOCR (GPU) NO debe cargarse durante la degradación
         get_reader.assert_not_called()
-        run_rapid.assert_called_once()
+        strip_batch.assert_called_once()
         assert blocks, "Debe recuperar al menos un bloque"
         b = blocks[0]
         # bbox upscale (30,40,120,50) → page: 100 + 30/3.5 ≈ 108; 80 + 40/3.5 ≈ 91
@@ -1022,9 +1844,8 @@ class TestRecoverRegionsWithEasyocr:
         assert b["text"] == "CPU GLOBO"
         assert b["engine"] == "rapidocr-region"
 
-    def test_usa_easyocr_gpu_cuando_flag_limpio(self):
-        """§8.4.4: con el flag limpio, la Ruta C sigue usando EasyOCR GPU
-        (reader cargado + _run_ocr_on_image, sin RapidOCR)."""
+    def test_usa_easyocr_gpu_como_fallback_cuando_rapid_vacio(self):
+        """Ruta C usa EasyOCR GPU solo si RapidOCR no recupera el crop."""
         from unittest.mock import patch
         from ocr_utils import _recover_regions_with_easyocr, _uocr_inferring
 
@@ -1035,7 +1856,8 @@ class TestRecoverRegionsWithEasyocr:
             ([[30, 40], [150, 40], [150, 90], [30, 90]], "HOLA", 0.9)]
 
         with patch("ocr_utils._get_ocr_reader", return_value=mock_reader) as get_reader:
-            with patch("ocr_utils._run_rapidocr") as run_rapid:
+            with patch("ocr_utils._rapidocr_strip_batch",
+                       return_value={}) as strip_batch:
                 with patch("ocr_utils._run_ocr_on_image",
                            side_effect=lambda reader, up_img, **kw: reader.readtext(up_img)):
                     with patch("ocr_utils._group_and_merge_blocks",
@@ -1047,7 +1869,7 @@ class TestRecoverRegionsWithEasyocr:
                             blocks = _recover_regions_with_easyocr(img, regions, upscale=3.5)
 
         get_reader.assert_called_once()
-        run_rapid.assert_not_called()
+        strip_batch.assert_called_once()
         assert blocks and blocks[0]["text"] == "HOLA"
         assert blocks[0]["engine"] == "easyocr-region"
 
@@ -1222,6 +2044,71 @@ class TestRecoverRegionsWithEasyocr:
         assert 95 <= b["x"] <= 125, f"x={b['x']} (debe estar des-rotado)"
         assert b["engine"] == "easyocr-region"
 
+    def test_ruta_c_no_reaplica_margenes_de_pagina_al_merge_final(self, mocker):
+        """Un globo validado no debe perderse por estar cerca del borde."""
+        from ocr_utils import _recover_regions_with_easyocr
+
+        image = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 2, "w": 60, "h": 40, "type": "dialogue"}]
+        mocker.patch("ocr_utils.RUTA_C_RAPID_PRIMARY", True)
+        mocker.patch("ocr_utils._classify_rotate_crop",
+                     return_value=(image, False, 0.0))
+        mocker.patch(
+            "ocr_utils._rapidocr_strip_batch",
+            return_value={0: [{
+                "x": 8, "y": 8, "w": 40, "h": 12,
+                "text": "Hola", "confidence": 0.90,
+            }]},
+        )
+        merge = mocker.patch(
+            "ocr_utils._group_and_merge_blocks",
+            side_effect=lambda blocks, page_height: blocks,
+        )
+
+        blocks = _recover_regions_with_easyocr(image, regions, upscale=1.0)
+
+        assert blocks and blocks[0]["text"] == "Hola"
+        assert merge.call_args.args[1] is None
+
+    def test_ruta_c_fallback_usa_lector_cjk_cpu_si_rapid_es_debil(self, mocker):
+        """Un crop CJK débil no debe caer al lector latino de auto."""
+        from ocr_utils import _recover_regions_with_easyocr
+
+        image = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        reader = MagicMock()
+        reader.readtext.return_value = [
+            ([[10, 10], [80, 10], [80, 28], [10, 28]], "こんにちは", 0.88),
+        ]
+        get_reader = mocker.patch(
+            "ocr_utils._get_ocr_reader", return_value=reader)
+        mocker.patch("ocr_utils.RUTA_C_RAPID_PRIMARY", True)
+        mocker.patch("ocr_utils._classify_rotate_crop",
+                     return_value=(image, False, 0.0))
+        mocker.patch(
+            "ocr_utils._rapidocr_strip_batch",
+            return_value={0: [{
+                "x": 8, "y": 8, "w": 40, "h": 12,
+                "text": "こんにちは", "confidence": 0.20,
+            }]},
+        )
+        mocker.patch(
+            "ocr_utils._run_ocr_on_image",
+            side_effect=lambda current_reader, crop, **kwargs: (
+                current_reader.readtext(crop)
+            ),
+        )
+        mocker.patch(
+            "ocr_utils._group_and_merge_blocks",
+            side_effect=lambda blocks, page_height: blocks,
+        )
+
+        blocks = _recover_regions_with_easyocr(
+            image, regions, lang_hint="auto", upscale=1.0)
+
+        assert blocks and blocks[0]["text"] == "こんにちは"
+        get_reader.assert_called_once_with("ja", prefer_gpu=False)
+
 
 # ─── Parámetros de _run_rapidocr (Fase 2: reintento agresivo) ────
 
@@ -1261,6 +2148,19 @@ class TestRunRapidocrParams:
         assert kwargs["unclip_ratio"] == 1.6
         assert kwargs["text_score"] == 0.5
 
+    def test_crop_omite_filtros_de_margen_de_pagina(self):
+        """Un recorte de globo no debe tratar sus bordes como márgenes de página."""
+        from ocr_utils import _run_rapidocr
+        img = np.ones((200, 300, 3), dtype=np.uint8) * 128
+        engine = MagicMock()
+        engine.return_value = (None, None)
+        merge = MagicMock(return_value=[])
+        with patch("ocr_utils._get_rapid_engine", return_value=engine):
+            with patch("ocr_utils._group_and_merge_blocks", merge):
+                _run_rapidocr(img, filter_page_margins=False)
+
+        assert merge.call_args.args[1] is None
+
     def test_engine_sin_resultado_devuelve_vacio(self):
         """Engine que no detecta nada → [] sin crashear (semáforo liberado)."""
         from ocr_utils import _run_rapidocr
@@ -1269,6 +2169,235 @@ class TestRunRapidocrParams:
         engine.return_value = (None, None)
         with patch("ocr_utils._get_rapid_engine", return_value=engine):
             assert _run_rapidocr(img, box_thresh=0.3) == []
+
+
+# ─── Batch estructural de la Ruta C (2026-08-15) ────────────────
+
+class TestRapidocrStripBatch:
+    """_rapidocr_strip_batch / _ruta_c_prepare_crops / _rapidocr_blocks_from_lines.
+
+    El batch estructural apila los crops de la Ruta C en un strip vertical y
+    corre det DBNet por chunk + UNA text_rec para todos (A/B: −76.6 % del
+    núcleo). Estos tests verifican el mapeo línea→crop, el descarte de líneas
+    en el gap y las degradaciones seguras con un engine mockeado.
+    """
+
+    @staticmethod
+    def _crop(img_w: int = 100, img_h: int = 80) -> dict[str, Any]:
+        return {
+            "img": np.zeros((img_h, img_w, 3), dtype=np.uint8),
+            "x0": 0, "y0": 0,
+            "up_w": img_w, "up_h": img_h,
+            "se_roto": False, "cls_score": 0.0,
+            "type": "text",
+        }
+
+    @staticmethod
+    def _box(y0: int, y1: int, x0: int = 10, x1: int = 90) -> Any:
+        return np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float64)
+
+    def _fake_engine(self, boxes: list[Any], texts: list[tuple[str, float]]):
+        engine = MagicMock()
+        engine.text_det.return_value = (boxes, 0.1)
+        engine.get_crop_img_list.return_value = [
+            np.zeros((20, 80, 3), dtype=np.uint8) for _ in boxes]
+        engine.text_rec.return_value = (texts, 0.1)
+        return engine
+
+    def test_prepare_crops_alineado_y_cls_aplicado(self):
+        """Una entrada por región, con cls de rotación y tipo semántico."""
+        from ocr_utils import _ruta_c_prepare_crops
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [
+            {"x": 100, "y": 80, "w": 60, "h": 40},
+            {"x": 200, "y": 200, "w": 40, "h": 30, "label": "sfx"},
+        ]
+        rotated = np.zeros((160, 240, 3), dtype=np.uint8)
+        with patch("ocr_utils._classify_rotate_crop",
+                   return_value=(rotated, True, 0.99)):
+            prepared = _ruta_c_prepare_crops(img, regions, upscale=2.0)
+
+        assert len(prepared) == 2
+        c0, c1 = prepared[0], prepared[1]
+        assert c0 is not None and c1 is not None
+        # x0/y0 con pad 3% (mín 6): 100-6=94, 80-6=74
+        assert c0["x0"] == 94 and c0["y0"] == 74
+        # El cls se aplicó: la imagen del crop es la rotada por el clasificador
+        assert c0["img"] is rotated
+        assert c0["se_roto"] is True
+        assert c1["type"] == "sfx"
+
+    def test_prepare_crops_invalidos_devuelven_none(self):
+        """Crop diminuto o que excede 8000 px de lado → None (sin crash)."""
+        from ocr_utils import _ruta_c_prepare_crops
+
+        # Página ancha (9000 px) para que la región enorme NO se recorte a la
+        # página y el upscale realmente exceda el límite de 8000 px/lado.
+        img = np.ones((300, 9000, 3), dtype=np.uint8) * 128
+        regions = [
+            {"x": 0, "y": 0, "w": 1, "h": 1},        # < 8 px tras el pad
+            {"x": 100, "y": 10, "w": 8000, "h": 40},  # upscale > 8000
+            {"x": 100, "y": 80, "w": 60, "h": 40},   # válido
+        ]
+        with patch("ocr_utils._classify_rotate_crop",
+                   side_effect=lambda x: (x, False, 0.0)):
+            prepared = _ruta_c_prepare_crops(img, regions, upscale=2.0)
+
+        assert prepared[0] is None
+        assert prepared[1] is None
+        assert prepared[2] is not None
+
+    def test_blocks_from_lines_filtra_y_colorea(self):
+        """Conf < 0.08, cajas minúsculas y textColor por brillo del ROI."""
+        from ocr_utils import _rapidocr_blocks_from_lines
+
+        crop_img = np.zeros((80, 100, 3), dtype=np.uint8)  # oscuro → blanco
+        items = [
+            (self._box(30, 50), "BUENO", 0.9),
+            (self._box(60, 80), "BAJO", 0.05),     # conf < 0.08 → descartado
+            (self._box(20, 22), "CHICO", 0.8),      # h < 3 → descartado
+        ]
+        merge = MagicMock(side_effect=lambda b, h: b)
+        with patch("ocr_utils._group_and_merge_blocks", merge):
+            blocks = _rapidocr_blocks_from_lines(crop_img, items)
+
+        assert len(blocks) == 1
+        assert blocks[0]["text"] == "BUENO"
+        assert blocks[0]["textColor"] == "#ffffff"
+        assert blocks[0]["fontSize"] == max(8, int(20 * 0.75))
+
+    def test_strip_mapea_lineas_a_su_crop(self):
+        """Happy path: 2 crops en un strip, det 2 cajas, rec batch, y cada
+        línea se mapea a su crop restando el offset del chunk."""
+        from ocr_utils import _rapidocr_strip_batch
+
+        crops = [self._crop(), self._crop()]  # 80px c/u, gap 24 → 1 chunk
+        boxes = [self._box(30, 50), self._box(134, 154)]  # cy 40 → crop 0; cy 144 → crop 1
+        engine = self._fake_engine(boxes, [("TEXTO A", 0.9), ("TEXTO B", 0.8)])
+        merge = MagicMock(side_effect=lambda b, h: b)
+
+        with patch("ocr_utils._get_rapid_engine", return_value=engine):
+            with patch("ocr_utils._group_and_merge_blocks", merge):
+                result = _rapidocr_strip_batch(crops)
+
+        assert set(result.keys()) == {0, 1}
+        texts = {i: [b["text"] for b in blocks] for i, blocks in result.items()}
+        assert texts[0] == ["TEXTO A"]
+        assert texts[1] == ["TEXTO B"]
+        # La caja del crop 1 (y=134..154 en el strip) se mapea a y=30..50 local
+        b1 = result[1][0]
+        assert b1["y"] == 30 and b1["h"] == 20
+        # Parámetros de detección por defecto de la Ruta C aplicados al det
+        assert engine.text_det.postprocess_op.box_thresh == 0.5
+        assert engine.text_det.postprocess_op.unclip_ratio == 1.6
+        # UNA sola llamada det + UNA text_rec (batch) para todos los crops
+        engine.text_det.assert_called_once()
+        engine.text_rec.assert_called_once()
+        assert len(engine.text_rec.call_args.args[0]) == 2
+
+    def test_strip_linea_en_gap_no_se_asigna(self):
+        """Una caja cuyo centro cae en el gap entre crops no pertenece a
+        ningún crop: se descarta (no produce bloques fantasma)."""
+        from ocr_utils import _rapidocr_strip_batch
+
+        crops = [self._crop(), self._crop()]  # bandas [0,80) y [104,184)
+        boxes = [self._box(82, 102)]  # cy=92 → gap 80..104
+        engine = self._fake_engine(boxes, [("FANTASMA", 0.9)])
+        merge = MagicMock(side_effect=lambda b, h: b)
+
+        with patch("ocr_utils._get_rapid_engine", return_value=engine):
+            with patch("ocr_utils._group_and_merge_blocks", merge):
+                result = _rapidocr_strip_batch(crops)
+
+        assert result == {}
+
+    def test_strip_sin_cajas_devuelve_vacio(self):
+        """det sin detecciones → {} sin llamar a text_rec."""
+        from ocr_utils import _rapidocr_strip_batch
+
+        crops = [self._crop()]
+        engine = self._fake_engine([], [])
+        with patch("ocr_utils._get_rapid_engine", return_value=engine):
+            result = _rapidocr_strip_batch(crops)
+
+        assert result == {}
+        engine.text_rec.assert_not_called()
+
+    def test_strip_sin_engine_devuelve_vacio(self):
+        """Sin engine RapidOCR → {} (el fallback por crop queda intacto)."""
+        from ocr_utils import _rapidocr_strip_batch
+
+        with patch("ocr_utils._get_rapid_engine", return_value=None):
+            assert _rapidocr_strip_batch([self._crop()]) == {}
+
+    def test_strip_excepcion_degrada_vacio(self):
+        """Excepción en el det → {} sin romper la Ruta C (semáforo liberado)."""
+        from ocr_utils import _rapidocr_strip_batch
+
+        engine = MagicMock()
+        engine.text_det.side_effect = RuntimeError("onnx falló")
+        with patch("ocr_utils._get_rapid_engine", return_value=engine):
+            result = _rapidocr_strip_batch([self._crop()])
+
+        assert result == {}
+
+    def test_strip_semaphore_timeout_devuelve_vacio(self):
+        """Semáforo agotado (otro worker con ONNX) → {} sin tocar el engine."""
+        from ocr_utils import _rapidocr_strip_batch
+
+        engine = MagicMock()
+        with patch("ocr_utils._get_rapid_engine", return_value=engine):
+            with patch("ocr_utils._rapid_semaphore.acquire", return_value=False):
+                result = _rapidocr_strip_batch([self._crop()])
+
+        assert result == {}
+        engine.text_det.assert_not_called()
+
+    def test_toggle_false_usa_per_crop(self):
+        """Válvula de rollback: con _RUTA_C_STRIP_BATCH=False, la Ruta C
+        vuelve a _run_rapidocr por crop en vez del batch estructural."""
+        from ocr_utils import _recover_regions_with_easyocr
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        rapid_blocks = [{
+            "x": 30, "y": 40, "w": 120, "h": 50, "text": "PERCROP",
+            "confidence": 0.82, "textColor": "#000000",
+        }]
+        strip = MagicMock(return_value={0: rapid_blocks})
+        with patch("ocr_utils._RUTA_C_STRIP_BATCH", False):
+            with patch("ocr_utils._classify_rotate_crop",
+                       side_effect=lambda x: (x, False, 0.0)):
+                with patch("ocr_utils._rapidocr_strip_batch", strip):
+                    with patch("ocr_utils._run_rapidocr",
+                               return_value=rapid_blocks) as per_crop:
+                        blocks = _recover_regions_with_easyocr(
+                            img, regions, upscale=3.5)
+
+        per_crop.assert_called_once()
+        strip.assert_not_called()
+        assert blocks and blocks[0]["text"] == "PERCROP"
+        assert blocks[0]["engine"] == "rapidocr-region"
+
+    def test_strip_chunks_multiples_por_altura(self):
+        """Crops que exceden MAX_CHUNK_H → más de un chunk (det por chunk)."""
+        from ocr_utils import _rapidocr_strip_batch, _RUTA_C_STRIP_MAX_CHUNK_H
+
+        tall = _RUTA_C_STRIP_MAX_CHUNK_H - 100
+        crops = [self._crop(img_w=60, img_h=tall), self._crop(img_w=60, img_h=200)]
+        # 1 caja por crop (bandas: [0,tall) y [tall+24, ...])
+        boxes = [self._box(30, 50), self._box(tall + 24 + 30, tall + 24 + 50)]
+        engine = self._fake_engine(boxes, [("A", 0.9), ("B", 0.8)])
+        merge = MagicMock(side_effect=lambda b, h: b)
+
+        with patch("ocr_utils._get_rapid_engine", return_value=engine):
+            with patch("ocr_utils._group_and_merge_blocks", merge):
+                result = _rapidocr_strip_batch(crops)
+
+        assert set(result.keys()) == {0, 1}
+        assert engine.text_det.call_count == 2  # un det por chunk
+        assert [b["text"] for b in result[1]] == ["B"]
 
 
 # ─── Ponderación por tipo semántico en la fusión (Fase 3) ────────
@@ -1341,6 +2470,45 @@ class TestFusionTypeWeighted:
         uocr = [self._blk("CAPITULO 43", 0.85, x=10, y=10, w=50, h=15, type="title")]
         merged = _fusionar_blocks_multi([easy, uocr])
         assert merged[0].get("type") == "title"
+
+    def test_mismo_texto_en_dos_regiones_se_conserva(self):
+        """El dedup de texto debe ser espacial, no global por página.
+
+        En manga es válido que dos globos contengan la misma palabra (por
+        ejemplo "¡Ah!" o un nombre). Un índice global por texto elimina una
+        de las dos cajas y deja una traducción/inpainting incompleta.
+        """
+        from ocr_utils import _fusionar_blocks_multi
+
+        left = self._blk("Ah", 0.80, x=10, y=20, w=35, h=15)
+        right = self._blk("Ah", 0.80, x=220, y=20, w=35, h=15)
+        merged = _fusionar_blocks_multi([[left], [right]])
+
+        assert len(merged) == 2
+        assert sorted((b["x"], b["y"]) for b in merged) == [(10, 20), (220, 20)]
+
+    def test_mismo_texto_superpuesto_de_motores_sigue_siendo_un_bloque(self):
+        """Las detecciones coincidentes de motores distintos sí se deduplican."""
+        from ocr_utils import _fusionar_blocks_multi
+
+        easy = [self._blk("Ah", 0.80, x=10, y=20, w=35, h=15)]
+        rapid = [self._blk("Ah", 0.75, x=11, y=21, w=34, h=14)]
+        merged = _fusionar_blocks_multi([easy, rapid])
+
+        assert len(merged) == 1
+
+    def test_textos_distintos_superpuestos_no_se_descartan(self):
+        """El NMS final no debe borrar dos lÃ­neas distintas solo porque sus
+        cajas se solapan parcialmente por el grosor de la detecciÃ³n."""
+        from ocr_utils import _fusionar_blocks_multi
+
+        easy = [self._blk("hola", 0.85, x=10, y=10, w=80, h=15)]
+        rapid = [self._blk("mundo", 0.80, x=20, y=15, w=80, h=15)]
+
+        merged = _fusionar_blocks_multi([easy, rapid])
+
+        assert len(merged) == 2
+        assert {b["text"] for b in merged} == {"hola", "mundo"}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1434,6 +2602,28 @@ class TestDetectTextRegionsYolo:
         engine.predict.assert_called_once()
         assert engine.predict.call_args.kwargs["device"] == "0"
 
+    def test_acepta_clases_semanticas_de_pensamiento_y_cartela(self, mocker):
+        """YOLO no debe descartar clases de texto válidas por su nombre."""
+        from ocr_utils import _detect_text_regions_in_page
+        img = np.ones((200, 200, 3), dtype=np.uint8) * 200
+        boxes = _FakeYoloBoxes(
+            xyxy=np.array([[10, 20, 80, 60], [100, 100, 190, 150]], dtype=float),
+            confs=np.array([0.90, 0.90], dtype=float),
+            clss=np.array([0, 1], dtype=float),
+        )
+        engine = MagicMock()
+        engine.predict.return_value = [_FakeYoloResult(
+            boxes, {0: "thought", 1: "cartela narrativa"})
+        ]
+        mocker.patch("ocr_utils._get_yolo_engine", return_value=engine)
+        mocker.patch("torch.cuda.is_available", return_value=False)
+
+        regions = _detect_text_regions_in_page(img)
+
+        assert [region["label"] for region in regions] == [
+            "thought", "cartela narrativa"
+        ]
+
     def test_device_auto_ignora_daemon_infiriendo(self, mocker):
         """Política determinista (sesión 116, code review): YOLO_DEVICE='auto'
         se resuelve SOLO por CUDA — NO consulta _uocr_inferring. Si el device
@@ -1491,6 +2681,37 @@ class TestDetectTextRegionsYolo:
         mocker.patch("ocr_utils._get_yolo_engine", return_value=engine)
         mocker.patch("torch.cuda.is_available", return_value=True)
         _uocr_inferring.clear()
+        _detect_text_regions_in_page(img)
+        assert engine.predict.call_args.kwargs["device"] == "0"
+
+    def test_modo_cpu_fuerza_cpu_aun_con_cuda(self, mocker):
+        """Preset modo_cpu (soporte sin GPU dedicada): con MODO_CPU=True el
+        resolver fuerza 'cpu' AUNQUE torch.cuda.is_available() sea True — el
+        preset quiere 0 VRAM y 0 contención de GPU, no aprovechar CUDA. Sin el
+        preset (default), CUDA libre → '0' (comportamiento histórico)."""
+        from ocr_utils import _detect_text_regions_in_page
+        img = np.ones((150, 200, 3), dtype=np.uint8) * 200
+        boxes = _FakeYoloBoxes(
+            xyxy=np.array([[10, 20, 90, 80]], dtype=float),
+            confs=np.array([0.92], dtype=float),
+            clss=np.array([0], dtype=float),
+        )
+        engine = MagicMock()
+        engine.predict.return_value = [_FakeYoloResult(boxes, {0: "text_bubble"})]
+        mocker.patch("ocr_utils._get_yolo_engine", return_value=engine)
+        mocker.patch("torch.cuda.is_available", return_value=True)
+
+        # MODO_CPU activo → CPU aunque CUDA esté disponible
+        mocker.patch("config.MODO_CPU", True)
+        _detect_text_regions_in_page(img)
+        assert engine.predict.call_args.kwargs["device"] == "cpu"
+
+        # Default (MODO_CPU=False) → CUDA libre sigue resolviendo '0'. El
+        # resolver cachea el device por proceso (sesión 116): se resetea para
+        # que la segunda fase re-resuelva con el flag apagado.
+        import ocr_utils
+        ocr_utils._yolo_device = None
+        mocker.patch("config.MODO_CPU", False)
         _detect_text_regions_in_page(img)
         assert engine.predict.call_args.kwargs["device"] == "0"
 

@@ -66,8 +66,15 @@ class TestTrigger:
 
     def test_dispara_con_panel_image_grande(self, mocker):
         mgr = OCRManager()
+        blocks = [_block(f"t{i}", 0.7) for i in range(5)]
+        assert mgr._compute_trigger(blocks, 0.7, has_big_panel=True) is True
+
+    def test_panel_grande_con_ocr_fuerte_no_dispara_vlm(self, mocker):
+        """Un panel oscuro ya resuelto no debe pagar una inferencia VLM."""
+        mgr = OCRManager()
         blocks = [_block(f"t{i}", 0.9) for i in range(5)]
-        assert mgr._compute_trigger(blocks, 0.9, has_big_panel=True) is True
+
+        assert mgr._compute_trigger(blocks, 0.9, has_big_panel=True) is False
 
     def test_force_uocr_fuerza_el_disparo(self, mocker):
         mgr = OCRManager()
@@ -86,6 +93,24 @@ class TestTrigger:
 # ─── Modo fusion (integración del trigger + daemon) ──────────────
 
 class TestFusion:
+    def test_run_ocr_exposes_structured_diagnostics_without_changing_contract(self, mocker):
+        mgr = OCRManager()
+        img = _make_img()
+        blocks = [_block("hola", 0.8), _block("mundo", 0.9)]
+        mocker.patch("ocr_utils._detect_and_ocr", return_value=blocks)
+
+        result = mgr.run_ocr(img, "es", ocr_mode="easyocr")
+
+        assert result == (blocks, "easyocr", ["easyocr"])
+        diagnostics = mgr.last_diagnostics
+        assert diagnostics is not None
+        assert diagnostics["blocks"]["initial"] == 2
+        assert diagnostics["blocks"]["final"] == 2
+        assert diagnostics["engine_used"] == "easyocr"
+        assert diagnostics["engines"] == ["easyocr"]
+        assert diagnostics["finished"] is True
+        assert "total" in diagnostics["timings"]
+
     def test_fusion_no_llama_daemon_con_conf_alta(self, mocker):
         """Conf alta + >=3 bloques → solo híbrido, sin U-OCR."""
         mgr = OCRManager()
@@ -1378,6 +1403,36 @@ class TestUnlimited:
         assert engines == ["unlimited"]
         mgr._unlimited_ocr.assert_called_once()
 
+    def test_modo_cpu_anula_refuerzo_aun_con_uocr_enabled(self, mocker):
+        """Preset modo_cpu (soporte sin GPU dedicada): MODO_CPU=True apaga el
+        refuerzo VLM AUNQUE UOCR_ENABLED=True — el VLM es el único componente
+        del pipeline que exige GPU. Igual que el gate UOCR_ENABLED, anula SOLO
+        el VLM: YOLO/Ruta C/cls de rotación siguen activos y no se registra la
+        negativa §8.4.1 (no hay decisión que cachear)."""
+        mgr = OCRManager()
+        img = _make_img()
+        ublocks = [_block("texto daemon", 0.9)]
+        mocker.patch.object(mgr, "_unlimited_ocr",
+                            return_value=(ublocks, [], 4.0))
+        mocker.patch.object(mgr, "_ruta_c_globos", return_value=[])
+        mocker.patch.object(mgr, "_registrar_decision_negativa")
+
+        # El gate global sigue ON pero MODO_CPU (preset sin GPU) lo anula
+        mocker.patch("config.UOCR_ENABLED", True)
+        mocker.patch("config.MODO_CPU", True)
+        engines = mgr._reforzar_con_unlimited(
+            img, "es", [], 0.0, firma="firma-test")
+        assert engines == []
+        mgr._unlimited_ocr.assert_not_called()
+        mgr._registrar_decision_negativa.assert_not_called()
+
+        # MODO_CPU=False (default) → flujo histórico intacto
+        mocker.patch("config.MODO_CPU", False)
+        engines = mgr._reforzar_con_unlimited(
+            img, "es", [], 0.0, firma="firma-test")
+        assert engines == ["unlimited"]
+        mgr._unlimited_ocr.assert_called_once()
+
 
 # ─── Modo hybrid (easyocr/auto) ──────────────────────────────────
 
@@ -1876,6 +1931,38 @@ class TestRunOcrBatch:
         assert results[1][2] == ["easyocr+rapid", "unlimited-batch"]
         assert results[2][2] == ["easyocr+rapid", "unlimited-batch"]
         assert any(b["text"] == "título dorado" for b in results[1][0])
+
+    def test_batch_directo_mayor_de_cuatro_procesa_todas_las_pendientes(self, mocker):
+        """La API limita a 4, pero el manager directo no debe perder páginas."""
+        mgr = OCRManager()
+        images = [_make_img() for _ in range(5)]
+        mocker.patch(
+            "ocr_utils._detect_and_ocr",
+            side_effect=lambda *args, **kwargs: [
+                _block("dificil", 0.15), _block("pagina", 0.15)
+            ],
+        )
+        mocker.patch("ocr_utils._page_has_large_image_panel", return_value=False)
+        mocker.patch("ocr_utils._page_signature", return_value="")
+        mocker.patch("ocr_utils._preprocess_rapid", side_effect=lambda x: x)
+        mocker.patch("ocr_utils._run_rapidocr", return_value=[])
+        mocker.patch("ocr_utils._detect_bubble_regions_in_panel", return_value=[])
+        mocker.patch(
+            "ocr_utils._fusionar_blocks_multi",
+            side_effect=lambda sources, weights: list(sources[0]) + list(sources[1]),
+        )
+
+        def fake_batch(batch_images):
+            return [([_block("recuperada", 0.95)], []) for _ in batch_images], 1.0
+
+        batch_mock = mocker.patch(
+            "routes.api._ocr_with_unlimited_batch", side_effect=fake_batch)
+
+        results = mgr.run_ocr_batch(images, "es", ocr_mode="fusion")
+
+        assert [len(call.args[0]) for call in batch_mock.call_args_list] == [4, 1]
+        assert len(results) == 5
+        assert all("unlimited-batch" in result[2] for result in results)
 
     def test_batch_sin_triggers_no_llama_daemon(self, mocker):
         """Todas las páginas resueltas por el híbrido → sin daemon batch."""

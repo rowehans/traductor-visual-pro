@@ -27,17 +27,21 @@ import json
 import os
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
 
 import ocr_utils
+from runtime_diagnostics import PageDiagnostics
 
 from config import (
     ROOT,
     UOCR_TRIGGER_CONF,
     UOCR_TRIGGER_MIN_BLOCKS,
     UOCR_IMAGE_BLOCK_RATIO,
+    UOCR_PANEL_SKIP_MIN_CONF,
     OCR_ENGINE_WEIGHTS,
     UOCR_CACHE_TTL_S,
     UOCR_CACHE_MAX_ENTRIES,
@@ -93,7 +97,9 @@ _DECISION_CACHE_PATH = ROOT / "cache" / "ocr_decision_cache.json"
 # de trigger cacheada con detección pobre puede recomputarse hasta
 # UOCR_NEG_MAX_REINTENTOS veces por firma). Los archivos v4 (trigger con
 # 4 campos) se descartan en la carga.
-_DECISION_CACHE_VERSION = 5
+# v6: _page_signature incorpora un digest del contenido del thumbnail; las
+# entradas v5 basadas solo en layout deben invalidarse para evitar colisiones.
+_DECISION_CACHE_VERSION = 6
 _DISK_LOCK = threading.Lock()
 
 
@@ -155,9 +161,21 @@ class OCRManager:
         # ocr_utils.<fn>, y leer el atributo del módulo aquí (en lugar de
         # importar la referencia en el import) respeta esos mocks.
         self.ou = ocr_utils
+        self.last_diagnostics: dict[str, Any] | None = None
+        self.last_batch_diagnostics: list[dict[str, Any]] = []
+        self._active_diagnostics: PageDiagnostics | None = None
         # Carga las decisiones persistidas de una corrida anterior (una vez
         # por proceso, ver _cache_cargado).
         self._cargar_cache_disco()
+
+    @contextmanager
+    def _diagnostic_stage(self, name: str) -> Iterator[None]:
+        """Measure a stage when run_ocr owns an active diagnostic record."""
+        if self._active_diagnostics is None:
+            yield
+            return
+        with self._active_diagnostics.stage(name):
+            yield
 
     # ─── Cache de decisión del trigger (sesión 116) ───────────────
     def _trigger_cache_get(self, firma: str) -> tuple[int, float, bool] | None:
@@ -391,19 +409,38 @@ class OCRManager:
         serie — sin scope, el capítulo 47 heredaría las decisiones del 43
         (supresión cruzada de VLM). El caller deriva el doc_id del PDF/archivo.
         """
-        if ocr_mode == "unlimited":
-            return self._run_unlimited(img_bgr, ocr_lang, prefilter)
-        if ocr_mode == "fusion":
-            return self._run_fusion(
-                img_bgr, ocr_lang, prefilter,
-                force_uocr=force_uocr, disable_uocr=disable_uocr,
-                doc_id=doc_id,
-            )
-        # easyocr / auto: híbrido EasyOCR+RapidOCR (auto con fallback CLAHE)
-        return self._run_hybrid(
-            img_bgr, ocr_lang, prefilter,
-            ocr_mode=ocr_mode, pure_easyocr=pure_easyocr,
-        )
+        diagnostics = PageDiagnostics(ocr_mode=ocr_mode, ocr_lang=ocr_lang, doc_id=doc_id)
+        previous_diagnostics = self._active_diagnostics
+        self._active_diagnostics = diagnostics
+        try:
+            with diagnostics.stage("total"):
+                if ocr_mode == "unlimited":
+                    result = self._run_unlimited(img_bgr, ocr_lang, prefilter)
+                elif ocr_mode == "fusion":
+                    result = self._run_fusion(
+                        img_bgr, ocr_lang, prefilter,
+                        force_uocr=force_uocr, disable_uocr=disable_uocr,
+                        doc_id=doc_id,
+                    )
+                else:
+                    # easyocr / auto: híbrido EasyOCR+RapidOCR (auto con fallback CLAHE)
+                    result = self._run_hybrid(
+                        img_bgr, ocr_lang, prefilter,
+                        ocr_mode=ocr_mode, pure_easyocr=pure_easyocr,
+                    )
+            blocks, engine_used, engines_used = result
+            if not diagnostics.has_initial_counts():
+                diagnostics.set_counts(initial_blocks=len(blocks))
+            diagnostics.set_counts(final_blocks=len(blocks))
+            diagnostics.set_engines(engine_used, engines_used)
+            return result
+        except Exception as exc:
+            diagnostics.add_error(f"run_ocr: {type(exc).__name__}: {exc}")
+            raise
+        finally:
+            diagnostics.finish()
+            self.last_diagnostics = diagnostics.to_dict()
+            self._active_diagnostics = previous_diagnostics
 
     # ─── API batch (Fase 1): N páginas, UN solo VLM si varias disparan ──
     def run_ocr_batch(
@@ -433,17 +470,26 @@ class OCRManager:
         """
         n = len(images)
         if ocr_mode != "fusion":
-            return [
-                self.run_ocr(
+            results: list[tuple[list[dict[str, Any]], str, list[str]]] = []
+            self.last_batch_diagnostics = []
+            for img in images:
+                results.append(self.run_ocr(
                     img, ocr_lang, ocr_mode,
                     prefilter=prefilter,
                     force_uocr=force_uocr,
                     disable_uocr=disable_uocr,
                     pure_easyocr=pure_easyocr,
                     doc_id=doc_id,
-                )
-                for img in images
-            ]
+                ))
+                if self.last_diagnostics is not None:
+                    self.last_batch_diagnostics.append(self.last_diagnostics)
+            return results
+
+        batch_diagnostics = [
+            PageDiagnostics(ocr_mode=ocr_mode, ocr_lang=ocr_lang, doc_id=doc_id)
+            for _ in images
+        ]
+        self.last_batch_diagnostics = []
 
         # Benchmark: disable_uocr también apaga el cls de rotación, el
         # detector YOLO y el detector comic-text-detector de regiones (mismo
@@ -453,17 +499,19 @@ class OCRManager:
         self.ou._ctd_disabled.set() if disable_uocr else self.ou._ctd_disabled.clear()
 
         # ── Fase A: híbrido + trigger + Fase 2 por página ──
-        per_page_blocks: list[list[dict[str, Any]]] = [None] * n
-        per_page_engines: list[list[str]] = [None] * n
+        per_page_blocks: list[list[dict[str, Any]]] = [[] for _ in range(n)]
+        per_page_engines: list[list[str]] = [[] for _ in range(n)]
         per_page_firmas: list[str | None] = [None] * n  # para §8.4.1 en Fase B
         per_page_avg_conf: list[float] = [0.0] * n  # sesión 129: stats para la salvaguarda
         vlm_pending: list[int] = []  # índices que requieren VLM
         for i, img in enumerate(images):
-            blocks = self.ou._detect_and_ocr(
-                img, ocr_lang,
-                allow_fallback=True,
-                prefilter=prefilter,
-            )
+            diagnostics = batch_diagnostics[i]
+            with diagnostics.stage("hybrid"):
+                blocks = self.ou._detect_and_ocr(
+                    img, ocr_lang,
+                    allow_fallback=True,
+                    prefilter=prefilter,
+                )
             engines: list[str] = ["easyocr+rapid"]
             avg_conf = (float(np.mean([b.get("confidence", 0) for b in blocks]))
                         if blocks else 0.0)
@@ -477,8 +525,9 @@ class OCRManager:
             # Mismo recuperador de regiones que _run_fusion (con gate
             # heurístico): si YOLO recupera globos/cartelas/títulos, se
             # fusionan y el trigger v4.2 puede no disparar (menos VLM).
-            yolo_blocks, yolo_regiones = self._ruta_c_yolo(
-                img, ocr_lang, blocks, avg_conf)
+            with diagnostics.stage("yolo"):
+                yolo_blocks, yolo_regiones = self._ruta_c_yolo(
+                    img, ocr_lang, blocks, avg_conf)
             if yolo_blocks:
                 merged = self.ou._fusionar_blocks_multi(
                     [blocks, yolo_blocks],
@@ -492,8 +541,9 @@ class OCRManager:
             # ── Fase 6.5 (batch): comic-text-detector → Ruta C ──
             # Mismo pase aditivo que _run_fusion (gate en cascada + dedup de
             # regiones vs YOLO): los bloques recuperados pueden evitar el VLM.
-            ctd_blocks = self._ruta_c_ctd(
-                img, ocr_lang, blocks, avg_conf, yolo_regiones)
+            with diagnostics.stage("ctd"):
+                ctd_blocks = self._ruta_c_ctd(
+                    img, ocr_lang, blocks, avg_conf, yolo_regiones)
             if ctd_blocks:
                 merged = self.ou._fusionar_blocks_multi(
                     [blocks, ctd_blocks],
@@ -504,7 +554,6 @@ class OCRManager:
                       f"híbrido+YOLO + {len(ctd_blocks)} CTD → {len(merged)}")
                 blocks[:] = merged
                 engines.append("ctd+rutac")
-            has_big_panel = self._has_big_panel(img)
             # Sesión 116: firma computada SIEMPRE — la decisión del trigger
             # (positiva O negativa) se cachea por firma para que 2 corridas
             # idénticas tomen la misma decisión por página (el device YOLO ya
@@ -514,11 +563,22 @@ class OCRManager:
             # la clave para que el capítulo 47 (94% de firmas idénticas al 43
             # dentro de la misma serie, sesión 124) NUNCA herede decisiones
             # del 43. Aplica a ambos caches (trigger + §8.4.1 negativas).
-            firma = self._firma_documento(doc_id, self._page_signature(img))
+            with diagnostics.stage("panel_check"):
+                has_big_panel = self._has_big_panel(img)
+            with diagnostics.stage("signature"):
+                firma = self._firma_documento(doc_id, self._page_signature(img))
             per_page_firmas[i] = firma
             trigger = self._trigger_con_cache(
                 firma, blocks, avg_conf, has_big_panel,
                 force_uocr=force_uocr, disable_uocr=disable_uocr,
+            )
+            diagnostics.set_counts(initial_blocks=len(blocks))
+            diagnostics.set_trigger(
+                trigger,
+                self._trigger_reason(
+                    blocks, avg_conf, has_big_panel,
+                    force_uocr=force_uocr,
+                ),
             )
             needs_vlm = False
             if trigger:
@@ -548,49 +608,65 @@ class OCRManager:
         # Límite 4 por llamada (VRAM del daemon): la API batch ya lo impone
         # (1-4 imágenes), pero run_ocr_batch se protege por si se llama directo.
         if vlm_pending:
-            batch_imgs = [images[i] for i in vlm_pending[:4]]
-            try:
-                u_pages, _infer_s = self._unlimited_ocr_batch(batch_imgs)
-                for k, idx in enumerate(vlm_pending[:4]):
-                    blocks = per_page_blocks[idx]
-                    ublocks, uimage_panels = u_pages[k]
-                    # Ruta C: re-OCR a nivel de globo por página
-                    bubble_blocks = self._ruta_c_globos(
-                        images[idx], ocr_lang, blocks, uimage_panels)
-                    combined_u = ublocks + bubble_blocks
-                    if combined_u:
-                        merged = self.ou._fusionar_blocks_multi(
-                            [blocks, combined_u],
-                            weights=[OCR_ENGINE_WEIGHTS["easyocr"],
-                                     OCR_ENGINE_WEIGHTS["unlimited"]],
-                        )
-                        print(f"[fusion-batch] Página {idx}: {len(blocks)} híbrido + "
-                              f"{len(combined_u)} U-OCR (batch) → {len(merged)}")
-                        blocks[:] = merged
-                        per_page_engines[idx].append("unlimited-batch")
-                        # Sesión 134: recuperación exitosa → la negativa
-                        # anterior de esta firma (si existía) queda refutada.
-                        if per_page_firmas[idx]:
-                            self._limpiar_decision_negativa(per_page_firmas[idx])
-                    else:
-                        # §8.4.1: el batch no recuperó nada para esta página
-                        # (la firma ya se calculó en Fase A — no recomputar).
-                        # Sesión 129: registrar con los stats del híbrido de
-                        # Fase A para la salvaguarda mucho_mas_debil.
-                        if per_page_firmas[idx]:
-                            self._registrar_decision_negativa(
-                                per_page_firmas[idx],
-                                len(per_page_blocks[idx]),
-                                per_page_avg_conf[idx],
+            # La API HTTP limita a cuatro imágenes por request por VRAM, pero
+            # este manager también se usa directamente desde herramientas y
+            # tests. Procesar en ventanas evita perder silenciosamente las
+            # páginas 5+ cuando el caller entrega un lote mayor.
+            for batch_start in range(0, len(vlm_pending), 4):
+                batch_indices = vlm_pending[batch_start:batch_start + 4]
+                batch_imgs = [images[i] for i in batch_indices]
+                try:
+                    with batch_diagnostics[batch_indices[0]].stage("uocr_batch"):
+                        u_pages, _infer_s = self._unlimited_ocr_batch(batch_imgs)
+                    for k, idx in enumerate(batch_indices):
+                        blocks = per_page_blocks[idx]
+                        ublocks, uimage_panels = u_pages[k]
+                        # Ruta C: re-OCR a nivel de globo por página
+                        bubble_blocks = self._ruta_c_globos(
+                            images[idx], ocr_lang, blocks, uimage_panels)
+                        combined_u = ublocks + bubble_blocks
+                        if combined_u:
+                            merged = self.ou._fusionar_blocks_multi(
+                                [blocks, combined_u],
+                                weights=[OCR_ENGINE_WEIGHTS["easyocr"],
+                                         OCR_ENGINE_WEIGHTS["unlimited"]],
                             )
-            except RuntimeError as uerr:
-                print(f"[fusion-batch] U-OCR batch no disponible ({uerr}); "
-                      f"páginas con solo híbrido")
+                            print(f"[fusion-batch] Página {idx}: {len(blocks)} híbrido + "
+                                  f"{len(combined_u)} U-OCR (batch) → {len(merged)}")
+                            blocks[:] = merged
+                            per_page_engines[idx].append("unlimited-batch")
+                            # Sesión 134: recuperación exitosa → la negativa
+                            # anterior de esta firma (si existía) queda refutada.
+                            firma_idx = per_page_firmas[idx]
+                            if firma_idx:
+                                self._limpiar_decision_negativa(firma_idx)
+                        else:
+                            # §8.4.1: el batch no recuperó nada para esta página
+                            # (la firma ya se calculó en Fase A — no recomputar).
+                            # Sesión 129: registrar con los stats del híbrido de
+                            # Fase A para la salvaguarda mucho_mas_debil.
+                            firma_idx = per_page_firmas[idx]
+                            if firma_idx:
+                                self._registrar_decision_negativa(
+                                    firma_idx,
+                                    len(per_page_blocks[idx]),
+                                    per_page_avg_conf[idx],
+                                )
+                except RuntimeError as uerr:
+                    print(f"[fusion-batch] U-OCR batch no disponible ({uerr}); "
+                          f"páginas de la ventana con solo híbrido")
 
-        return [
-            (per_page_blocks[i], "fusion", per_page_engines[i])
-            for i in range(n)
-        ]
+        results = []
+        for i in range(n):
+            diagnostics = batch_diagnostics[i]
+            blocks = per_page_blocks[i]
+            engines = per_page_engines[i]
+            diagnostics.set_counts(final_blocks=len(blocks))
+            diagnostics.set_engines("fusion", engines)
+            diagnostics.finish()
+            self.last_batch_diagnostics.append(diagnostics.to_dict())
+            results.append((blocks, "fusion", engines))
+        return results
 
     # ─── Tier 3.5 (Fase 6): YOLO → Ruta C ────────────────────────
     def _ruta_c_yolo(
@@ -604,9 +680,11 @@ class OCRManager:
 
         YOLO detecta regiones de texto como OBJETOS (globos, cartelas,
         títulos) — independiente de si el OCR ve glifos. Cada región se envía
-        a la Ruta C existente (_recover_regions_with_easyocr con upscale 3.5×,
-        cls de rotación 180° y rotation_info 0/90/180/270 para títulos
-        verticales/rotados).
+        a la Ruta C existente (_recover_regions_with_easyocr con upscale 3.5× —
+        A/B corregido 2026-08-15 (benchmark_rutac_upscale/recovery): 3.5×
+        recupera 2 bloques más que 2× (pág 11) a tiempo neutro; el "−24%"
+        previo era deriva de un benchmark roto — cls de rotación 180° y
+        rotation_info 0/90/180/270 para títulos verticales/rotados).
 
         No altera el trigger v4.2: corre en fusion como recuperador de alto
         impacto (CPU 200-400ms + re-OCR de crops) — si los bloques recuperados
@@ -741,14 +819,15 @@ class OCRManager:
         pure_easyocr: bool,
     ) -> tuple[list[dict[str, Any]], str, list[str]]:
         allow_fallback = ocr_mode != "easyocr"  # auto tiene fallback CLAHE
-        blocks = self.ou._detect_and_ocr(
-            img_bgr, ocr_lang,
-            allow_fallback=allow_fallback,
-            prefilter=prefilter,
-            # pure_easyocr (benchmark): desactiva el tier híbrido RapidOCR →
-            # solo EasyOCR GPU puro. El default ya corre el híbrido.
-            use_hybrid=not pure_easyocr,
-        )
+        with self._diagnostic_stage("hybrid"):
+            blocks = self.ou._detect_and_ocr(
+                img_bgr, ocr_lang,
+                allow_fallback=allow_fallback,
+                prefilter=prefilter,
+                # pure_easyocr (benchmark): desactiva el tier híbrido RapidOCR →
+                # solo EasyOCR GPU puro. El default ya corre el híbrido.
+                use_hybrid=not pure_easyocr,
+            )
         return blocks, ocr_mode, [ocr_mode]
 
     # ─── Tier 3: Unlimited-OCR (daemon) con fallback a híbrido ──
@@ -759,7 +838,8 @@ class OCRManager:
         prefilter: bool,
     ) -> tuple[list[dict[str, Any]], str, list[str]]:
         try:
-            blocks, _image_panels, _ = self._unlimited_ocr(img_bgr)
+            with self._diagnostic_stage("uocr"):
+                blocks, _image_panels, _ = self._unlimited_ocr(img_bgr)
             return blocks, "unlimited", ["unlimited"]
         except RuntimeError as uerr:
             print(f"[process-page] Unlimited-OCR no disponible ({uerr}); "
@@ -784,15 +864,16 @@ class OCRManager:
         # Benchmark: disable_uocr también apaga el cls de rotación de la Ruta C
         # (mismo patrón que _uocr_inferring — Event global, set/clear por request).
         self.ou._ruta_c_cls_disabled.set() if disable_uocr else self.ou._ruta_c_cls_disabled.clear()
-        blocks = self.ou._detect_and_ocr(
-            img_bgr, ocr_lang,
-            allow_fallback=True,
-            prefilter=prefilter,
-        )
+        with self._diagnostic_stage("hybrid"):
+            blocks = self.ou._detect_and_ocr(
+                img_bgr, ocr_lang,
+                allow_fallback=True,
+                prefilter=prefilter,
+            )
         engines_used: list[str] = ["easyocr+rapid"]
         # ── Fase 6: YOLO → Ruta C (recuperador de regiones de alto impacto) ──
         # Corre SIEMPRE en fusion, ANTES del trigger v4.2: detecta globos/
-        # cartelas/títulos como objetos y re-OCRea sus crops (upscale 3.5× +
+        # cartelas/títulos como objetos y re-OCRea sus crops (upscale 2× +
         # rotación). Si los bloques recuperados elevan la página por encima
         # del umbral del trigger, el VLM no dispara — rescata parte del 12.2%
         # sin los 2-8 min de inferencia. El trigger v4.2 NO se modifica.
@@ -801,8 +882,9 @@ class OCRManager:
         # Fase 6: YOLO → Ruta C con gate heurístico (páginas débilmente
         # detectadas) + disable_uocr apaga el detector (benchmark de overhead).
         self.ou._yolo_disabled.set() if disable_uocr else self.ou._yolo_disabled.clear()
-        yolo_blocks, yolo_regiones = self._ruta_c_yolo(
-            img_bgr, ocr_lang, blocks, avg_conf)
+        with self._diagnostic_stage("yolo"):
+            yolo_blocks, yolo_regiones = self._ruta_c_yolo(
+                img_bgr, ocr_lang, blocks, avg_conf)
         if yolo_blocks:
             merged = self.ou._fusionar_blocks_multi(
                 [blocks, yolo_blocks],
@@ -822,8 +904,9 @@ class OCRManager:
         # YOLO por overlap (lección del benchmark Paso 5: no re-OCRear la
         # misma zona dos veces). disable_uocr lo apaga (mismo patrón).
         self.ou._ctd_disabled.set() if disable_uocr else self.ou._ctd_disabled.clear()
-        ctd_blocks = self._ruta_c_ctd(
-            img_bgr, ocr_lang, blocks, avg_conf, yolo_regiones)
+        with self._diagnostic_stage("ctd"):
+            ctd_blocks = self._ruta_c_ctd(
+                img_bgr, ocr_lang, blocks, avg_conf, yolo_regiones)
         if ctd_blocks:
             merged = self.ou._fusionar_blocks_multi(
                 [blocks, ctd_blocks],
@@ -834,7 +917,8 @@ class OCRManager:
                   f"{len(ctd_blocks)} CTD → {len(merged)}")
             blocks[:] = merged
             engines_used.append("ctd+rutac")
-        has_big_panel = self._has_big_panel(img_bgr)
+        with self._diagnostic_stage("panel_check"):
+            has_big_panel = self._has_big_panel(img_bgr)
         # Sesión 116: la firma se computa SIEMPRE (no solo con trigger) para
         # que la decisión NEGATIVA también quede cacheada y sea determinista
         # entre corridas idénticas (misma imagen → misma firma → misma
@@ -843,11 +927,21 @@ class OCRManager:
         # clave para que capítulos de la MISMA serie (94% colisión de layout,
         # sesión 124) no hereden decisiones entre sí. El §8.4.1 de negativas
         # recibe esta misma firma escopeada (vía _reforzar_con_unlimited).
-        firma = self._firma_documento(doc_id, self._page_signature(img_bgr))
+        with self._diagnostic_stage("signature"):
+            firma = self._firma_documento(doc_id, self._page_signature(img_bgr))
         trigger = self._trigger_con_cache(
             firma, blocks, avg_conf, has_big_panel,
             force_uocr=force_uocr, disable_uocr=disable_uocr,
         )
+        if self._active_diagnostics is not None:
+            self._active_diagnostics.set_counts(initial_blocks=len(blocks))
+            self._active_diagnostics.set_trigger(
+                trigger,
+                self._trigger_reason(
+                    blocks, avg_conf, has_big_panel,
+                    force_uocr=force_uocr,
+                ),
+            )
         if has_big_panel and not disable_uocr:
             print(f"[process-page] Fusion: panel image grande detectado "
                   f"(dark_ratio>{(UOCR_IMAGE_BLOCK_RATIO * 100):.0f}%)")
@@ -872,15 +966,20 @@ class OCRManager:
                 # según el trigger v4.2, no se dispara el daemon. Skipeado
                 # con force_uocr (orden explícito de VLM) y disable_uocr
                 # (el trigger ya está anulado).
-                if (not force_uocr and not disable_uocr
+                with self._diagnostic_stage("rapid_aggressive"):
+                    rapid_salvado = (
+                        not force_uocr and not disable_uocr
                         and self._reforzar_con_rapid_agresivo(
-                            img_bgr, blocks, avg_conf, has_big_panel)):
+                            img_bgr, blocks, avg_conf, has_big_panel)
+                    )
+                if rapid_salvado:
                     print("[process-page] Fase 2: reintento RapidOCR "
                           "agresivo resolvió la página — sin VLM")
                     engines_used.append("rapid-aggressive")
                     return blocks, "fusion", engines_used
-                engines_used.extend(self._reforzar_con_unlimited(
-                    img_bgr, ocr_lang, blocks, avg_conf, firma=firma))
+                with self._diagnostic_stage("uocr"):
+                    engines_used.extend(self._reforzar_con_unlimited(
+                        img_bgr, ocr_lang, blocks, avg_conf, firma=firma))
         return blocks, "fusion", engines_used
 
     # ─── Trigger v4.2 (testeable en aislamiento) ─────────────────
@@ -894,17 +993,45 @@ class OCRManager:
     ) -> bool:
         """Decide si la página necesita el refuerzo de Unlimited-OCR.
 
-        v4.2: se dispara solo con image>15% O (<3 bloques Y conf<0.2).
+        v4.2: se dispara por detección débil o panel grande sin OCR suficiente.
+        Un panel oscuro con al menos tres bloques y confianza media alta se
+        considera ya resuelto y no activa el VLM costoso.
         disable_uocr (benchmark) anula cualquier trigger.
         """
+        panel_needs_refinement = (
+            has_big_panel
+            and not (
+                len(blocks) >= UOCR_TRIGGER_MIN_BLOCKS
+                and avg_conf >= UOCR_PANEL_SKIP_MIN_CONF
+            )
+        )
         trigger = (not blocks
                    or (len(blocks) < UOCR_TRIGGER_MIN_BLOCKS
                        and avg_conf < UOCR_TRIGGER_CONF)
-                   or has_big_panel
+                   or panel_needs_refinement
                    or force_uocr)
         if disable_uocr:
             trigger = False
         return trigger
+
+    @staticmethod
+    def _trigger_reason(
+        blocks: list[dict[str, Any]],
+        avg_conf: float,
+        has_big_panel: bool,
+        force_uocr: bool,
+    ) -> str:
+        if force_uocr:
+            return "forced"
+        if not blocks:
+            return "no_blocks"
+        if (has_big_panel
+                and not (len(blocks) >= UOCR_TRIGGER_MIN_BLOCKS
+                         and avg_conf >= UOCR_PANEL_SKIP_MIN_CONF)):
+            return "large_image_panel"
+        if len(blocks) < UOCR_TRIGGER_MIN_BLOCKS and avg_conf < UOCR_TRIGGER_CONF:
+            return "low_block_count_and_confidence"
+        return "threshold_not_met"
 
     # ─── Helpers ─────────────────────────────────────────────────
     def _firma_documento(self, doc_id: str, firma: str) -> str:
@@ -929,14 +1056,18 @@ class OCRManager:
         except Exception:
             return False
 
-    def _unlimited_ocr(self, img_bgr: Any):
+    def _unlimited_ocr(
+        self, img_bgr: Any,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float]:
         """Llama al daemon U-OCR. Acceso en runtime a routes.api para que
         los mocks que parchean routes.api._ocr_with_unlimited sigan
         funcionando (evita dependencia circular en el import)."""
         import routes.api as ra
         return ra._ocr_with_unlimited(img_bgr)
 
-    def _unlimited_ocr_batch(self, img_bgrs: list[Any]):
+    def _unlimited_ocr_batch(
+        self, img_bgrs: list[Any],
+    ) -> tuple[list[tuple[list[dict[str, Any]], list[dict[str, Any]]]], float]:
         """Llama al daemon U-OCR en MODO BATCH (infer_multi, Fase 1). Acceso
         en runtime a routes.api para respetar los mocks de pytest."""
         import routes.api as ra
@@ -961,10 +1092,11 @@ class OCRManager:
         # Gate global UOCR_ENABLED (sesión 143): anula SOLO el refuerzo VLM
         # (el CLI manga_ocr.py lo desactiva por defecto — extracción pura sin
         # inferencias de 2-8 min/pág). A diferencia de disable_uocr, YOLO /
-        # Ruta C / cls de rotación siguen activos. Se lee en runtime para que
-        # mutar config desde el caller surta efecto.
-        from config import UOCR_ENABLED
-        if not UOCR_ENABLED:
+        # Ruta C / cls de rotación siguen activos. MODO_CPU (preset sin GPU
+        # dedicada) apaga el VLM de la misma forma aunque UOCR_ENABLED=True.
+        # Se leen en runtime para que mutar config desde el caller surta efecto.
+        from config import MODO_CPU, UOCR_ENABLED
+        if not UOCR_ENABLED or MODO_CPU:
             return []
         try:
             ublocks, uimage_panels, _ = self._unlimited_ocr(img_bgr)
@@ -1034,7 +1166,12 @@ class OCRManager:
             return False
         try:
             img_rapid = self.ou._preprocess_rapid(img_bgr)
-            rapid = self.ou._run_rapidocr(img_rapid, **RAPID_AGGRESSIVE_PARAMS)
+            rapid = self.ou._run_rapidocr(
+                img_rapid,
+                box_thresh=RAPID_AGGRESSIVE_PARAMS["box_thresh"],
+                unclip_ratio=RAPID_AGGRESSIVE_PARAMS["unclip_ratio"],
+                text_score=RAPID_AGGRESSIVE_PARAMS["text_score"],
+            )
             if not rapid:
                 return False
             merged = self.ou._fusionar_blocks_multi(

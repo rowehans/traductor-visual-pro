@@ -1,0 +1,196 @@
+{
+ "4": {
+  "crops": 6,
+  "regions": 6,
+  "base_s": 2.066,
+  "alt_s": 0.787,
+  "delta_s": -1.279,
+  "base_det_s": 1.671,
+  "alt_det_s": 0.446,
+  "base_rec_s": 0.346,
+  "alt_rec_s": 0.216,
+  "base_group_s": 0.003,
+  "alt_group_s": 0.003,
+  "base_spell_s": 0,
+  "alt_spell_s": 0,
+  "base_det_calls": 6,
+  "alt_det_calls": 1,
+  "base_blocks_total": 8,
+  "base_blocks_rapid": 5,
+  "alt_blocks": 7,
+  "texts_equal": false,
+  "solo_base": [
+   "CONTROLARALAPRIMERA BABAYAGA.QUESIEMPREHA SIDOTANIMPREDECIBLE prestigjosa reputacion",
+   "ESTARELACIONADO CON",
+   "LACARDENALDELSANTO REINO,YUTIA BLOODIA...",
+   "YSIHUBIESE ACEPTADO..",
+   "nsosondns-od nsosondns-od- osareputacion",
+   "心"
+  ],
+  "solo_alt": [
+   "BABAYAGA.QUESIEMPREHA SIDOTANIMPREDECIBLE Y-por_supuesto!.su Y-por_supuesto!.su prestigjosdreputacion prestigjosdreputacion seria ui buenagregado seria unbuen agregado",
+   "CONTROLARALAPRIMERA",
+   "ESTARELACIONADOCON",
+   "LACARDENALDELSANTO REINO, YUTIA BLOODIA...",
+   "鼻"
+  ],
+  "base_texts": [
+   "CONTROLARALAPRIMERA BABAYAGA.QUESIEMPREHA SIDOTANIMPREDECIBLE prestigjosa reputacion",
+   "ESTARELACIONADO CON",
+   "LACARDENALDELSANTO REINO,YUTIA BLOODIA...",
+   "PODRIAUSARLOPARA",
+   "YAQUETAMBIEN",
+   "YSIHUBIESE ACEPTADO..",
+   "nsosondns-od nsosondns-od- osareputacion",
+   "心"
+  ],
+  "alt_texts": [
+   "BABAYAGA.QUESIEMPREHA SIDOTANIMPREDECIBLE Y-por_supuesto!.su Y-por_supuesto!.su prestigjosdreputacion prestigjosdreputacion seria ui buenagregado seria unbuen agregado",
+   "CONTROLARALAPRIMERA",
+   "ESTARELACIONADOCON",
+   "LACARDENALDELSANTO REINO, YUTIA BLOODIA...",
+   "PODRIAUSARLOPARA",
+   "YAQUETAMBIEN",
+   "鼻"
+  ],
+  "base_texts_rapid": [
+   "ESTARELACIONADO CON",
+   "LACARDENALDELSANTO REINO,YUTIA BLOODIA...",
+   "PODRIAUSARLOPARA",
+   "YAQUETAMBIEN",
+   "心"
+  ],
+  "alt_dups": {}
+ },
+ "29": {
+  "crops": 11,
+  "regions": 11,
+  "base_s": 4.53,
+  "alt_s": 0.878,
+  "delta_s": -3.652,
+  "base_det_s": 3.616,
+  "alt_det_s": 0.437,
+  "base_rec_s": 0.721,
+  "alt_rec_s": 0.301,
+  "base_group_s": 0.003,
+  "alt_group_s": 0.003,
+  "base_spell_s": 0,
+  "alt_spell_s": 0,
+  "base_det_calls": 11,
+  "alt_det_calls": 1,
+  "base_blocks_total": 9,
+  "base_blocks_rapid": 8,
+  "alt_blocks": 8,
+  "texts_equal": false,
+  "solo_base": [
+   "330 SUVOLUNTAD?",
+   "ASiQUESEGUi",
+   "CULESELVEDADE RONOMBREOEIOS PIOSES CYTURNOS?",
+   "POSMISTEA9OSVOOSCOSOSNITUAISDEL CEANDIOSCMIDADO?",
+   "PREGUNTANDOENELORDEN QUELASPREPARE,PERO.",
+   "SCOSOSRTUASDCI CREN DIOSCODACDP YICSARCHIVOSDC 10MASPRCGUNDO DELATORREY YICSARCHIVOSDC 10MASPRCSUNDO DELATORRE?",
+   "SIEMPREFUERON SIMPLES.",
+   "SUSRESPUESTAS",
+   "YSIMPIEMENTEDESCRIBENLA SITLACIONACTUALESO ESTCDO IOCUCPUEDODECIR."
+  ],
+  "solo_alt": [
+   "ASIQUESEGUi",
+   "CUEESCIVRDAD RONOMBRE OEIOS PIDSES CXTERNOS? 0SMSTLOOSY",
+   "NOSCASOSMTUANESDGL CHENDIOS COVDACDP YICSARCHIVOSCC 10MASPRCUNDO DELATORRE? YICSACHIVOSDC 10MASPRCSUNDO DELATORRE?",
+   "PLOSMISTEA9OSYDOSCESOSRITUAIESDGL CEAN DIOSCIMDADO?",
+   "PREGUNTANDOENELORDEN QUELASPREPARE,PER....",
+   "RSIMPEMENEDESCRBENLA SITLACIONACTUALCSOESTOOO IOCUEPUEDODCCIR.",
+   "SUSRESPUESTAS SIEMPREFUERON SIMPLES.",
+   "ZELHEREDCRODE SUVOLUNTAD?"
+  ],
+  "base_texts": [
+   "330 SUVOLUNTAD?",
+   "ASiQUESEGUi",
+   "CULESELVEDADE RONOMBREOEIOS PIOSES CYTURNOS?",
+   "POSMISTEA9OSVOOSCOSOSNITUAISDEL CEANDIOSCMIDADO?",
+   "PREGUNTANDOENELORDEN QUELASPREPARE,PERO.",
+   "SCOSOSRTUASDCI CREN DIOSCODACDP YICSARCHIVOSDC 10MASPRCGUNDO DELATORREY YICSARCHIVOSDC 10MASPRCSUNDO DELATORRE?",
+   "SIEMPREFUERON SIMPLES.",
+   "SUSRESPUESTAS",
+   "YSIMPIEMENTEDESCRIBENLA SITLACIONACTUALESO ESTCDO IOCUCPUEDODECIR."
+  ],
+  "alt_texts": [
+   "ASIQUESEGUi",
+   "CUEESCIVRDAD RONOMBRE OEIOS PIDSES CXTERNOS? 0SMSTLOOSY",
+   "NOSCASOSMTUANESDGL CHENDIOS COVDACDP YICSARCHIVOSCC 10MASPRCUNDO DELATORRE? YICSACHIVOSDC 10MASPRCSUNDO DELATORRE?",
+   "PLOSMISTEA9OSYDOSCESOSRITUAIESDGL CEAN DIOSCIMDADO?",
+   "PREGUNTANDOENELORDEN QUELASPREPARE,PER....",
+   "RSIMPEMENEDESCRBENLA SITLACIONACTUALCSOESTOOO IOCUEPUEDODCCIR.",
+   "SUSRESPUESTAS SIEMPREFUERON SIMPLES.",
+   "ZELHEREDCRODE SUVOLUNTAD?"
+  ],
+  "base_texts_rapid": [
+   "330 SUVOLUNTAD?",
+   "ASiQUESEGUi",
+   "CULESELVEDADE RONOMBREOEIOS PIOSES CYTURNOS?",
+   "POSMISTEA9OSVOOSCOSOSNITUAISDEL CEANDIOSCMIDADO?",
+   "PREGUNTANDOENELORDEN QUELASPREPARE,PERO.",
+   "SIEMPREFUERON SIMPLES.",
+   "SUSRESPUESTAS",
+   "YSIMPIEMENTEDESCRIBENLA SITLACIONACTUALESO ESTCDO IOCUCPUEDODECIR."
+  ],
+  "alt_dups": {}
+ },
+ "1": {
+  "crops": 7,
+  "regions": 7,
+  "base_s": 3.206,
+  "alt_s": 0.649,
+  "delta_s": -2.557,
+  "base_det_s": 2.644,
+  "alt_det_s": 0.481,
+  "base_rec_s": 0.483,
+  "alt_rec_s": 0.119,
+  "base_group_s": 0.002,
+  "alt_group_s": 0.001,
+  "base_spell_s": 0,
+  "alt_spell_s": 0,
+  "base_det_calls": 7,
+  "alt_det_calls": 1,
+  "base_blocks_total": 6,
+  "base_blocks_rapid": 4,
+  "alt_blocks": 6,
+  "texts_equal": false,
+  "solo_base": [
+   "INCREIBLE",
+   "PRIMERO SEOLLANG,Y AHORA YUTIA",
+   "SEOLLANG O!WIEN SEOLLANG OIEN",
+   "UEHUUJINMANGAS.CON"
+  ],
+  "solo_alt": [
+   "LCHUUJINNANGASCON",
+   "PRIMERO",
+   "S E",
+   "SEOLLANG,Y AHORAYUTIA",
+   "SEOLLANGOUEN SEOLLANG OUIEN"
+  ],
+  "base_texts": [
+   "AAHH...",
+   "INCREIBLE",
+   "INCREIBLE",
+   "PRIMERO SEOLLANG,Y AHORA YUTIA",
+   "SEOLLANG O!WIEN SEOLLANG OIEN",
+   "UEHUUJINMANGAS.CON"
+  ],
+  "alt_texts": [
+   "AAHH...",
+   "LCHUUJINNANGASCON",
+   "PRIMERO",
+   "S E",
+   "SEOLLANG,Y AHORAYUTIA",
+   "SEOLLANGOUEN SEOLLANG OUIEN"
+  ],
+  "base_texts_rapid": [
+   "AAHH...",
+   "INCREIBLE",
+   "INCREIBLE",
+   "UEHUUJINMANGAS.CON"
+  ],
+  "alt_dups": {}
+ }
+}

@@ -1,0 +1,122 @@
+{
+ "benchmark": "benchmark_production.py",
+ "pdf": "Capítulo 43 de Cómo criar villanos correctamente.pdf",
+ "scale_pdfjs": 1.2,
+ "pages": [
+  28,
+  31,
+  32
+ ],
+ "avg_s_per_page": 50.104,
+ "total_s": 150.313,
+ "trigger_v42_count": 3,
+ "vlm_called_count": 3,
+ "vlm_recovered_total": 12,
+ "rapid_aggr_salvaged_count": 0,
+ "yolo_pages": 3,
+ "ctd_pages": 3,
+ "per_page": {
+  "28": {
+   "total_s": 63.11,
+   "n_blocks": 13,
+   "avg_conf": 0.819,
+   "engine": "fusion",
+   "trigger_v42": true,
+   "trigger_reason": "large_image_panel",
+   "n_blocks_at_trigger": 7,
+   "avg_conf_at_trigger": 0.7066548905571997,
+   "has_big_panel": true,
+   "dark_ratio": 0.203,
+   "vlm_called": true,
+   "vlm_recovered": 6,
+   "rapid_aggr_calls": 1,
+   "rapid_aggr_salvaged": false,
+   "negative_skip_841": false,
+   "stages": {
+    "prefilter": 0.484,
+    "rapid": 2.404,
+    "yolo": 0.0,
+    "ctd": 0.0,
+    "rapid_aggr": 0.0,
+    "vlm": 54.053
+   },
+   "calls": {
+    "prefilter": 3,
+    "rapid": 5,
+    "yolo": 3,
+    "ctd": 3,
+    "rapid_aggr": 3,
+    "vlm": 3,
+    "ruta_c": 1
+   }
+  },
+  "31": {
+   "total_s": 48.459,
+   "n_blocks": 9,
+   "avg_conf": 0.786,
+   "engine": "fusion",
+   "trigger_v42": true,
+   "trigger_reason": "large_image_panel",
+   "n_blocks_at_trigger": 4,
+   "avg_conf_at_trigger": 0.6515080262906849,
+   "has_big_panel": true,
+   "dark_ratio": 0.184,
+   "vlm_called": true,
+   "vlm_recovered": 5,
+   "rapid_aggr_calls": 1,
+   "rapid_aggr_salvaged": false,
+   "negative_skip_841": false,
+   "stages": {
+    "prefilter": 0.435,
+    "rapid": 1.801,
+    "yolo": 0.0,
+    "ctd": 0.0,
+    "rapid_aggr": 0.0,
+    "ruta_c": 1.328,
+    "vlm": 47.11
+   },
+   "calls": {
+    "prefilter": 2,
+    "rapid": 4,
+    "yolo": 2,
+    "ctd": 2,
+    "rapid_aggr": 2,
+    "ruta_c": 1,
+    "vlm": 2
+   }
+  },
+  "32": {
+   "total_s": 38.744,
+   "n_blocks": 6,
+   "avg_conf": 0.669,
+   "engine": "fusion",
+   "trigger_v42": true,
+   "trigger_reason": "large_image_panel",
+   "n_blocks_at_trigger": 5,
+   "avg_conf_at_trigger": 0.6133028976655291,
+   "has_big_panel": true,
+   "dark_ratio": 0.181,
+   "vlm_called": true,
+   "vlm_recovered": 1,
+   "rapid_aggr_calls": 1,
+   "rapid_aggr_salvaged": false,
+   "negative_skip_841": false,
+   "stages": {
+    "prefilter": 0.462,
+    "rapid": 0.571,
+    "yolo": 0.0,
+    "ctd": 0.0,
+    "rapid_aggr": 0.0,
+    "vlm": 37.293
+   },
+   "calls": {
+    "prefilter": 1,
+    "rapid": 1,
+    "yolo": 1,
+    "ctd": 1,
+    "rapid_aggr": 1,
+    "vlm": 1
+   }
+  }
+ }
+}

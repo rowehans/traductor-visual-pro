@@ -1,0 +1,87 @@
+{
+ "28": {
+  "2048": {
+   "vlm_s": 52.297836780548096,
+   "rec": 6,
+   "n_blocks": 13,
+   "texts": [
+    "BAJCE",
+    "DA IGUAL",
+    "DIRALPRESHNAL",
+    "EA 4RIE",
+    "INTEREJANTE",
+    "INTERESANTE.",
+    "LFUYAN!EI VERDAE",
+    "OH.",
+    "SE QUE TIENES",
+    "SE amo TIFNFT",
+    "UCHUULJINMANGAS.COM",
+    "YA HAS RECIED MUCHAS COSAS QUE HUBIESTEN SIDO IMPOSIBLES DE HACER SIN DIVINIDAD, ¿COMO ES QUE ERES TAN INGRORANTE...?",
+    "YAHAI HFHO MIN HAS"
+   ],
+   "trigger": true,
+   "reason": "large_image_panel"
+  },
+  "1024": {
+   "vlm_s": 33.396247148513794,
+   "rec": 3,
+   "n_blocks": 10,
+   "texts": [
+    "BAJCE",
+    "DIRALPRESHNAL",
+    "EA 4RIE",
+    "INTEREJANTE",
+    "INTERESANTE.",
+    "LFUYAN!EI VERDAE",
+    "OH.",
+    "SE amo TIFNFT",
+    "YA HAS RECIED MUCHAS COSAS QUE HUBIESTEN SIDO IMPOSIBLES DE HACER SIN DIVINIDAD, ¿COMO ES QUE ERES TAN INGRORANTE...?",
+    "YAHAI HFHO MIN HAS"
+   ],
+   "trigger": true,
+   "reason": "large_image_panel"
+  }
+ },
+ "16": {
+  "2048": {
+   "vlm_s": 48.839637756347656,
+   "rec": 5,
+   "n_blocks": 12,
+   "texts": [
+    "Aa",
+    "DESPUES DE",
+    "DESPUES DE TODO, HASVENI- DO CON MUCHAS CONSULTAS.",
+    "EN ESE CRSO,",
+    "ENESECASO",
+    "EXCELENTE,",
+    "EXCELLENTE,",
+    "LA ÚLTIMA VEZ.",
+    "LOHAREPOCO APOCO.",
+    "UKHULJINMANGAS.COM",
+    "VOYAEMPEZAR CONTESTANOOA TUS PREGUNTAS.",
+    "目"
+   ],
+   "trigger": true,
+   "reason": "large_image_panel"
+  },
+  "1024": {
+   "vlm_s": 30.106995820999146,
+   "rec": 3,
+   "n_blocks": 10,
+   "texts": [
+    "Aa",
+    "DESPUES DE",
+    "DESPUES DE TODO, HASVENI- DO CON MUCHAS CONSULTAS.",
+    "ENESECASO",
+    "EXCELENTE,",
+    "EXCELLENTE,",
+    "LOHAREPOCO APOCO.",
+    "UKHULJINMANGAS.COM",
+    "VOYAEMPEZAR CONTESTANOOA TUS PREGUNTAS.",
+    "目"
+   ],
+   "trigger": true,
+   "reason": "large_image_panel"
+  }
+ }
+}

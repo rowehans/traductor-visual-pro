@@ -11,7 +11,21 @@ from typing import Any
 
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, JSON, Boolean
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Text,
+    DateTime,
+    ForeignKey,
+    JSON,
+    Boolean,
+    Float,
+    MetaData,
+    Table,
+    select,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 
@@ -84,7 +98,9 @@ class TextBlock(db.Model):  # type: ignore[misc, name-defined]
     h: Any = Column(Integer, nullable=False)
     source_text: Any = Column(Text, nullable=True)
     translated_text: Any = Column(Text, nullable=True)
-    confidence: Any = Column(Integer, default=0)
+    # OCR devuelve una confianza continua [0.0, 1.0]; Integer la truncaba
+    # al persistir y destruÃ­a la seÃ±al usada para revisar resultados.
+    confidence: Any = Column(Float, default=0.0)
     font_size: Any = Column(Integer, default=12)
     text_color: Any = Column(String(20), default="#ffffff")
     bg_color: Any = Column(String(20), default="#000000")
@@ -96,6 +112,124 @@ class TextBlock(db.Model):  # type: ignore[misc, name-defined]
 
 
 # ─── Inicializacion ─────────────────────────────────────────────
+
+def _migrate_sqlite_confidence_type() -> None:
+    """Actualiza la columna legacy confidence sin perder filas.
+
+    db.create_all() crea tablas nuevas, pero no modifica el tipo de las
+    columnas existentes. La base local puede venir de una version donde la
+    confianza OCR era INTEGER y debe reconstruirse solo esa tabla.
+    """
+    if db.engine.dialect.name != "sqlite":
+        return
+
+    legacy_name = "text_blocks_legacy_confidence"
+    model_columns = [column.name for column in TextBlock.__table__.columns]
+
+    def table_exists(connection: Any, name: str) -> bool:
+        return connection.execute(
+            text(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = :name"
+            ),
+            {"name": name},
+        ).first() is not None
+
+    try:
+        with db.engine.connect() as connection:
+            table_info = connection.exec_driver_sql(
+                "PRAGMA table_info(text_blocks)"
+            ).fetchall()
+            if not table_info:
+                return
+
+            legacy_columns = {str(row[1]) for row in table_info}
+            confidence_type = next(
+                (str(row[2] or "").upper() for row in table_info if row[1] == "confidence"),
+                "",
+            )
+            if confidence_type in {"FLOAT", "REAL", "DOUBLE", "DOUBLE PRECISION"}:
+                return
+
+            # No reutilizar un backup abandonado: requiere inspeccion manual
+            # y evita sobreescribir datos en una recuperacion posterior.
+            if table_exists(connection, legacy_name):
+                print(
+                    "[db] Aviso: existe una tabla de migracion pendiente; "
+                    "se conserva el esquema actual"
+                )
+                return
+
+            missing_columns = [name for name in model_columns if name not in legacy_columns]
+            if missing_columns:
+                print(
+                    "[db] Aviso: no se migra text_blocks; faltan columnas "
+                    + ", ".join(missing_columns)
+                )
+                return
+
+            renamed = False
+            # Las consultas de inspeccion usan autobegin en SQLAlchemy 2.
+            # Cerrarlo antes de iniciar la migracion DDL explicita.
+            connection.commit()
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            connection.commit()
+            transaction = connection.begin()
+            try:
+                connection.execute(
+                    text(
+                        "ALTER TABLE text_blocks "
+                        "RENAME TO text_blocks_legacy_confidence"
+                    )
+                )
+                renamed = True
+                db.metadata.create_all(
+                    bind=connection,
+                    tables=[TextBlock.__table__],
+                )
+                legacy_table = Table(
+                    legacy_name,
+                    MetaData(),
+                    autoload_with=connection,
+                )
+                connection.execute(
+                    TextBlock.__table__.insert().from_select(
+                        model_columns,
+                        select(
+                            *(legacy_table.c[name] for name in model_columns)
+                        ),
+                    )
+                )
+                legacy_table.drop(connection)
+                transaction.commit()
+                print(
+                    "[db] Migracion aplicada: text_blocks.confidence "
+                    "INTEGER -> FLOAT"
+                )
+            except Exception:
+                transaction.rollback()
+
+                # SQLite suele revertir DDL dentro de la transaccion. Si el
+                # driver deja el rename persistido, restaurar el backup antes
+                # de continuar para no dejar una tabla nueva vacia.
+                if renamed and table_exists(connection, legacy_name):
+                    if table_exists(connection, "text_blocks"):
+                        connection.execute(
+                            text("DROP TABLE text_blocks")
+                        )
+                    connection.execute(
+                        text(
+                            "ALTER TABLE text_blocks_legacy_confidence "
+                            "RENAME TO text_blocks"
+                        )
+                    )
+                    connection.commit()
+                raise
+            finally:
+                connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+    except Exception as exc:
+        print(f"[db] Aviso: no se pudo migrar confidence: {exc}")
+
 
 def init_db(app: Flask) -> None:
     """Configura la base de datos segun el entorno."""
@@ -117,6 +251,7 @@ def init_db(app: Flask) -> None:
 
     with app.app_context():
         db.create_all()
+        _migrate_sqlite_confidence_type()
 
     print(f"[db] Base de datos lista: {app.config['SQLALCHEMY_DATABASE_URI']}")
 
@@ -143,7 +278,7 @@ class ProjectRepository:
 
     @staticmethod
     def delete(project_id: int, user_id: int) -> bool:
-        p = Project.query.filter_by(id=project_id, user_id=user_id).first()  # type: ignore[no-any-return]
+        p = Project.query.filter_by(id=project_id, user_id=user_id).first()
         if p:
             db.session.delete(p)
             db.session.commit()
@@ -152,30 +287,61 @@ class ProjectRepository:
 
 
 class PageRepository:
-    """Acceso a datos de paginas."""
+    """Acceso a datos de páginas con aislamiento por usuario."""
 
     @staticmethod
-    def create(project_id: int, page_number: int, **kwargs: Any) -> Page:
+    def create(
+        project_id: int,
+        page_number: int,
+        user_id: int,
+        **kwargs: Any,
+    ) -> Page:
+        project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+        if project is None:
+            raise ValueError("El proyecto no pertenece al usuario")
         p = Page(project_id=project_id, page_number=page_number, **kwargs)
         db.session.add(p)
         db.session.commit()
         return p
 
     @staticmethod
-    def get_by_project(project_id: int) -> list[Page]:
-        return Page.query.filter_by(project_id=project_id).order_by(Page.page_number).all()  # type: ignore[no-any-return]
+    def get_by_project(project_id: int, user_id: int) -> list[Page]:
+        return (  # type: ignore[no-any-return]
+            Page.query
+            .join(Project, Page.project_id == Project.id)
+            .filter(Page.project_id == project_id, Project.user_id == user_id)
+            .order_by(Page.page_number)
+            .all()
+        )
 
     @staticmethod
-    def get_by_id(page_id: int) -> Page | None:
-        return Page.query.get(page_id)  # type: ignore[no-any-return]
+    def get_by_id(page_id: int, user_id: int) -> Page | None:
+        return (  # type: ignore[no-any-return]
+            Page.query
+            .join(Project, Page.project_id == Project.id)
+            .filter(Page.id == page_id, Project.user_id == user_id)
+            .first()
+        )
 
 
 class TextBlockRepository:
-    """Acceso a datos de bloques de texto."""
+    """Acceso a datos de bloques de texto con aislamiento por usuario."""
 
     @staticmethod
-    def bulk_save(page_id: int, blocks: list[dict[str, Any]]) -> list[TextBlock]:
-        TextBlock.query.filter_by(page_id=page_id).delete()  # type: ignore[no-any-return]
+    def bulk_save(
+        page_id: int,
+        user_id: int,
+        blocks: list[dict[str, Any]],
+    ) -> list[TextBlock]:
+        page = (
+            Page.query
+            .join(Project, Page.project_id == Project.id)
+            .filter(Page.id == page_id, Project.user_id == user_id)
+            .first()
+        )
+        if page is None:
+            raise ValueError("La página no pertenece al usuario")
+        TextBlock.query.filter_by(page_id=page_id).delete()
         objs: list[TextBlock] = []
         for b in blocks:
             objs.append(TextBlock(

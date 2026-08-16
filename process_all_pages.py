@@ -36,6 +36,7 @@ Recomendacion: usar --ocr-mode fusion (default) para mejor calidad. Usar
 --ocr-mode easyocr para máxima velocidad (menos detección).
 """
 import os, sys, time, json, base64, threading, concurrent.futures, argparse, hashlib
+from typing import Any
 
 import fitz, requests
 
@@ -96,6 +97,16 @@ _parser.add_argument(
             "v4.2). Útil para benchmarks: elimina el no-determinismo del trigger "
             "y mide la ventaja real de infer_multi compartiendo prefill."
 )
+_parser.add_argument(
+    "--source",
+    default="es",
+    help="Idioma origen enviado al servidor (default: es; admite auto, ja, zh, etc.)",
+)
+_parser.add_argument(
+    "--target",
+    default="en",
+    help="Idioma destino enviado al servidor (default: en; admite cualquier idioma configurado)",
+)
 _args, _ = _parser.parse_known_args()
 OCR_MODE: str = _args.ocr_mode
 MAX_WORKERS: int = _args.workers
@@ -113,6 +124,8 @@ CHECKPOINT_FILE = _args.checkpoint_file
 if CHECKPOINT_FILE is None:
     CHECKPOINT_FILE = f"resultados_progreso_{time.strftime('%Y%m%d_%H%M')}.json"
 FORCE_UOCR: bool = _args.force_uocr
+SOURCE: str = str(_args.source).strip().lower() or "auto"
+TARGET: str = str(_args.target).strip().lower() or "en"
 
 PDF_PATH = "Capítulo 43 de Cómo criar villanos correctamente.pdf"
 API_URL = "http://127.0.0.1:5174"
@@ -123,10 +136,8 @@ API_URL = "http://127.0.0.1:5174"
 # decisiones del 43 (VLM suprimido en diálogo artístico). Prefijar la clave
 # con un hash estable del nombre del PDF aísla cada capítulo. Se envía como
 # "doc_id" en los payloads de /api/process-page y /api/process-page-batch.
-DOC_ID = hashlib.md5(os.path.basename(PDF_PATH).encode("utf-8")).hexdigest()[:12]
+DOC_ID = hashlib.sha256(os.path.basename(PDF_PATH).encode("utf-8")).hexdigest()[:12]
 ZOOM = 1.2                    # 1.5→1.2: -36% pixels, misma calidad visual
-TARGET = "en"
-SOURCE = "es"
 TIMEOUT_PER_PAGE = 1800  # 1800s por página: en modo fusion el daemon U-OCR serializa
                          # (una inferencia a la vez, 130-500s c/u) y con workers=2 varias
                          # páginas disparadas se encolan: 2-3 inferencias ≈ 260-1446s.
@@ -147,16 +158,16 @@ _http_session.mount('https://', _adapter)
 
 # ── Thread-safe estado compartido ────────────────────────────────
 _lock = threading.Lock()
-_rendered_queue: list[tuple[int, str | None, float]] = []  # (page_num, b64_or_None, render_time)
+_rendered_queue: list[tuple[int | None, str | None, float]] = []  # (page_num, b64_or_None, render_time)
 _rendered_event = threading.Event()
 
 # ── checkpoint helpers (thread-safe con Lock) ────────────────────
-def load_checkpoint():
+def load_checkpoint() -> dict[str, Any] | None:
     if not os.path.exists(CHECKPOINT_FILE):
         return None
     try:
         with open(CHECKPOINT_FILE, "r", encoding="utf-8") as f:
-            cp = json.load(f)
+            cp: dict[str, Any] = json.load(f)
         with _lock:
             print(f"[checkpoint] Cargado: {len(cp.get('pages_done',[]))} páginas ya procesadas")
         return cp
@@ -164,14 +175,14 @@ def load_checkpoint():
         print(f"[checkpoint] Error cargando: {e}, empezando de cero")
         return None
 
-def save_checkpoint(cp):
+def save_checkpoint(cp: dict[str, Any]) -> None:
     tmp = CHECKPOINT_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(cp, f, ensure_ascii=False, indent=2)
     os.replace(tmp, CHECKPOINT_FILE)
 
 # ── Render thread: produce imágenes y las encola ─────────────────
-def render_worker(doc, total_pages, pages_done):
+def render_worker(doc: Any, total_pages: int, pages_done: set[int]) -> None:
     """
     Renderiza páginas en un hilo y las encola para los API workers.
     
@@ -207,7 +218,7 @@ def render_worker(doc, total_pages, pages_done):
         _rendered_queue.append((None, None, 0))  # centinela
     _rendered_event.set()
 
-def get_next_page(timeout=5):
+def get_next_page(timeout: float = 5) -> tuple[int | None, str | None, float]:
     """Espera hasta que haya una página renderizada disponible."""
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -221,9 +232,9 @@ def get_next_page(timeout=5):
 # ── estado por defecto (main() lo sobrescribe desde el checkpoint) ──
 # Definidos a nivel de módulo para que procesar_pagina/_registrar_resultado
 # sean testeables en aislamiento sin ejecutar el flujo completo.
-pages_done = set()
-results = []
-page_times = []
+pages_done: set[int] = set()
+results: list[dict[str, Any]] = []
+page_times: list[float] = []
 stats = {
     "total_blocks_found": 0,
     "total_blocks_translated": 0,
@@ -237,7 +248,20 @@ _pages_processed_since_checkpoint = 0
 
 
 
-def build_checkpoint():
+def _serialize_checkpoint_text(block: dict[str, Any]) -> dict[str, Any]:
+    """Guarda el texto junto con metadatos útiles para QA posterior."""
+    item = {
+        "src": block.get("source", ""),
+        "tgt": block.get("translated", ""),
+    }
+    for key in ("type", "block_type", "confidence", "source_lang", "target_lang", "detected_lang", "engine"):
+        value = block.get(key)
+        if value is not None and value != "":
+            item[key] = value
+    return item
+
+
+def build_checkpoint() -> dict[str, Any]:
     return {
         "total_pages": total_pages,
         "pages_done": sorted(pages_done),
@@ -245,10 +269,12 @@ def build_checkpoint():
         "page_times": page_times,
         "stats": stats,
         "ocr_mode": OCR_MODE,
+        "source_lang": SOURCE,
+        "target_lang": TARGET,
         "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
-def procesar_pagina(page_num: int, b64: str | None, render_t: float):
+def procesar_pagina(page_num: int, b64: str | None, render_t: float) -> None:
     """Procesa una página contra el servidor y actualiza estado."""
     global _pages_processed_since_checkpoint
     if b64 is None:
@@ -287,6 +313,10 @@ def procesar_pagina(page_num: int, b64: str | None, render_t: float):
                     _pages_processed_since_checkpoint += 1
                 return
         except Exception as e:
+            # Elapsed también debe existir si la primera excepción no es
+            # Timeout; de lo contrario el worker muere al registrar el
+            # error definitivo y la página desaparece del checkpoint.
+            elapsed = time.time() - t0
             with _lock:
                 print(f"  Pág {page_num:3d}: ERROR conexión (intento {attempt+1}): {e}")
             if attempt < MAX_RETRIES:
@@ -318,7 +348,7 @@ def procesar_pagina(page_num: int, b64: str | None, render_t: float):
 
 
 def _registrar_resultado(page_num: int, render_t: float, elapsed: float,
-                         blocks: list, attempt: int = 0) -> None:
+                         blocks: list[Any], attempt: int = 0) -> None:
     """Actualiza stats/resultados/checkpoint para una página completada.
 
     Compartido por procesar_pagina (single) y procesar_lote (batch Fase 1).
@@ -357,7 +387,7 @@ def _registrar_resultado(page_num: int, render_t: float, elapsed: float,
 
         results.append({"page": page_num, "status": status, "blocks": n_blocks,
                             "translated": n_translated, "time": elapsed,
-                            "texts": [{"src": b.get("source", ""), "tgt": b.get("translated", "")} for b in blocks]})
+                            "texts": [_serialize_checkpoint_text(b) for b in blocks]})
         pages_done.add(page_num)
         page_times.append(elapsed)
         _pages_processed_since_checkpoint += 1
@@ -587,7 +617,9 @@ def main() -> None:
             first = get_next_page(timeout=60)
             if first is None or first[0] is None:  # centinela de fin
                 break
-            batch.append(first)
+            # Después del check, first[0] está estrechado a int — reconstruir la
+            # tupla para que mypy la vea con el tipo de batch.
+            batch.append((first[0], first[1], first[2]))
             while len(batch) < BATCH_WINDOW:
                 extra = get_next_page(timeout=0.2)
                 if extra is None or extra[0] is None:
@@ -599,7 +631,7 @@ def main() -> None:
                         with _lock:
                             _rendered_queue.insert(0, extra)
                     break
-                batch.append(extra)
+                batch.append((extra[0], extra[1], extra[2]))
             pages_en_cola += len(batch)
             fut = api_workers.submit(procesar_lote, batch)
             futures.append(fut)

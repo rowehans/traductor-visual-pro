@@ -34,6 +34,8 @@ DATAS = [
     (str(PROJECT_ROOT / "translator.py"), "."),
     (str(PROJECT_ROOT / "ocr_utils.py"), "."),
     (str(PROJECT_ROOT / "ocr_engine.py"), "."),
+    (str(PROJECT_ROOT / "runtime_diagnostics.py"), "."),
+    (str(PROJECT_ROOT / "translation_memory.py"), "."),
     (str(PROJECT_ROOT / "cache.py"), "."),
     (str(PROJECT_ROOT / "models.py"), "."),
     (str(PROJECT_ROOT / "ratelimit.py"), "."),

@@ -145,7 +145,7 @@ Errores:      0
 
 ## 4. Estado Actual
 
-**Última actualización**: 2026-08-11
+**Última actualización**: 2026-08-13
 
 ### Cambios acumulados (Agosto 2026)
 
@@ -388,6 +388,367 @@ Errores:      0
 | 166 | **Nuevo modo `--comparativa` en el calificador**: genera un montaje lado a lado donde **cada fila es una página con texto perdido** — izquierda el oro (globos en verde, texto libre en magenta), derecha las detecciones del modelo (rojo), con cabecera `página hits/gt recall%` y franja de leyenda. Selecciona las páginas con fns>0 (peor recall primero, máx `--comparativa-paginas` 8) y reusa `_predecir` + `_par_comparativa` (letterbox extraído a helper). El path del PNG se guarda en la ronda del historial (clave `comparativa`). **Comparativa real sobre las 63 páginas** (ogkalu producción, imgsz 640 CPU): `train_data/comparativa_oro_dl.png` (600×3666, 8 filas: 1490498_p004 0/9, 1457338_p001 0/4, p009 0/2, p036 0/2, 1103524_p014 0/1, …). **Preview en el escritorio**: la imagen se empaquetó en `train_data/comparativa_preview.html` (base64 embebida, escalada a 900px) y se registró en el tab Preview de Freebuff Desktop — el usuario ve oro vs DL sin abrir la imagen en disco. Hallazgo lateral: `pytest tests/` (directorio completo) **mata el proceso sin output** porque `tests/archive/test_endpoint.py` (no trackeado) hace `sys.exit(1)` a nivel de módulo al ser colectado — la suite canónica se ejecuta con los 10 archivos trackeados explícitos (558 passed). **Validación**: **558 passed** (557 + 1: `_generar_comparativa` incluye la página con fns en el montaje y escribe el PNG; sin páginas perdidas devuelve None). | `tools/calificar_detector.py`, `tests/test_correccion_detector.py`, `train_data/calificaciones.json`, `train_data/comparativa_oro_dl.png`, `train_data/comparativa_preview.html` | 👁 **El usuario ve de un vistazo qué páginas tienen diálogo que el modelo no encuentra — el bucle marcar→calificar→corregir se vuelve visual** |
 
 | 169 | **Fusión del oro corregido al dataset + re-entrenamiento + A/B** (respuesta a "fusiona las correcciones al dataset y re-entrena para ver el A/B vs el modelo original"). El usuario corrigió el oro completo a mano con el corrector de la sesión v56: **63/63 páginas revisadas, 210 → 374 cajas (333 globos + 41 texto libre), 46 cajas gigantes (>25% área) → 0** (quedan 8 tiras anchas-finas marcadas por la heurística w>0.5, todas con área ≤10% — legítimas). `fusionar_correcciones.py` aplicó el oro a `train_data/vlm` (diffs por página p. ej. p023: 23→5 — el teacher metía cajas de más). **Entrenamiento**: `entrenar_detector.py` receta estándar (desde ogkalu, freeze=10, lr0=1e-4, imgsz 512, batch 4, +synth en train, `--name finetune_oro`). **Detalle operativo**: el primer intento vía `nohup` murió sin traceback en la época 16 (probable cierre del proceso por el harness); relanzado como proceso desacoplado con PowerShell `Start-Process` + `PYTHONUTF8=1` y stdout/stderr separados (`_tmp/train2.log`/`.err.log`) → completó. **Early stopping sano**: patience=15 cortó en la época 16 (best = época 1, mAP50 0.445). **A/B a conf≥0.25 sobre 8 págs val (50 GT): ogkalu 66.0% (30 det, conf 0.806, bubble 28/free 2) vs fine-tuned 72.0% (37 det, conf 0.418, bubble 26/free 11) — el fine-tuned GANA +6 pts y multiplica x5.5 la detección de texto libre (2→11), efecto directo del oro corregido con más cajas libres**. SIN `--swap` (el modelo de producción queda intacto; para activarlo: `entrenar_detector.py --swap` solo surte efecto si gana el A/B, que es el caso). Artefactos: `models/comic-speech-bubble-detector-finetuned.pt` (best de la época 1), `models/finetune_oro/`. El usuario preguntó por correr el entrenamiento en la nube gratis — se respondió (Colab T4 / Kaggle P100 / Ultralytics HUB). | `tools/fusionar_correcciones.py` (uso), `tools/entrenar_detector.py` (uso), `models/comic-speech-bubble-detector-finetuned.pt`, `models/finetune_oro/`, `train_data/vlm` (oro aplicado), `train_data/vlm_aug` (reconstruido), `_tmp/train2.log` | 🎯 **El fine-tuned con tu oro supera a ogkalu a conf 0.25 (72% vs 66%) y detecta 5× más texto libre** |
+
+#### Sesión 2026-08-13-v77 — SFX CJK repetitivos sin ampliar los modelos (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 195 | **Detección de SFX CJK inequívocos**: repeticiones del mismo glifo en kana, jamo/hangul o hanzi/kanji (`ゴゴゴ`, `哈哈哈`, `ㅋㅋㅋ`) se preservan; palabras CJK normales no se clasifican como SFX. | `translator.py`, `tests/test_translator.py` | **Evita traducir onomatopeyas claras como si fueran diálogo** |
+
+**Validación**: regresión CJK en verde y `run_ci.py --skip-cov` completado: **644/644 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (371 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v78 — Detección conservadora de bloques mixtos sin modelos nuevos (1 mejora + tests)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 196 | **Code-switching dentro del mismo globo**: `_detect_mixed_languages()` identifica solo evidencia fuerte de los idiomas actuales (es/en/pt/fr/de/it/ja/ko/zh), mantiene el idioma dominante para memoria/diagnóstico y expone `source_langs` + `mixed_source` por bloque. Si el idioma dominante ya es el destino —caso que antes retornaba intacto— se prueba el traductor Google existente con `source=auto`; si falla o devuelve lo mismo, se conserva el original. Kanji acompañado de kana se trata como japonés; una palabra inglesa aislada no dispara el gate. No se agregan idiomas, diccionarios de usuario ni modelos OCR/traducción. | `translator.py`, `routes/api.py`, `tests/test_translator.py`, `tests/test_api.py` | **Traduce frases incrustadas como `No puedo go home` sin corromper nombres, préstamos aislados ni CJK** |
+
+**Validación**: **15 tests** de mezcla/API en verde y `run_ci.py --skip-cov` completado: **650/650 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (372 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v79 — Gates finales de calidad y robustez del contrato OCR (2 mejoras + tests)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 197 | **Barrera de traducción en idioma origen**: antes de aceptar CT2/Google, se rechazan únicamente salidas con evidencia fuerte de que siguen en el idioma origen (`the house is big` para es, o kana/hangul/hanzi inequívocos). No se aplica a nombres cortos, préstamos ni textos con evidencia insuficiente; el fallback existente sigue funcionando. | `translator.py`, `tests/test_translator.py` | **Reduce traducciones falsas que parecían válidas y evita que el texto original se presente como resultado** |
+| 198 | **Gate OCR para basura débil y payloads malformados**: los bloques no-CJK de baja confianza que coinciden con `_es_ocr_noise()` se descartan antes de inpainting; CJK queda protegido. Además, confianzas inválidas de dict/tupla se omiten sin tumbar el batch ni devolver 500. | `ocr_utils.py`, `tests/test_ocr_utils.py` | **Menos falsos positivos/inpainting innecesario y más estabilidad ante respuestas RapidOCR/EasyOCR incompletas** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **657/657 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (371 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v80 — Fallback de idioma por bloque aislado (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 199 | **Detección multilingüe resistente a fallos parciales**: si falla el detector sobre el texto combinado de la página, se conserva el fallback solo para los bloques cuyo detector individual también falle; ya no se fuerza `es` para toda la página. | `routes/api.py`, `tests/test_api.py` | **Evita contaminar japonés/inglés/chino con el idioma español por un error puntual del detector y mejora la consistencia entre globos** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **658/658 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (372 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v81 — NMS de fusión consciente del texto (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 200 | **NMS final del OCR sensible al contenido**: el descarte ya no depende únicamente de un solapamiento espacial; solo elimina una caja solapada cuando su texto es idéntico o suficientemente parecido. Dos líneas distintas con cajas altas que se cruzan parcialmente se conservan, mientras la deduplicación de resultados equivalentes sigue ocurriendo. | `ocr_utils.py`, `tests/test_ocr_utils.py` | **Reduce falsos negativos de OCR sin reintroducir duplicados equivalentes; mejora cobertura de diálogos multilingües y SFX** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **659/659 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (371 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v82 — Validación de entradas cacheadas y nombres CJK (2 mejoras + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 201 | **El caché respeta los gates de traducción**: una respuesta antigua pasa ahora por la misma validación de idioma origen y anti-basura que CT2/Google; si falla, se reintenta con los motores existentes y se evita propagar el error entre páginas. | `translator.py`, `tests/test_translator.py` | **Elimina traducciones incorrectas persistentes y mejora la consistencia entre páginas** |
+| 202 | **Gate CJK basado en escritura real**: para rechazar una salida no traducida se exige kana, hangul o hanzi según el idioma origen; el contexto de detección ya no basta para rechazar nombres romanizados como `Tanaka` ni romper honoríficos cacheados. | `translator.py`, `tests/test_translator.py` | **Reduce falsos positivos en nombres propios y mantiene la calidad multilingüe** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **660/660 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (362 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v83 — Memoria de página con gates y nombres CJK preservados (3 mejoras + tests)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 203 | **La memoria por documento valida sus entradas existentes**: tanto el endpoint manual como el flujo de páginas comprueban idioma origen y anti-basura antes de reutilizar una traducción; las entradas inválidas se descartan y se reintenta con los motores actuales. | `routes/api.py`, `translation_memory.py`, `tests/test_api.py` | **Evita que un error antiguo se propague por todo el capítulo y mantiene consistencia entre páginas** |
+| 204 | **Invalidación exacta de memoria**: se añade `discard()` thread-safe para retirar una entrada que ya no cumple los gates, sin limpiar el resto del documento. | `translation_memory.py` | **Corrección localizada y segura de memoria contaminada** |
+| 205 | **Gate CJK proporcional al script**: una frase completa en kana/hangul/hanzi sigue bloqueándose si permanece en origen, pero un nombre aislado conservado dentro de una traducción no invalida el resultado. | `translator.py`, `tests/test_translator.py` | **Menos falsos positivos en nombres propios y honoríficos multilingües** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **662/662 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (363 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v84 — Preservación de marcadores SFX/pensamiento durante OCR (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 206 | **Los textos reconocidos como SFX antes de normalizar se conservan sin limpiar sus marcadores**: `*sigh*` y `*thinking*` ya no pierden asteriscos ni semántica antes de traducir; filtros de URL, fechas y números siguen ejecutándose primero. | `ocr_utils.py`, `tests/test_ocr_utils.py` | **Mejor detección y preservación de pensamiento/onomatopeyas con menos traducciones incorrectas** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **663/663 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (362 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v85 — Batch OCR seguro para lotes internos >4 páginas (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 207 | **`OCRManager.run_ocr_batch()` procesa todas las páginas pendientes en ventanas de cuatro**: la API conserva su límite 1-4 por request y el manager directo ya no deja páginas 5+ sin refuerzo U-OCR. Cada ventana mantiene la serialización y el presupuesto de VRAM de la GTX 1050 Ti. | `ocr_engine.py`, `tests/test_ocr_engine.py` | **Evita pérdidas silenciosas de OCR en integraciones internas, scripts y futuros endpoints batch** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **664/664 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (371 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v86 — Gate de idioma origen al aprender memoria (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 208 | **La memoria solo aprende resultados que no conservan claramente el idioma origen**: `_learn_translation_if_valid()` reutiliza el mismo gate aplicado a cache, CT2 y Google, evitando almacenar respuestas parciales o sin traducir aunque el validador estructural las considere formalmente aceptables. | `routes/api.py`, `tests/test_api.py` | **Evita contaminar futuras páginas con errores de traducción y mejora estabilidad a largo plazo** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **665/665 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (371 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v87 — Wrapping híbrido para texto CJK/latino en frontend (1 mejora)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 209 | **El wrapping del editor distingue tramos CJK de palabras latinas**: una página mixta como `No puedo こんにちは go home` ya no rompe `go home` carácter por carácter ni lo parte por la presencia de japonés; los tramos CJK siguen ajustándose por glifo y el comportamiento latino puro se conserva. | `app.js` | **Mejor maquetación y legibilidad en páginas con español/inglés mezclado con japonés, chino o coreano, sin cambiar modelos ni contrato de OCR** |
+
+**Validación**: smoke test Node con Unicode real para casos mixtos y CJK puro; `run_ci.py --skip-cov` completado: **665/665 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (362 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v88 — Detección de code-switching con frases naturales (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 210 | **El detector multilingüe amplía sus señales internas para frases frecuentes**: reconoce casos como `Mi amigo says hello` como español + inglés, sin convertir un préstamo aislado en página mixta. No añade modelos ni exige que el usuario mantenga un glosario. | `translator.py`, `tests/test_translator.py` | **Mejor manejo de globos con cambio de idioma real y menos riesgo de enviar un bloque mixto al modelo equivocado** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **666/666 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (362 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v89 — Sincronización de filtros de metadatos entre backend y frontend (1 mejora)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 211 | **El filtro JS incorpora timestamps y metadatos de margen ya presentes en `config.py`**: fechas compactas de exportación y horas como `458pm` se eliminan solo en los márgenes, mientras el texto normal se conserva. | `js/filters.js` | **Reduce falsos positivos visibles y evita que basura de escaneo reaparezca en importaciones o reprocesados del frontend** |
+
+**Validación**: smoke test Node del filtro con metadatos y diálogo normal; `run_ci.py --skip-cov` completado: **666/666 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (371 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v90 — Guard de VRAM para nuevos pares CT2 (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 212 | **La carga de un par CT2 nuevo respeta el presupuesto observable de la GPU**: si la GTX 1050 Ti tiene poca memoria libre, ese par se carga en CPU; los pares ya cargados no se desalojan y el comportamiento CPU-only permanece compatible. | `translator.py`, `config.py`, `tests/test_translator.py` | **Evita OOM y cuelgues después de usar varios idiomas/modelos, protegiendo EasyOCR y U-OCR sin añadir modelos** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **667/667 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (362 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v91 — Traducción segura de bloques con code-switching (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 213 | **`source=auto` usa Google en modo automático cuando un bloque contiene varios idiomas y el destino difiere del idioma dominante**: se evita enviar una frase mixta a CT2 como si fuera monolingüe; si el resultado no supera los gates, continúan los fallbacks actuales. | `translator.py`, `tests/test_translator.py` | **Mejor calidad en globos con español/inglés u otras combinaciones actuales, conservando frases ya escritas en el idioma destino** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **668/668 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (372 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v92 — Code-switching alemán/inglés con señales internas (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 214 | **El detector reconoce cambios breves alemán/inglés como `Ich liebe you`**: añade señales frecuentes y una regla conservadora para una palabra inglesa distintiva cuando el idioma dominante ya tiene evidencia fuerte. Los préstamos aislados comunes siguen sin activar mezcla. | `translator.py`, `tests/test_translator.py` | **Amplía la detección de páginas mixtas a todos los idiomas actuales sin glosario manual ni modelos nuevos** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **669/669 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (371 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v93 — Code-switching romance/inglés en idiomas actuales (1 mejora + 3 tests)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 215 | **El detector amplía las señales internas a francés, portugués e italiano**: frases breves como `Je aime you`, `Eu amo you` e `Io amo you` activan mezcla solo cuando el idioma dominante tiene evidencia suficiente y la palabra inglesa es distintiva. | `translator.py`, `tests/test_translator.py` | **Cobertura multilingüe más uniforme y menor riesgo de usar un modelo monolingüe incorrecto en globos mixtos** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **672/672 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (371 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v101 — Decodificación Base64 estricta en imágenes (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 224 | **`_base64_to_cv2` usa `base64.b64decode(..., validate=True)`**: caracteres inválidos ya no se ignoran silenciosamente antes de pasar los bytes a OpenCV; se conserva el soporte para data URI y los formatos existentes. | `ocr_utils.py`, `tests/test_ocr_utils.py` | **Rechaza payloads de imagen corruptos de forma determinista y evita OCR/inpainting sobre bytes distintos de los enviados; sin coste apreciable para la GTX 1050 Ti** |
+
+**Validación**: prueba RED confirmada (un Base64 válido seguido de `!` era aceptado), pruebas focalizadas **9/9** en verde. El CI completo de la sesión pasó con **693/693** tests, Bandit **0 HIGH/0 MEDIUM/6 LOW**, servidor/API/estáticos correctos (371 MB).
+
+#### Sesión 2026-08-13-v102 — Guardia de píxeles antes de decodificar imágenes (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 225 | **Se inspeccionan las dimensiones de la cabecera antes de `cv2.imdecode()`** mediante Pillow lazy y un límite de 64M píxeles; se conservan formatos que Pillow no reconoce usando el fallback histórico de OpenCV. | `config.py`, `ocr_utils.py`, `tests/test_ocr_utils.py` | **Evita reservas de memoria desproporcionadas por imágenes comprimidas con dimensiones abusivas y mantiene páginas largas legítimas hasta 4096×16000, protegiendo la estabilidad de RAM/VRAM** |
+
+**Validación**: RED confirmado con cabecera simulada de 100000×100000 píxeles; conversión Base64 focalizada **9/9** en verde. El CI completo de la sesión pasó con **694/694** tests, Bandit **0 HIGH/0 MEDIUM/6 LOW**, servidor/API/estáticos correctos (372 MB).
+
+#### Sesión 2026-08-13-v103 — Allowlist de rutas del daemon U-OCR (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 226 | **El daemon valida las rutas de `/ocr` y `/ocr-batch` contra la raíz del proyecto y el temporal del sistema**: resuelve rutas reales antes de comparar, bloquea archivos inexistentes/fuera de scope y evita incluir rutas rechazadas en las respuestas de error. El flujo normal del servidor usa exactamente una de esas dos raíces. | `uocr_daemon.py`, `tests/test_uocr_daemon.py` | **Reduce la superficie de lectura/procesamiento arbitrario de archivos por el servicio loopback sin cambiar el pipeline ni la VRAM** |
+
+**Validación**: RED confirmado con helper inexistente; guard focalizado **4/4** en verde. El CI completo de la sesión pasó con **695/695** tests, Bandit **0 HIGH/0 MEDIUM/6 LOW**, servidor/API/estáticos correctos (371 MB).
+
+#### Sesión 2026-08-13-v104 — Lanzador sin terminación global de procesos (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 227 | **`start-app.ps1` deja de inspeccionar/matar PIDs por puerto**: si el servidor local ya responde, reutiliza esa sesión; si el proceso nuevo termina porque el puerto está ocupado, informa y sale sin tocar al proceso ajeno. El daemon U‑OCR queda para la adopción segura de `uocr_client`. | `start-app.ps1`, `tests/test_packaging.py` | **Evita pérdida de trabajo, cierres de software ajeno y conflictos de VRAM al reiniciar la aplicación** |
+
+**Validación**: RED confirmado por la presencia de terminación global; tests de packaging **4/4** en verde. El CI completo de la sesión pasó con **697/697** tests, Bandit **0 HIGH/0 MEDIUM/6 LOW**, servidor/API/estáticos correctos (371 MB).
+
+#### Sesión 2026-08-13-v105 — CI valida todos los módulos ES6 (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 228 | **El syntax check del CI incluye los módulos frontend importados** (`js/config.js`, `js/filters.js`, `js/theme.js`, `js/toast.js`, `js/utils.js`) además de `app.js`, mediante una lista centralizada `_js_syntax_files()`. | `run_ci.py`, `tests/test_run_ci.py` | **Evita que cambios de timeout, filtros o utilidades rompan la carga del editor aunque `app.js` siga siendo sintácticamente válido** |
+
+**Validación**: RED confirmado por helper inexistente; módulos ES6 focalizados en verde. El CI completo de la sesión pasó con **698/698** tests, syntax Python/JS correcto, Bandit **0 HIGH/0 MEDIUM/6 LOW**, servidor/API/estáticos correctos (372 MB).
+
+#### Sesión 2026-08-13-v106 — Allowlist U-OCR compatible con temporales en otra unidad (1 fix + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 229 | **La allowlist del daemon continúa comprobando raíces cuando `commonpath()` encuentra unidades distintas**: en Windows, el proyecto puede estar en `D:` y `%TEMP%` en `C:`; la unidad incompatible se omite y la raíz temporal se evalúa correctamente. | `uocr_daemon.py`, `tests/test_uocr_daemon.py` | **Evita bloquear todas las inferencias U‑OCR del flujo normal después de endurecer la seguridad de rutas** |
+
+**Validación**: RED confirmado con proyecto `D:` y temporal `C:` simulados; guards focalizados **5/5** en verde. El CI completo de la sesión pasó con **699/699** tests, syntax Python/JS correcto, Bandit **0 HIGH/0 MEDIUM/6 LOW**, servidor/API/estáticos correctos (403 MB).
+
+#### Sesión 2026-08-13-v107 — Launchers idempotentes con servidor activo (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 230 | **`main.py` y `launcher.py` comprueban 127.0.0.1:5174 antes de arrancar Flask**: si la sesión existente responde, abren la UI y reutilizan el servidor; solo crean el proceso nuevo cuando el puerto no está activo. | `main.py`, `launcher.py`, `tests/test_packaging.py` | **Evita errores de bind, instancias duplicadas y arranques confusos al abrir la app varias veces** |
+
+**Validación**: RED confirmado por ausencia de guard en ambos launchers; tests de packaging **5/5** y `py_compile` en verde. El CI completo de la sesión pasó con **700/700** tests, syntax Python/JS correcto, Bandit **0 HIGH/0 MEDIUM/6 LOW**, servidor/API/estáticos correctos (362 MB).
+
+#### Sesión 2026-08-13-v108 — Code-switching seguro con idioma origen explícito (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 231 | **Los bloques mixtos usan Google con `source=auto` aunque el usuario haya fijado el idioma dominante**: una frase como `No puedo go home` ya no entra como si fuera completamente `es→en` a CT2; los bloques monolingües conservan el camino CT2 rápido. | `translator.py`, `tests/test_translator.py` | **Mejora la calidad en imágenes mixtas y evita deformar frases incrustadas en otro idioma, sin agregar modelos ni glosario** |
+
+**Validación**: RED confirmado porque CT2 devolvía `translated` antes del fallback mixto; tests de code-switching focalizados **7/7** en verde. El CI completo de la sesión pasó con **701/701** tests, syntax Python/JS correcto, Bandit **0 HIGH/0 MEDIUM/6 LOW**, servidor/API/estáticos correctos (371 MB).
+
+#### Sesión 2026-08-13-v109 — Mensajes de toast sin interpretación HTML (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 232 | **`showToast()` renderiza el mensaje con `textContent`** en vez de interpolarlo dentro de `innerHTML`; los iconos y controles siguen siendo markup estático. Se añade una regresión estática que impide volver a insertar `${message}` directamente. | `js/toast.js`, `tests/test_packaging.py` | **Evita XSS/HTML inyectado desde errores de API, OCR o excepciones mostradas en la interfaz local, sin coste de rendimiento ni cambio visual esperado** |
+
+**Validación**: RED confirmado; tests de packaging **6/6** y `node --check js/toast.js` en verde. Pendiente ejecutar el CI completo de la sesión.
+
+#### Sesión 2026-08-13-v110 — Presupuesto acumulado de píxeles en OCR batch (1 mejora + 2 tests)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 233 | **`/process-page-batch` limita la suma de píxeles decodificados a 96M** y pasa el presupuesto restante a `_base64_to_cv2(max_pixels=...)`; la comprobación ocurre antes de `cv2.imdecode()` cuando Pillow puede leer la cabecera y también se repite tras decodificar para formatos alternativos. | `config.py`, `ocr_utils.py`, `routes/api.py` | **Evita OOM de RAM al enviar varias páginas comprimidas o largas juntas; mantiene el límite individual de 64M y no cambia el flujo normal de manga** |
+
+**Validación**: RED confirmado en el helper y en el endpoint; pruebas focalizadas **2/2** en verde. Pendiente ejecutar el CI completo de la sesión.
+
+#### Sesión 2026-08-13-v111 — Code-switching con marcador extranjero distintivo (1 mejora + 5 tests)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 234 | **La detección de mezcla reconoce un único marcador extranjero distintivo cuando el idioma dominante tiene al menos dos evidencias** (`I love gracias`, `Ich liebe danke`, `Je veux danke`). Los préstamos ambiguos (`amigo`, `casa`, `non`) quedan fuera para no disparar Google innecesariamente. | `translator.py`, `tests/test_translator.py` | **Reduce falsos negativos en imágenes con frases mayoritarias de un idioma y una palabra insertada de otro, manteniendo el gate conservador y sin nuevos modelos** |
+
+**Validación**: RED confirmado con los casos nuevos; detección mixta focalizada **13/13** en verde. Pendiente ejecutar el CI completo de la sesión.
+
+#### Sesión 2026-08-13-v112 — Aislamiento por usuario en repositorios de páginas (1 mejora + 1 test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 235 | **`PageRepository` y `TextBlockRepository` exigen `user_id` y validan la relación `Page → Project → User`** antes de leer o escribir; se bloquean enumeración, lectura, creación y guardado de bloques sobre recursos ajenos. | `models.py`, `tests/test_models.py` | **Corrige una brecha de aislamiento de datos preparada para futuros endpoints CRUD, sin cambiar el flujo OCR actual que no usa estos repositorios** |
+
+**Validación**: RED confirmado por llamadas sin scope; pruebas SQLite en memoria **2/2** en verde. Pendiente ejecutar el CI completo de la sesión.
+
+#### Sesión 2026-08-13-v113 — Validación efectiva de `allow_source_auto` (1 fix + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 236 | **`_validate_lang_params()` pasa `allow_source_auto` a `_validate_lang_code()`**; el modo estricto ya rechaza realmente `source=auto` y conserva el mensaje de idiomas permitidos. | `routes/api.py`, `tests/test_api.py` | **Elimina una opción de validación ignorada y evita que futuros endpoints acepten detección automática cuando exijan origen explícito** |
+
+**Validación**: RED confirmado (`auto` era aceptado con el flag falso); prueba focalizada **1/1** en verde. Pendiente ejecutar el CI completo de la sesión.
+
+#### Sesión 2026-08-13-v114 — Falsos positivos SFX en palabras CAPS multilingües (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 237 | **`_es_sfx()` excluye palabras comunes de los idiomas actuales** reutilizando `_MIXED_LANGUAGE_MARKERS`; `STOP`, `WHAT`, `BONJOUR`, `DANKE`, `CIAO` y `OBRIGADO` ya no se preservan como onomatopeyas, mientras `NARUTO`, `BANG` y `DON` mantienen el comportamiento existente. | `translator.py`, `tests/test_translator.py` | **Evita perder diálogos cortos en mayúsculas y reduce falsos positivos sin agregar modelos ni afectar SFX reconocibles** |
+
+**Validación**: RED confirmado con `STOP`; pruebas de SFX **13/13** en verde. Pendiente ejecutar el CI completo de la sesión.
+
+#### Sesión 2026-08-13-v115 — Interjecciones alargadas fuera del gate SFX (1 mejora + 2 tests)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 238 | **`_es_sfx()` colapsa repeticiones consecutivas para reconocer interjecciones de diálogo** (`NOOOOO`, `AAAAH`, `HELP`, `WAIT`) y las excluye; los SFX repetitivos inequívocos como `GRRRR` siguen preservados. | `translator.py`, `tests/test_translator.py` | **Evita que exclamaciones visuales de diálogo queden sin traducir, sin abrir el gate para ruido repetitivo** |
+
+**Validación**: RED confirmado con `NOOOOO!`; pruebas de SFX **15/15** en verde. Pendiente ejecutar el CI completo de la sesión.
+
+#### Sesión 2026-08-13-v116 — Selector UI occidental compuesto aceptado por la API (1 fix + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 239 | **`_validate_lang_code()` normaliza `eng+spa+fra+deu` a `auto`**, manteniendo la detección por bloque existente; el backend ya no rechaza el valor que ofrece `#sourceLang` ni fuerza una cadena compuesta a un modelo CT2. | `routes/api.py`, `tests/test_api.py` | **Repara el flujo de imágenes con varios idiomas occidentales desde la UI, reduce errores de API y conserva el comportamiento seguro con los modelos actuales** |
+
+**Validación**: RED confirmado porque el alias devolvía `None`; prueba focalizada **1/1** en verde. Pendiente ejecutar el CI completo de la sesión.
+
+#### Sesión 2026-08-13-v100 — Normalización de cajas devueltas por U-OCR (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 223 | **Cajas del daemon acotadas a la página**: `_parse_daemon_blocks` descarta tamaños no positivos/diminutos y recorta coordenadas negativas o fuera de los límites antes de enviarlas a fusión, inpainting y frontend. | `routes/api.py`, `tests/test_api.py` | **Evita falsos positivos visuales, máscaras corruptas y errores por detecciones VLM malformadas** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **692/692 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/6 LOW**, servidor/API/estáticos correctos (371 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v99 — Normalización segura de flags OCR en la API (1 mejora + 8 tests)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 222 | **Flags booleanos normalizados explícitamente**: `prefilter`, `force_uocr`, `disable_uocr` y `pure_easyocr` aceptan booleanos y tokens claros (`true/false`, `1/0`, etc.); cadenas arbitrarias ya no se convierten implícitamente en `True`. | `routes/api.py`, `tests/test_api.py` | **Evita activar accidentalmente U‑OCR o desactivar rutas por payloads mal tipados, reduciendo latencia, consumo de VRAM y resultados no reproducibles** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **691/691 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/6 LOW**, servidor/API/estáticos correctos (372 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v98 — Desempate estable del idioma dominante por página (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 221 | **El empate de idiomas usa el detector del texto combinado**: cuando dos idiomas tienen el mismo número de bloques, `_finalize_page_blocks` prioriza `page_fallback_lang`; si no es candidato, mantiene el primer candidato de la lista original. Reordenar globos ya no cambia el idioma dominante ni las claves de memoria/diagnóstico. | `routes/api.py`, `tests/test_api.py` | **Más consistencia de traducción entre páginas y ejecuciones, especialmente en páginas mixtas** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **683/683 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/6 LOW**, servidor/API/estáticos correctos (362 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v97 — Rate limiting correcto para redes privadas (1 mejora + 2 tests)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 220 | **La exención del rate limiter queda restringida a loopback**: se elimina la excepción para `192.168.*`; la UI local (`127.0.0.1`, `::1`, `localhost` y loopback IPv4-mapeado) sigue sin límite, pero una conexión LAN conserva los límites configurados. | `ratelimit.py`, `tests/test_ratelimit.py`, `run_ci.py` | **Evita que una futura exposición LAN/proxy deje sin protección los endpoints caros de OCR y traducción** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **682/682 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/6 LOW**, servidor/API/estáticos correctos (372 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v96 — Propiedad segura del proceso U-OCR (1 mejora + 2 tests)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 219 | **El reinicio del daemon ya no mata PIDs por puerto**: se elimina `netstat` + `taskkill /F` sobre cualquier proceso en 5177. El cliente solo termina el `Popen` que él mismo conserva en `_proc`; si el estado de error pertenece a una sesión vieja o a otro servicio, retorna fallback seguro sin destruirlo. | `uocr_client.py`, `tests/test_uocr_client.py`, `run_ci.py` | **Evita terminar software ajeno y reduce una fuente de inestabilidad local; Bandit baja de 11 a 6 findings LOW** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **680/680 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/6 LOW**, servidor/API/estáticos correctos (371 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v95 — Límites y limpieza segura del daemon U-OCR (2 mejoras + tests)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 217 | **Límite de entrada JSON del daemon**: `_read_json_body` rechaza cuerpos mayores de 64 KB, JSON no objeto y lecturas incompletas antes de acceder a `.get()`. El endpoint interno solo necesita rutas y parámetros pequeños, por lo que no se reduce una capacidad válida del pipeline. | `uocr_daemon.py`, `tests/test_uocr_daemon.py` | **Evita consumo de memoria y errores 500 ante payloads malformados; mejora estabilidad del proceso persistente** |
+| 218 | **Limpieza de artefactos completa**: `_cleanup_old_out_dirs` conserva como máximo 20 directorios combinados `req_*` y `art_*`; antes los recortes de re-OCR artístico quedaban acumulados indefinidamente. | `uocr_daemon.py`, `tests/test_uocr_daemon.py` | **Evita crecimiento progresivo del disco durante capítulos con muchas páginas artísticas** |
+
+**Validación**: `tests/test_uocr_daemon.py` **14/14** y `run_ci.py --skip-cov` completado: **678/678 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (371 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v94 — Validación final de traducciones antes del render (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 216 | **Barrera final en `_finalize_page_blocks`**: las traducciones devueltas por workers pasan una segunda validación estructural y de idioma origen antes de llegar al frontend. Las salidas basura o claramente no traducidas vuelven al texto OCR original. Se mantienen excepciones estrechas y explícitas para SFX y nombres propios de una sola palabra en mayúsculas (`NARUTO → Naruto`), sin abrir la puerta a frases repetidas o basura. | `routes/api.py`, `tests/test_api.py` | **Evita que una respuesta defectuosa de cualquier motor termine renderizada o se guarde en el resultado de página; mejora estabilidad y calidad final sin cambiar los modelos** |
+
+**Validación**: `run_ci.py --skip-cov` completado: **675/675 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (371 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v76 — Cobertura italiana con el recognizer latino existente (1 mejora + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 193 | **EasyOCR automático incluye `it`**: el código ya acepta italiano y dispone de pares de traducción, pero el lector latino omitía `it`. Se añade a la misma lista de recognizer latino; no se incorpora un modelo nuevo ni se cambia el alcance de idiomas. | `ocr_utils.py`, `tests/test_ocr_utils.py` | **Mejor detección italiana en páginas actuales y mixtas** |
+| 194 | **Aislamiento correcto del test de EasyOCR**: PyTorch se importa antes de parchear solo el módulo `easyocr`; así la restauración del fixture no desmonta parcialmente el runtime nativo y no contamina los tests posteriores de YOLO/daemon. | `tests/test_ocr_utils.py` | **Suite estable y reproducible** |
+
+**Validación**: regresión de idiomas actuales en verde y `run_ci.py --skip-cov` completado: **643/643 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (371 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v75 — Fallback CJK selectivo en Ruta C y merge sin márgenes de página (2 mejoras + tests)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 191 | **Ruta C conserva globos de borde**: el merge final de recortes validados ya no reaplica filtros de margen de página; se evitan falsos negativos en globos pegados al borde superior/inferior. | `ocr_utils.py`, `tests/test_ocr_utils.py` | **Más cobertura sin abrir el filtro global de páginas** |
+| 192 | **Fallback CJK de baja confianza**: si RapidOCR aporta kana/hangul/hanzi pero no supera el umbral de texto usable, Ruta C selecciona el lector EasyOCR específico en CPU (solo con `source=auto`), en lugar del lector latino `auto`/GPU. | `ocr_utils.py`, `tests/test_ocr_utils.py` | **Recupera texto mixto y protege la VRAM de la GTX 1050 Ti** |
+
+**Validación**: 3 regresiones nuevas en verde y `run_ci.py --skip-cov` completado: **642/642 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (371 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v74 — Corrector OCR seguro para idiomas actuales y frases mixtas (1 mejora + tests)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 190 | **Spellcheck OCR consciente del idioma**: el corrector español se omite para inglés, CJK y otros idiomas actuales; además compara tokens desconocidos con los diccionarios ya disponibles de en/pt/fr/de/it para no alterar frases mixtas como `Quiero go home`. No se añaden idiomas ni modelos OCR/traducción; los diccionarios extranjeros solo se cargan bajo demanda como barrera de falsos positivos. | `ocr_utils.py`, `tests/test_ocr_utils.py` | **Conserva texto multilingüe correcto y reduce corrupciones antes de traducir** |
+
+**Validación**: 4 regresiones nuevas en verde y `run_ci.py --skip-cov` completado: **640/640 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/11 LOW**, servidor/API/estáticos correctos (362 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
+
+#### Sesión 2026-08-13-v73 — OCR multilingüe selectivo, honoríficos automáticos y filtros de recortes (3 mejoras + tests)
+
+| # | Cambio | Archivo | Impacto |
+|---|--------|---------|---------|
+| 187 | **Páginas mixtas dentro de los modelos actuales**: `source=auto` se conserva hasta `OCRManager`; RapidOCR identifica kana/hangul/hanzi y activa como máximo dos lectores EasyOCR específicos en CPU. No se agregan idiomas ni modelos externos: es/en/pt/fr/de/it/ja/ko/zh siguen siendo el alcance válido y la GTX 1050 Ti no recibe lectores GPU duplicados. | `ocr_utils.py`, `routes/api.py`, `tests/test_ocr_utils.py`, `tests/test_api.py` | **Mejor recuperación de manga con varios idiomas sin ampliar la confusión ni la VRAM** |
+| 188 | **Consistencia automática de nombres**: se preservan `-san`, `-chan`, `-kun`, `-sama`, `-senpai`, `-sensei` y sufijos coreanos frecuentes en cajas aisladas, para todos los destinos actuales; no se fuerza el marcador en frases completas. | `translator.py`, `tests/test_translator.py` | **Menos variación entre páginas sin mantener glosario manual** |
+| 189 | **Ruta C sin falsos negativos de margen**: RapidOCR recibe `filter_page_margins=False` en crops de globos; los bordes del crop ya no se interpretan como márgenes de página. | `ocr_utils.py`, `tests/test_ocr_utils.py` | **Más cobertura de texto en globos detectados por YOLO/CTD** |
+
+**Validación**: `run_ci.py --skip-cov` → **636/636 tests**, sintaxis Python/JS correcta, Bandit 0 HIGH/0 MEDIUM, servidor/API/estáticos correctos. El reporte de calidad mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semánticos.
 
 #### Sesión 2026-08-12-v72 — Prueba de la TRADUCCIÓN REAL del pipeline caja por caja contra el oro (respuesta a "prueba la traducción real y haz una comparativa de uno x uno") (1 medición + 1 visual)
 
@@ -980,3 +1341,106 @@ cd D:\crear traductor
 - **Al inicio**: Lee AGENTS.md y CODEGRAPH.md antes de cualquier código.
 - **Durante**: Si el contexto se agota, detente y actualiza §4 con el estado parcial.
 - **Objetivo**: Que la siguiente sesión pueda retomar sin perder contexto.
+#### SesiÃ³n 2026-08-13-v117 â€” MigraciÃ³n segura de confidence en SQLite (1 fix + test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 240 | **init_db() migra de forma idempotente text_blocks.confidence de INTEGER a FLOAT** cuando encuentra una base SQLite anterior: reconstruye solo la tabla dentro de una transacciÃ³n, copia las columnas del modelo, conserva los datos y restaura la tabla legacy si ocurre un error. PostgreSQL y esquemas ya correctos no se modifican. | models.py, tests/test_models.py | **Conserva la precisiÃ³n OCR decimal usada por scoring y revisiÃ³n de calidad al actualizar instalaciones existentes, sin reescritura ni cambio de datos fuera de text_blocks** |
+
+**ValidaciÃ³n**: RED confirmado por importaciÃ³n ausente y por el conflicto transaccional inicial; prueba de migraciÃ³n y suite de modelos en verde (**3/3**). CI completo: **716/716 tests**, sintaxis Python/JS correcta, Bandit **0 HIGH/0 MEDIUM/6 LOW**, servidor/API/estÃ¡ticos correctos (371 MB). Se mantiene la advertencia esperada del corpus antiguo: 15.1% y 0% de metadatos semÃ¡nticos.
+#### Sesion 2026-08-13-v118 - Fallback lexical para idiomas occidentales actuales (1 mejora + 1 test parametrizado)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 241 | **El fallback de idioma reconoce portugues, frances, aleman e italiano en bloques cortos** con dos marcadores conservadores o una palabra distintiva (Bonjour merci, Ich liebe dich, Ciao grazie, Eu amo voce, Danke, Merci, Grazie). _detect_language_robust prioriza esa evidencia cuando el texto es corto y el detector estadistico carece de contexto. | translator.py, tests/test_translator.py | **Reduce la seleccion del par CT2 equivocado en OCR breve/ruidoso y mejora la consistencia multilingue sin modelos nuevos, glosario del usuario ni falsos positivos por palabras ambiguas** |
+
+**Validacion**: RED confirmado con 7 casos; pruebas de deteccion robusta y fallback **14/14**, suite de traduccion **135/135**. Esta ampliacion queda temporalmente desactivada por decision del usuario; el estado vigente es el de la sesion v119.
+
+#### Sesion 2026-08-13-v119 - Desactivacion temporal de frances, aleman e italiano (1 ajuste de soporte + 4 pruebas)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 242 | **Se desactivan temporalmente FR/DE/IT de forma coherente**: se eliminan de LANGUAGES/UI/API, se rechaza el selector occidental historico `eng+spa+fra+deu`, la deteccion automatica nunca devuelve esos codigos, `_translate_one()` conserva el texto si recibe uno de ellos directamente y EasyOCR latino queda en ES/EN/PT. Los modelos CT2 de esos pares se conservan en disco para una futura reactivacion. | config.py, routes/api.py, translator.py, ocr_utils.py, index.html, app.js | **Evita que los modelos y la deteccion mezclen idiomas pausados con los activos, reduce trabajo del recognizer OCR y mantiene una ruta de reactivacion sin reinstalacion** |
+
+**Validacion**: pruebas focalizadas **444/444** en verde. CI completo **722/722 tests**, sintaxis Python/JS correcta, servidor/API/estáticos correctos, Bandit **0 HIGH/0 MEDIUM/6 LOW**. Se mantiene la advertencia esperada del corpus antiguo/parcial: 15.1% y 0% de metadatos; el stress test de memoria se omite con `--skip-cov`.
+
+#### Sesion 2026-08-13-v120 - Solapamiento seguro del OCR hibrido (1 optimizacion + 2 tests)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 243 | **RapidOCR se precarga junto con EasyOCR/CT2 y su trabajo CPU se inicia en paralelo a la inferencia EasyOCR GPU**. Se conserva el semaforo de RapidOCR, la fusion, los umbrales, los fallbacks y la degradacion U-OCR; solo se elimina espera secuencial entre motores. | server.py, ocr_utils.py, tests/test_ocr_utils.py, tests/test_packaging.py | **Menor tiempo por pagina sin consumir VRAM adicional ni cambiar los bloques fusionados. En paginas de referencia ya calientes: 5.45 -> 4.13 s, 4.74 -> 3.92 s y 4.36 -> 3.50 s; cobertura observada sin cambios: 7, 9 y 4 bloques.** |
+
+**Validacion**: prueba RED/GREEN del solapamiento, OCR **158/158**, CI rapido y completo **724/724 tests**, sintaxis Python/JS correcta, servidor/API/estaticos correctos y Bandit **0 HIGH/0 MEDIUM/6 LOW**. El stress procesó **50/50 paginas** y mantuvo memoria estable (~147.5 MB al final, sin crecimiento progresivo); el parser del CI no reconoció su resumen y lo reportó como advertencia. Se mantiene la advertencia conocida del corpus antiguo/parcial: 15.1% de aceptacion y 0% de metadatos.
+#### Sesion 2026-08-13-v121 - Solapamiento de inpainting y traduccion (1 optimizacion + 1 test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 244 | **El inpainting y la codificacion de la imagen inpainted se ejecutan en un hilo mientras el executor traduce los bloques**. Antes ambos tramos eran secuenciales. Se espera el resultado antes de muestrear colores o responder; timeout y fallback conservan la imagen original. | routes/api.py, tests/test_api.py | **Reduce la latencia post-OCR sin cambiar bloques, traducciones, coordenadas, colores ni el contrato de la API. La concurrencia queda limitada a un hilo de inpainting por pagina y no usa VRAM adicional.** |
+
+**Validacion**: pruebas RED/GREEN de solapamiento y metrica, suite API **152/152**, CI completo **726/726 tests**, sintaxis Python/JS correcta, servidor/API/estaticos correctos, Bandit **0 HIGH/0 MEDIUM/6 LOW** y stress **50/50 paginas** sin errores ni leak detectado (promedio 4.2 s/pagina, +70.7 MB de memoria estable). Se mantiene la advertencia del corpus antiguo/parcial: 15.1% de aceptacion y 0% de metadatos.
+
+#### Sesion 2026-08-13-v122 - Eliminacion de render PDF duplicado en traduccion masiva (1 optimizacion + 1 test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 245 | **`autoTranslateAllPages()` deja de renderizar cada pagina antes de llamar a `autoTranslateCurrentPage()`**. `serverProcessPage()` ya hace el render limpio obligatorio inmediatamente antes de codificar y enviar la imagen; se conserva ese unico render canonico y el retry existente. | app.js, tests/test_packaging.py | **Evita un render PDF completo redundante por pagina en traducciones masivas, reduciendo CPU/tiempo de interfaz sin cambiar la imagen enviada, OCR, traduccion ni exportacion.** |
+
+**Validacion**: prueba RED/GREEN del flujo masivo, `node --check app.js` correcto y CI rapido **727/727 tests**, servidor/API/estaticos correctos, Bandit **0 HIGH/0 MEDIUM/6 LOW**. El stress completo queda cubierto por la validacion v121; se mantiene la advertencia conocida del corpus antiguo/parcial.
+
+#### Sesion 2026-08-13-v123 - Eliminacion de copia de canvas antes de base64 (1 optimizacion + 1 test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 246 | **`serverProcessPage()` codifica directamente `cleanBgCanvas` y elimina el canvas auxiliar, `drawImage()` y la asignacion duplicada de todos los pixeles**. `toDataURL()` es sincrono y captura el contenido antes de cualquier suspension del flujo. | app.js, tests/test_packaging.py | **Menor CPU, memoria temporal y latencia por pagina en el navegador, sin cambiar el PNG enviado ni la respuesta del servidor.** |
+
+**Validacion**: prueba RED/GREEN, `node --check app.js` correcto y CI rapido **728/728 tests**, servidor/API/estaticos correctos, Bandit **0 HIGH/0 MEDIUM/6 LOW**. El stress completo sigue cubierto por la validacion v121; se mantiene la advertencia conocida del corpus antiguo/parcial.
+
+#### Sesion 2026-08-13-v124 - Conversion BGR diferida tras semaforo EasyOCR (1 optimizacion + 1 test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 247 | **`_run_ocr_on_image()` convierte BGR a RGB solo despues de adquirir el semaforo OCR y el lock GPU**. Las llamadas que esperan, expiran o se degradan a RapidOCR no crean antes una copia RGB innecesaria. | ocr_utils.py, tests/test_ocr_utils.py | **Reduce copias temporales y CPU bajo concurrencia, especialmente en GTX 1050 Ti cuando varios workers esperan el unico lector EasyOCR; los parametros y resultados de OCR permanecen iguales.** |
+
+**Validacion**: prueba RED/GREEN y suite OCR **159/159**. CI rapido **729/729 tests**, sintaxis Python/JS correcta, servidor/API/estaticos correctos y Bandit **0 HIGH/0 MEDIUM/6 LOW**. El stress completo sigue cubierto por la validacion v121; se mantiene la advertencia conocida del corpus antiguo/parcial.
+
+#### Sesion 2026-08-13-v125 - Precarga del corrector ortografico OCR (1 optimizacion + 1 test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 248 | **`_get_spellchecker()` se ejecuta durante la precarga de servidor, despues de RapidOCR y antes de YOLO**. Si la dependencia no esta disponible, se conserva el fallback existente y el servidor continua arrancando. | server.py, tests/test_packaging.py | **La primera pagina no paga la carga del diccionario de ~86K palabras; no consume VRAM ni cambia el postprocesado OCR.** |
+
+**Validacion**: prueba RED/GREEN y CI rapido **730/730 tests**, sintaxis Python/JS correcta, servidor/API/estaticos correctos y Bandit **0 HIGH/0 MEDIUM/6 LOW**. El stress completo sigue cubierto por la validacion v121; se mantiene la advertencia conocida del corpus antiguo/parcial.
+
+#### Sesion 2026-08-13-v126 - Reutilizacion del pre-filtro para RapidOCR (1 optimizacion + 1 test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 249 | **`_preprocess_rapid()` acepta una imagen ya prefiltrada y `_detect_and_ocr()` la reutiliza en el hilo de RapidOCR**. EasyOCR y RapidOCR ya no ejecutan dos veces la misma limpieza morfologica cuando `prefilter=True`; callers con imagen cruda conservan el comportamiento anterior. | ocr_utils.py, tests/test_ocr_utils.py | **Menos CPU/copia temporal por pagina sin cambiar realce, parametros, fusion ni resultados OCR.** |
+
+#### Sesion 2026-08-13-v127 - Cache LRU de deteccion de idioma (1 optimizacion + 1 test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 250 | **`_detect_language_robust()` usa una LRU de 4096 textos**. Las frases repetidas entre bloques/paginas no vuelven a ejecutar `langdetect`; el resultado determinista y los fallbacks conservadores se mantienen. | translator.py, tests/test_translator.py | **Menos CPU y mas consistencia en paginas con nombres/frases repetidas, con memoria acotada y sin modelos nuevos.** |
+
+#### Sesion 2026-08-13-v128 - Gate de ruido OCR antes de Google (1 mejora de calidad + 1 test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 251 | **Si CT2 no produce una salida valida y el bloque es ruido OCR evidente, `_translate_one()` conserva el texto y no activa Google**. El gate excluye fuentes CJK para no romper el pivote ja/ko/zh -> en -> es; el texto valido y el camino CT2 no cambian. | translator.py, tests/test_translator.py | **Evita falsas traducciones de fragmentos rotos y elimina una peticion de red innecesaria por bloque.** |
+
+#### Sesion 2026-08-13-v129 - Read-through en memoria para cache de traducciones (1 optimizacion + 1 test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 252 | **La cache persistente mantiene un read-through LRU acotado a 5000 entradas y 2 MB de texto**. Los hits repetidos se sirven en memoria; escrituras atomicas, TTL, eviccion y `clear()` siguen sincronizados con disco. | cache.py, tests/test_cache.py | **Reduce aperturas/parseos JSON en frases repetidas entre paginas sin modificar traducciones ni eliminar persistencia ni introducir presion de RAM.** |
+
+**Validacion**: pruebas RED/GREEN de las cuatro optimizaciones; suites focalizadas **447/447**, CI rapido y completo **734/734 tests**, sintaxis Python/JS correcta, servidor/API/estaticos correctos, Bandit **0 HIGH/0 MEDIUM/6 LOW** y stress **50/50 paginas**, promedio **2.9s/pagina**, memoria **+71.1MB estable**, sin leak detectado. Se mantiene la advertencia conocida del corpus antiguo/parcial: 15.1% de aceptacion y 0% de metadatos.
+
+#### Sesion 2026-08-13-v130 - Miss de cache sin syscall `exists()` redundante (1 optimizacion + 1 test)
+
+| # | Cambio | Archivo | Impacto |
+|---|---|---|---|
+| 253 | **`cache.get()` intenta leer directamente el JSON y trata `FileNotFoundError` como miss**, eliminando el `exists()` previo. | cache.py, tests/test_cache.py | **Reduce una llamada al sistema por cada texto nuevo/no cacheado sin cambiar TTL, validacion, persistencia ni el resultado de los hits.** |
+
+**Validacion adicional**: cache **4/4** en verde; CI rapido **735/735 tests**, sintaxis Python/JS correcta, servidor/API/estaticos correctos y Bandit **0 HIGH/0 MEDIUM/6 LOW**. La advertencia del corpus antiguo/parcial permanece sin cambios.

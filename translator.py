@@ -11,9 +11,16 @@ import shutil
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from functools import lru_cache
+from typing import Any, cast
 
-from config import GLOSARIO_REGEX, GLOSARIO_POST, REQUEST_TIMEOUT, LANGUAGES, ROOT
+from config import (
+    GLOSARIO_REGEX, GLOSARIO_POST, REQUEST_TIMEOUT, LANGUAGES, ROOT,
+    ACTIVE_LANGUAGE_CODES, DISABLED_LANGUAGES,
+    GPU_MIN_FREE_VRAM_MB, GPU_VRAM_BUDGET_MB,
+    CT2_NEW_MODEL_MIN_FREE_VRAM_MB,
+)
+from runtime_diagnostics import gpu_budget_allows, gpu_memory_snapshot
 
 # ─── Caché de HuggingFace dentro del proyecto ──────────────────
 # Regla "no tocar C:": la caché HF (tokenizers OPUS-MT, modelos de
@@ -37,8 +44,8 @@ def _get_langdetect_detector() -> Callable[[str], str]:
         from langdetect import DetectorFactory
         DetectorFactory.seed = 0
         from langdetect import detect
-        _thread_local.detector = detect  # type: ignore[attr-defined]
-    return _thread_local.detector
+        _thread_local.detector = detect
+    return cast(Callable[[str], str], _thread_local.detector)
 
 
 # ─── ArgosTranslate package management ───────────────────────────
@@ -113,7 +120,7 @@ def _get_google_session() -> Any:
                     kwargs['timeout'] = kwargs.get('timeout', REQUEST_TIMEOUT)
                     return original_request(*args, **kwargs)
 
-                s.request = request_with_timeout  # type: ignore[method-assign]
+                s.request = request_with_timeout
                 _google_session = s
     return _google_session
 
@@ -151,7 +158,7 @@ def _translate_google(text: str, source: str, target: str) -> str | None:
         
         result = translator.translate(text)
         if result:
-            result_str = str(result)  # type: ignore[no-any-return]
+            result_str = str(result)
             # ── Detectar rate limiting: texto sin cambios ──────
             text_clean = text.strip().lower()
             result_clean = result_str.strip().lower()
@@ -229,9 +236,73 @@ _SPA_VERB_SUFFIXES: tuple[str, ...] = (
     "ar", "er", "ir",
 )
 
+# Fallback lexical conservador para el portugués, que sigue activo. Se exigen
+# dos marcadores, salvo palabras de una sola pieza muy distintivas, para no
+# convertir nombres o préstamos comunes en otro idioma.
+_SIMPLE_LANGUAGE_MARKERS: dict[str, frozenset[str]] = {
+    "pt": frozenset({
+        "eu", "amo", "estou", "voce", "você", "nao", "não",
+        "obrigado", "obrigada", "quero", "posso", "vamos",
+    }),
+}
+_SIMPLE_LANGUAGE_DISTINCTIVE: dict[str, frozenset[str]] = {
+    "pt": frozenset({"obrigado", "obrigada", "voce", "você", "nao", "não"}),
+}
+
+# Marcadores conservadores para detectar *code-switching* dentro de un
+# bloque. No son un glosario del usuario ni agregan modelos: solo se usan
+# para evitar que ``source=auto`` devuelva intacta una frase que tiene dos o
+# más palabras de otro idioma. Se omiten palabras muy ambiguas (por ejemplo
+# ``la``, ``que`` o ``no``) para no disparar Google por falsos positivos.
+_MIXED_LANGUAGE_MARKERS: dict[str, frozenset[str]] = {
+    "es": frozenset({
+        "el", "la", "los", "las", "es", "un", "una", "hola", "quiero",
+        "puedo", "puedes", "vamos", "tengo", "tienes",
+        "mi", "amigo", "amiga", "dice", "digo",
+        "casa", "mundo", "nuevo", "nueva", "grande", "mañana", "gracias",
+        "adiós", "ahora", "estás", "estoy",
+        "porque", "también", "dónde", "cómo", "esto", "eso", "hacer",
+    }),
+    "en": frozenset({
+        "the", "and", "this", "that", "you", "your", "with", "from",
+        "what", "where", "why", "please", "want", "need", "go", "home",
+        "here", "there", "okay", "sorry", "not", "dont", "don't", "i",
+        "my", "says", "said", "are",
+        "am", "love", "hello", "world", "friend", "stop", "come", "look",
+        "run", "wait", "really", "house", "big", "is", "was",
+    }),
+    "pt": frozenset({
+        "eu", "amo", "sou", "estou",
+        "você", "voce", "não", "nao", "vocês", "voces", "obrigado",
+        "obrigada", "quero", "posso", "vamos", "casa", "amanhã", "amanha",
+    }),
+}
+
+# Palabras inglesas muy distintivas que pueden aparecer como un único cambio
+# dentro de una frase activa. Se usan
+# solo cuando el idioma dominante ya tiene evidencia fuerte, para no marcar
+# nombres o préstamos aislados como páginas mixtas.
+_SINGLE_ENGLISH_SWITCH_MARKERS: frozenset[str] = frozenset({
+    "you", "your", "the", "hello", "my", "i",
+})
+
+# Marcadores de un solo token que son suficientemente distintivos para
+# reconocer el cambio inverso (p. ej. ``I love gracias``). Se mantienen
+# separados de los marcadores generales: préstamos ambiguos como ``amigo``,
+# ``casa`` o ``non`` no deben activar Google por sí solos.
+_SINGLE_DISTINCTIVE_SWITCH_MARKERS: dict[str, frozenset[str]] = {
+    "es": frozenset({
+        "hola", "gracias", "adiós", "adios", "mañana", "manana",
+        "quiero", "puedo", "dónde", "donde", "cómo", "como",
+    }),
+    "pt": frozenset({
+        "você", "voce", "vocês", "voces", "obrigado", "obrigada",
+        "não", "nao", "amanhã", "amanha",
+    }),
+}
+
 # Abreviaturas comunes sin vocales (no confundir con OCR garbage)
 _SHORT_TEXT_ALLOWED: set[str] = {"dr", "mr", "sr", "st", "jr", "vs", "tv", "cd", "pc", "ok", "km", "wc"}
-
 
 def _detect_language_simple(text: str) -> str:
     if any(0xac00 <= ord(c) <= 0xd7a3 for c in text):
@@ -255,9 +326,90 @@ def _detect_language_simple(text: str) -> str:
             return "es" if len(w_clean) > 2 else "en"
         if w_clean.endswith("mente") and len(w_clean) > 6:
             return "es"
+
+    for language, markers in _SIMPLE_LANGUAGE_MARKERS.items():
+        if len(words.intersection(markers)) >= 2:
+            return language
+    for language, markers in _SIMPLE_LANGUAGE_DISTINCTIVE.items():
+        if words.intersection(markers):
+            return language
     return "en"
 
 
+def _detect_mixed_languages(
+    text: str,
+    dominant: str | None = None,
+) -> tuple[str, ...]:
+    """Devuelve idiomas actuales con evidencia fuerte dentro de un bloque.
+
+    La detección es deliberadamente conservadora: una palabra aislada o un
+    nombre propio no convierte el bloque en mixto. Para idiomas latinos se
+    exigen al menos dos marcadores distintivos; para CJK el alfabeto aporta la
+    evidencia principal. El idioma dominante se coloca primero para que el
+    llamador pueda usarlo como clave estable de memoria.
+    """
+    text = str(text or "").strip()
+    if not text:
+        return ()
+
+    detected_dominant = str(dominant or "").strip().lower()
+    if not detected_dominant:
+        detected_dominant = _detect_language_robust(text)
+    if detected_dominant in {"zh-cn", "zh-tw"}:
+        detected_dominant = "zh"
+    if detected_dominant in DISABLED_LANGUAGES:
+        # Un caller antiguo puede pasar explícitamente uno de los idiomas
+        # pausados; no permitimos que vuelva a entrar en la fusión.
+        detected_dominant = "en"
+
+    found: set[str] = set()
+    has_hangul = any(0xAC00 <= ord(char) <= 0xD7A3 for char in text)
+    has_kana = any(0x3040 <= ord(char) <= 0x30FF for char in text)
+    has_hanzi = any(0x4E00 <= ord(char) <= 0x9FFF for char in text)
+    if has_hangul:
+        found.add("ko")
+    if has_kana:
+        found.add("ja")
+    elif has_hanzi:
+        # Kanji compartido + kana sigue siendo japonés; solo el texto sin
+        # kana se considera chino en esta capa conservadora.
+        found.add("zh")
+
+    latin_tokens = [
+        token.casefold()
+        for token in re.findall(r"[A-Za-zÀ-ÿ]+(?:['’][A-Za-zÀ-ÿ]+)?", text)
+    ]
+    token_set = set(latin_tokens)
+    if latin_tokens:
+        for language, markers in _MIXED_LANGUAGE_MARKERS.items():
+            if len(token_set.intersection(markers)) >= 2:
+                found.add(language)
+        dominant_markers = _MIXED_LANGUAGE_MARKERS.get(detected_dominant, frozenset())
+        if (
+            detected_dominant != "en"
+            and len(token_set.intersection(dominant_markers)) >= 2
+            and token_set.intersection(_SINGLE_ENGLISH_SWITCH_MARKERS)
+        ):
+            found.add("en")
+        if len(token_set.intersection(dominant_markers)) >= 2:
+            for language, markers in _SINGLE_DISTINCTIVE_SWITCH_MARKERS.items():
+                if language != detected_dominant and token_set.intersection(markers):
+                    found.add(language)
+
+    if detected_dominant in ACTIVE_LANGUAGE_CODES:
+        found.add(detected_dominant)
+
+    if len(found) <= 1:
+        return (detected_dominant,) if detected_dominant else tuple(found)
+
+    ordered: list[str] = []
+    if detected_dominant in found:
+        ordered.append(detected_dominant)
+    ordered.extend(sorted(found - set(ordered)))
+    return tuple(ordered)
+
+
+@lru_cache(maxsize=4096)
 def _detect_language_robust(text: str) -> str:
     text = text.strip()
     if not text:
@@ -284,18 +436,25 @@ def _detect_language_robust(text: str) -> str:
             print(f"[langdetect] Error detectando idioma para hanzi: {e}")
         return "zh"
     simple = _detect_language_simple(text)
+    if simple == "pt":
+        # En bloques cortos el detector estadistico puede devolver es/en por
+        # falta de contexto; la evidencia lexical conservadora es mas estable.
+        return simple
     has_spanish_accents = any(c in "áéíóúñüÁÉÍÓÚÑÜ¿¡" for c in text)
     try:
         detect = _get_langdetect_detector()
         lang = detect(text)
-        if lang in ["es", "en", "pt", "fr", "de", "it", "ja", "ko", "zh-cn", "zh-tw"]:
+        if lang in DISABLED_LANGUAGES:
+            print(f"[langdetect] '{text[:50]}' -> {lang}, idioma temporalmente desactivado; fallback={simple}")
+            return simple if simple in ACTIVE_LANGUAGE_CODES else "en"
+        if lang in ["es", "en", "pt", "ja", "ko", "zh-cn", "zh-tw"]:
             if lang == "en" and simple == "es" and has_spanish_accents:
                 print(f"[langdetect] '{text[:50]}' -> {lang}, sobrescrito a {simple} (acentos españoles)")
                 return simple
             if len(text.split()) < 4 and lang == "en" and simple == "es":
                 print(f"[langdetect] '{text[:50]}' -> {lang}, sobrescrito a {simple} (heurística corta)")
                 return simple
-            if lang in ("pt", "fr", "it", "de") and simple == "es":
+            if lang == "pt" and simple == "es":
                 print(f"[langdetect] '{text[:50]}' -> {lang}, sobrescrito a {simple} (SPA_WORDS match)")
                 return simple
             if "zh" in lang and simple == "es":
@@ -346,6 +505,17 @@ _SFX_EXCLUDE: frozenset[str] = frozenset({
     "capitulo", "capítulo", "temporada",
 })
 
+# El patrón histórico de CAPS también veía como SFX palabras normales de
+# inglés y portugués. Reutilizar los marcadores activos reduce ese falso
+# positivo sin mantener un segundo diccionario manual.
+_SFX_FOREIGN_LANGUAGE_EXCLUDE: frozenset[str] = frozenset().union(
+    *(_MIXED_LANGUAGE_MARKERS.values())
+)
+_SFX_DIALOGUE_INTERJECTIONS: frozenset[str] = frozenset({
+    "ah", "ahh", "ay", "hey", "help", "no", "oh", "ouch", "ow",
+    "please", "sorry", "stop", "wait", "what", "why", "yes",
+})
+
 
 def _es_sfx(text: str) -> bool:
     """Detecta si un texto es onomatopeya/SFX y debe preservarse sin traducir."""
@@ -354,12 +524,98 @@ def _es_sfx(text: str) -> bool:
         return False
     # Si contiene cualquier palabra común (capítulo, temporada, cómo, etc.), NO es SFX
     words_lower = [w.lower() for w in re.findall(r'\b\w+\b', t)]
-    if any(w in _SFX_EXCLUDE for w in words_lower):
+    if any(
+        w in _SFX_EXCLUDE or w in _SFX_FOREIGN_LANGUAGE_EXCLUDE
+        for w in words_lower
+    ):
         return False
+    # Las vocales repetidas suelen ser una exclamación de diálogo
+    # (``NOOOO``, ``AAAAH``), no una onomatopeya. Colapsar solo repeticiones
+    # consecutivas permite excluir esas variantes sin tocar ``GRRRR`` o
+    # ``HAA``, que siguen siendo SFX reconocibles.
+    collapsed_words = [re.sub(r"(.)\1+", r"\1", word) for word in words_lower]
+    if any(word in _SFX_DIALOGUE_INTERJECTIONS for word in collapsed_words):
+        return False
+    # SFX CJK inequívocos: repeticiones de un mismo glifo (ゴゴゴ, 哈哈哈,
+    # ㅋㅋㅋ). No clasificar cualquier palabra CJK corta, porque puede ser
+    # diálogo o un nombre propio válido.
+    cjk_chars = [
+        char for char in t
+        if (
+            0x3040 <= ord(char) <= 0x30FF      # hiragana / katakana
+            or 0x3130 <= ord(char) <= 0x318F   # jamo
+            or 0xAC00 <= ord(char) <= 0xD7A3   # hangul
+            or 0x4E00 <= ord(char) <= 0x9FFF   # hanzi / kanji
+        )
+    ]
+    if len(cjk_chars) >= 2 and len(set(cjk_chars)) == 1:
+        return True
     for pat in _SFX_PATTERNS:
         if pat.match(t):
             return True
     return False
+
+
+_HONORIFICOS_JA: dict[str, str] = {
+    "さん": "-san",
+    "ちゃん": "-chan",
+    "くん": "-kun",
+    "様": "-sama",
+    "さま": "-sama",
+    "先輩": "-senpai",
+    "先生": "-sensei",
+}
+_JA_NAME_HONORIFIC_RE = re.compile(
+    r"^[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff々]+\s*(さん|ちゃん|くん|様|さま|先輩|先生)$"
+)
+
+
+_HONORIFICOS_KO: dict[str, str] = {
+    "\uc528": "-ssi",       # 씨
+    "\ub2d8": "-nim",       # 님
+    "\uad70": "-gun",       # 군
+    "\uc591": "-yang",      # 양
+    "\uc120\ubc30": "-sunbae",  # 선배
+    "\ud6c4\ubc30": "-hubae",   # 후배
+}
+_KO_NAME_HONORIFIC_RE = re.compile(
+    r"^[\uac00-\ud7a3]{2,5}\s*(씨|님|군|양|선배|후배)$"
+)
+
+
+def _preservar_honorificos(
+    original: str,
+    translated: str,
+    source_lang: str,
+    target_lang: str,
+) -> str:
+    """Conserva honorÃ­ficos japoneses solo en nombres aislados.
+
+    Se limita deliberadamente a una caja cuyo contenido completo es un
+    nombre japonÃ©s + honorÃ­fico. En frases completas el motor puede haber
+    elegido una traducciÃ³n natural ("seÃ±or Tanaka") y forzar ``-san`` serÃ­a
+    peor. La regla es determinista y no requiere una lista de personajes.
+    """
+    normalized_source = str(source_lang or "").strip().lower()
+    if normalized_source in {"ja", "ja-jp"}:
+        match = _JA_NAME_HONORIFIC_RE.fullmatch(original.strip())
+        marker = _HONORIFICOS_JA[match.group(1)] if match else ""
+    elif normalized_source == "ko":
+        match = _KO_NAME_HONORIFIC_RE.fullmatch(original.strip())
+        marker = _HONORIFICOS_KO[match.group(1)] if match else ""
+    else:
+        return translated
+    if not match or not translated.strip():
+        return translated
+    if marker.casefold() in translated.casefold():
+        return translated
+    if match.group(1) in {"さん", "様", "さま"} and re.search(
+        r"\b(?:sr\.?|sra\.?|señor(?:a)?|mr\.?|mrs\.?)\b",
+        translated,
+        re.IGNORECASE,
+    ):
+        return translated
+    return translated.rstrip() + marker
 
 
 def _post_process_translation(text: str, source_lang: str, target_lang: str) -> str:
@@ -399,6 +655,10 @@ def _aplicar_glosario(text: str) -> str:
 _OCR_NOISE_DIGIT_PAT = re.compile(r'\d{2,}')
 _OCR_NOISE_SPECIAL_PAT = re.compile(r'[@#$%^&*+=<>{}|\\/]{2,}')
 _OCR_NOISE_REPEAT_PAT = re.compile(r'(.)\1{4,}')
+
+# Tras el intento rapido de CT2, esta heuristica tambien protege el fallback
+# de red: conservar OCR evidentemente roto es mas seguro que inventar una
+# traduccion. Los alfabetos CJK se excluyen en el gate del pipeline.
 
 
 def _es_ocr_noise(text: str) -> bool:
@@ -484,9 +744,12 @@ _REPEATED_CHUNK_PAT: re.Pattern[str] = re.compile(
 def _es_traduccion_valida(orig: str, trad: str, lenient: bool = False) -> bool:
     if not trad or not trad.strip():
         return False
-    # Siempre rechazar texto identico al original, incluso en modo lenient
-    # (el modo lenient relaja la validacion del CONTENIDO, no la ausencia de traduccion)
-    if trad == orig:
+    # Rechazar texto idÃ©ntico aunque el motor cambie mayÃºsculas o espacios.
+    # De lo contrario una respuesta "hello" para "Hello" pasa la validaciÃ³n
+    # y el pipeline la presenta como traducciÃ³n vÃ¡lida.
+    orig_norm = re.sub(r"\s+", " ", orig.strip()).casefold()
+    trad_norm = re.sub(r"\s+", " ", trad.strip()).casefold()
+    if orig_norm and trad_norm == orig_norm:
         return False
     # Detectar fragmentos repetidos pegados (reemplaza el viejo hardcode "mainstremainstre")
     if _REPEATED_CHUNK_PAT.search(trad):
@@ -504,6 +767,64 @@ def _es_traduccion_valida(orig: str, trad: str, lenient: bool = False) -> bool:
     if orig and len(trad) > len(orig) * 8:
         return False
     return True
+
+
+def _translation_is_likely_source_language(
+    text: str,
+    source: str,
+    target: str,
+) -> bool:
+    """Detecta una salida que conserva claramente el idioma de origen.
+
+    Es una barrera de calidad, no un detector obligatorio de destino. Solo
+    rechaza evidencia fuerte: dos marcadores léxicos del origen (en idiomas
+    latinos) o detección/alfabeto inequívoco CJK. Esto evita descartar nombres,
+    préstamos y traducciones cortas que no tienen suficientes palabras para
+    identificar el idioma.
+    """
+    source_norm = {"zh-cn": "zh", "zh-tw": "zh"}.get(
+        str(source or "").strip().lower(), str(source or "").strip().lower())
+    target_norm = {"zh-cn": "zh", "zh-tw": "zh"}.get(
+        str(target or "").strip().lower(), str(target or "").strip().lower())
+    if not text or not source_norm or source_norm == target_norm:
+        return False
+
+    if source_norm in {"ja", "ko", "zh"}:
+        # Para CJK exigimos evidencia del alfabeto de origen. langdetect
+        # suele clasificar nombres romanizados (p. ej. "Tanaka") como el
+        # idioma CJK indicado por el contexto, y rechazarlos romperÃ­a la
+        # conservaciÃ³n de nombres propios/honorÃ­ficos desde cache.
+        if source_norm == "ko":
+            script_chars = [char for char in text
+                            if 0xac00 <= ord(char) <= 0xd7a3]
+        elif source_norm == "zh":
+            script_chars = [char for char in text
+                            if 0x4e00 <= ord(char) <= 0x9fff]
+        else:
+            script_chars = [char for char in text
+                            if 0x3040 <= ord(char) <= 0x30ff]
+        # Una o dos grafÃ­as pueden ser un nombre propio preservado. Una frase
+        # realmente no traducida suele estar dominada por el script de origen;
+        # el criterio combinado conserva nombres sin dejar pasar pÃ¡rrafos CJK.
+        if not script_chars:
+            return False
+        letter_count = sum(char.isalpha() for char in text)
+        script_ratio = len(script_chars) / max(letter_count, 1)
+        return len(script_chars) >= 3 or script_ratio >= 0.5
+
+    markers = _MIXED_LANGUAGE_MARKERS.get(source_norm)
+    if not markers:
+        return False
+    tokens = {
+        token.casefold()
+        for token in re.findall(r"[A-Za-zÀ-ÿ]+(?:['’][A-Za-zÀ-ÿ]+)?", text)
+    }
+    source_score = len(tokens.intersection(markers))
+    if source_score < 2:
+        return False
+    target_score = len(tokens.intersection(
+        _MIXED_LANGUAGE_MARKERS.get(target_norm, frozenset())))
+    return source_score >= target_score + 1
 
 
 # ─── Corrección post-CT2 para traducciones literales ─────────────
@@ -563,7 +884,7 @@ def _load_ct2_checksums() -> dict[str, dict[str, str]]:
         return {}
     try:
         with open(_CT2_CHECKSUMS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            return cast(dict[str, dict[str, str]], json.load(f))
     except (json.JSONDecodeError, OSError):
         print(f"[CT2] Error leyendo checksums, ignorando")
         return {}
@@ -669,6 +990,39 @@ _ct2_tokenizers: dict[str, Any] = {}
 _ct2_lock: threading.Lock = threading.Lock()
 
 
+def _ct2_gpu_allowed(snapshot: dict[str, Any] | None = None) -> bool:
+    """Decide si un nuevo modelo CT2 puede cargarse en la GPU.
+
+    Los traductores CT2 ya cargados se conservan para no penalizar la
+    latencia, pero los pares nuevos deben respetar el presupuesto observable
+    de la GPU. En una GTX 1050 Ti compartida con EasyOCR/U-OCR, degradar solo
+    ese par a CPU es preferible a provocar un OOM que tumbe todo el proceso.
+    Si CUDA no está disponible o el diagnóstico no puede leerse, se mantiene
+    el comportamiento anterior y CT2 decide su propio fallback.
+    """
+    try:
+        state = snapshot if snapshot is not None else gpu_memory_snapshot()
+        if not state.get("available"):
+            return True
+        allowed = gpu_budget_allows(
+            state,
+            required_free_mb=max(
+                GPU_MIN_FREE_VRAM_MB,
+                CT2_NEW_MODEL_MIN_FREE_VRAM_MB,
+            ),
+            budget_mb=GPU_VRAM_BUDGET_MB,
+        )
+        if not allowed:
+            print(
+                "[CT2] VRAM bajo presupuesto; el nuevo par se cargará en CPU "
+                f"(snapshot={state})"
+            )
+        return allowed
+    except Exception as exc:
+        print(f"[CT2] Diagnóstico VRAM no disponible, se permite GPU: {exc}")
+        return True
+
+
 def _get_ct2_translator(source: str, target: str, force_cpu: bool = False) -> tuple[Any, Any] | tuple[None, None]:
     """
     Obtiene (translator, tokenizer) para el par source|target.
@@ -722,7 +1076,12 @@ def _get_ct2_translator(source: str, target: str, force_cpu: bool = False) -> tu
             # Cargar modelo CT2 (GPU si CUDA disponible y force_cpu=False, CPU si no)
             import ctranslate2
             import torch
-            ct2_device = "cpu" if force_cpu else ("cuda" if torch.cuda.is_available() else "cpu")
+            use_gpu = (
+                not force_cpu
+                and bool(torch.cuda.is_available())
+                and _ct2_gpu_allowed()
+            )
+            ct2_device = "cuda" if use_gpu else "cpu"
             _ct2_translators[pair_key] = ctranslate2.Translator(model_dir, device=ct2_device)
             if ct2_device == "cuda":
                 print(f"[CT2] Modelo {pair_key} cargado en GPU (CUDA, int8)")
@@ -750,37 +1109,76 @@ def _get_ct2_translator(source: str, target: str, force_cpu: bool = False) -> tu
             return None, None
 
 
+def _translate_ctranslate2_batch(
+    texts: list[str],
+    source: str,
+    target: str,
+) -> list[str | None]:
+    """
+    Traduce una lista de textos con CTranslate2 en UNA sola translate_batch
+    (optimización 2.6). El prefill del modelo se comparte entre los ítems del
+    batch, así que N textos cuestan mucho menos que N llamadas individuales.
+
+    Usa greedy (beam_size=1): en bloques cortos de manga el beam search de
+    4 rinde poco y cuesta 2-4x más. Retorna una lista del mismo largo, con
+    None por cada ítem que falló (el pipeline cae a Google/Argos para ese
+    ítem individualmente). Retorna lista vacía si no hay modelo para el par.
+    """
+    clean_texts = [t for t in texts if t.strip()]
+    if not clean_texts:
+        return [None] * len(texts)
+    translator, tokenizer = _get_ct2_translator(source, target)
+    if translator is None or tokenizer is None:
+        return [None] * len(texts)
+    try:
+        # Tokenizar todos los textos ANTES de llamar al batch (una sola
+        # llamada a translate_batch para toda la página).
+        batch_input: list[list[str]] = []
+        for text in clean_texts:
+            input_ids = tokenizer.encode(text)
+            batch_input.append(
+                tokenizer.convert_ids_to_tokens(input_ids))
+
+        results = translator.translate_batch(
+            batch_input,
+            beam_size=1,
+            max_decoding_length=100,
+        )
+        out_by_index: dict[int, str | None] = {}
+        for i, result in enumerate(results):
+            try:
+                output_tokens = result.hypotheses[0]
+                output_ids = tokenizer.convert_tokens_to_ids(output_tokens)
+                translation = tokenizer.decode(output_ids)
+                # Aplicar correcciones post-traducción (términos literales)
+                translation = _corregir_ct2(translation)
+                out_by_index[i] = translation
+            except Exception as inner_e:
+                print(f"[CT2] Error decodificando ítem {i}: {inner_e}")
+                out_by_index[i] = None
+        # Re-mapear al largo original (los textos vacíos quedan None)
+        mapped: list[str | None] = []
+        iter_idx = 0
+        for text in texts:
+            if text.strip():
+                mapped.append(out_by_index.get(iter_idx))
+                iter_idx += 1
+            else:
+                mapped.append(None)
+        return mapped
+    except Exception as e:
+        print(f"[CT2] Error traduciendo batch {source}->{target}: {e}")
+        return [None] * len(texts)
+
+
 def _translate_ctranslate2(text: str, source: str, target: str) -> str | None:
     """
     Traduce con CTranslate2 usando el modelo Helsinki-NLP OPUS-MT
     correspondiente al par source|target. Retorna None si no hay modelo
     para ese par o si ocurre un error (el pipeline cae a Argos/Google).
     """
-    translator, tokenizer = _get_ct2_translator(source, target)
-    if translator is None or tokenizer is None:
-        return None
-    try:
-        # Tokenizar: texto → IDs → strings (formato CT2)
-        input_ids = tokenizer.encode(text)
-        source_tokens = tokenizer.convert_ids_to_tokens(input_ids)
-
-        # Traducir con CTranslate2 (beam search nativo)
-        results = translator.translate_batch(
-            [source_tokens],
-            beam_size=4,
-            max_decoding_length=100,
-        )
-        output_tokens = results[0].hypotheses[0]
-
-        # Decodificar: tokens → IDs → texto
-        output_ids = tokenizer.convert_tokens_to_ids(output_tokens)
-        translation = tokenizer.decode(output_ids)
-        # Aplicar correcciones post-traducción (para términos literales)
-        translation = _corregir_ct2(translation)
-        return translation
-    except Exception as e:
-        print(f"[CT2] Error traduciendo {source}->{target}: {e}")
-        return None
+    results = _translate_ctranslate2_batch([text], source, target)
+    return results[0] if results else None
 
 
 # ─── ArgosTranslate direct (con lock global — NO es thread-safe) ──
@@ -791,7 +1189,7 @@ _argos_translate_lock: threading.Lock = threading.Lock()
 
 def _translate_argos(text: str, source: str, target: str) -> str | None:
     try:
-        from argostranslate import translate  # type: ignore[import-untyped]
+        from argostranslate import translate
     except Exception:
         return None
     if not _ensure_argo_package(source, target):
@@ -820,9 +1218,31 @@ def _translate_one(
     cache_get: Callable[[str, str, str], str | None] | None = None,
     cache_set: Callable[[str, str, str, str], None] | None = None,
     translation_cache_available: bool = False,
+    block_type: str | None = None,
 ) -> str:
     text = text.strip()
     if not text:
+        return text
+
+    source_norm = str(source or "").strip().lower()
+    target_norm = str(target or "").strip().lower()
+    if source_norm in DISABLED_LANGUAGES or target_norm in DISABLED_LANGUAGES:
+        print(
+            f"[translate] idioma temporalmente desactivado; se conserva el texto "
+            f"({source_norm}->{target_norm})"
+        )
+        return text
+
+    semantic_type = str(block_type or "").strip().lower()
+    non_sfx_text_types = {
+        "dialogue", "speech", "thought", "title", "header",
+        "caption", "narration", "narrative", "cartel",
+    }
+    # Clasificar antes de limpiar símbolos conserva marcadores de SFX como
+    # *sigh*/*thinking* y su casing/puntuación original. Los bloques con tipo
+    # semántico de texto siguen entrando al traductor aunque estén en CAPS.
+    if _es_sfx(text) and semantic_type not in non_sfx_text_types:
+        print(f"[translate] SFX detectado, preservando: '{text}'")
         return text
 
     # Limpieza universal de símbolos ruidosos del OCR (@, #, $, etc.)
@@ -831,21 +1251,110 @@ def _translate_one(
         return ""
 
     # ── SFX/Onomatopeyas: detectar y preservar sin traducir ──
-    if _es_sfx(text):
+    # Sin tipo semántico mantenemos la heurística histórica. Si el detector
+    # identifica diálogo/narración/título, las mayúsculas por sí solas no
+    # deben bloquear la traducción (p. ej. «NARUTO, ¡ESPERA!»).
+    if _es_sfx(text) and semantic_type not in non_sfx_text_types:
         print(f"[translate] SFX detectado, preservando: '{text}'")
         return text
 
     text_processed = _aplicar_glosario(text) if source == "es" or source == "auto" else text
 
     src_lang = source if source != "auto" else _detect_language_robust(text_processed)
-    if src_lang == target:
-        return text_processed
-
-    if translation_cache_available and cache_get is not None:
+    # También se calcula con source explícito: el usuario puede indicar
+    # ``es`` y aun así tener una frase inglesa incrustada en el globo.
+    mixed_languages = _detect_mixed_languages(
+        text_processed, dominant=src_lang)
+    # Los bloques mixtos también deben consultar cache antes de activar el
+    # fallback de red. Se mantiene el mismo gate de idioma origen y basura
+    # que usa el cache normal; si la entrada es inválida, el flujo continúa.
+    if (
+        src_lang != target
+        and translation_cache_available
+        and cache_get is not None
+    ):
         cached = cache_get(text_processed, src_lang, target)
         if cached is not None:
-            print(f"[translate] Cache HIT: '{cached[:50]}'")
-            return cached  # type: ignore[no-any-return]
+            cached_text = str(cached)
+            if (
+                not _translation_is_likely_source_language(
+                    cached_text, src_lang, target)
+                and _es_traduccion_valida(
+                    text_processed,
+                    cached_text,
+                    lenient=len(text_processed.split()) <= 3,
+                )
+            ):
+                print(f"[translate] Cache HIT: '{cached_text[:50]}'")
+                return _preservar_honorificos(
+                    text_processed, cached_text, src_lang, target)
+            print("[translate] Cache rechazado por validación; se continúa")
+    if src_lang != target and len(mixed_languages) > 1:
+        # Un bloque con cambio de idioma no debe entrar directamente en un
+        # modelo monolingüe (p. ej. es->en) porque puede deformar la parte ya
+        # escrita en el idioma destino. Google con source=auto es el único
+        # motor existente capaz de resolver el bloque completo sin dividirlo,
+        # incluso cuando el usuario fijó source explícitamente.
+        mixed_result = _translate_google(text_processed, "auto", target)
+        if (
+            mixed_result
+            and mixed_result.strip().casefold() != text_processed.casefold()
+            and not _translation_is_likely_source_language(
+                mixed_result, src_lang, target)
+            and _es_traduccion_valida(text_processed, mixed_result, lenient=True)
+        ):
+            final_result = _post_process_translation(
+                mixed_result, src_lang, target)
+            final_result = _preservar_honorificos(
+                text_processed, final_result, src_lang, target)
+            print(
+                f"[translate] mixed auto->{target} OK: "
+                f"'{final_result[:50]}'"
+            )
+            if translation_cache_available and cache_set is not None:
+                try:
+                    cache_set(text_processed, src_lang, target, final_result)
+                except Exception as e:
+                    print(f"[translate] Error guardando en cache: {e}")
+            return final_result
+        print(
+            f"[translate] mezcla auto sin traducción segura; "
+            f"se continúa con fallback dominante: idiomas={mixed_languages}"
+        )
+    if src_lang == target:
+        if len(mixed_languages) > 1:
+            # Si el idioma dominante ya es el destino, el retorno temprano
+            # histórico dejaba intacta una frase incrustada (p. ej.
+            # "No puedo go home"). Google con source=auto es el único motor
+            # existente que puede traducir el bloque mixto completo sin
+            # dividirlo artificialmente y romper su gramática. Si no está
+            # disponible, conservar el original es más seguro que forzar un
+            # modelo con el idioma equivocado.
+            mixed_result = _translate_google(text_processed, "auto", target)
+            if (
+                mixed_result
+                and mixed_result.strip().casefold() != text_processed.casefold()
+                and _es_traduccion_valida(text_processed, mixed_result, lenient=True)
+            ):
+                final_result = _post_process_translation(
+                    mixed_result, src_lang, target)
+                final_result = _preservar_honorificos(
+                    text_processed, final_result, src_lang, target)
+                print(
+                    f"[translate] mixed auto->{target} OK: "
+                    f"'{final_result[:50]}'"
+                )
+                if translation_cache_available and cache_set is not None:
+                    try:
+                        cache_set(text_processed, src_lang, target, final_result)
+                    except Exception as e:
+                        print(f"[translate] Error guardando en cache: {e}")
+                return final_result
+            print(
+                f"[translate] mezcla detectada sin traducción segura; "
+                f"se conserva el texto: idiomas={mixed_languages}"
+            )
+        return text_processed
 
     print(f"[translate] src_lang={src_lang}, target={target}, text='{text_processed[:50]}'")
 
@@ -864,6 +1373,13 @@ def _translate_one(
     def _resultado_valido(method_name: str, resultado: str | None, src_lang: str) -> bool:
         """Verifica si un resultado de traduccion es aceptable."""
         if not resultado:
+            return False
+        if _translation_is_likely_source_language(
+            resultado, src_lang, target):
+            print(
+                f"[translate] {method_name} conserva idioma origen "
+                f"({src_lang}->{target}); descartado"
+            )
             return False
         if resultado == text_processed:
             if src_lang != target:
@@ -886,6 +1402,20 @@ def _translate_one(
         return True
 
     # ── ESTRATEGIA OPTIMIZADA: CT2 primero (síncrono, rápido) ────
+    # El cache comparte el mismo contrato de calidad que los motores. Una
+    # entrada antigua puede haber sido guardada antes de los gates actuales o
+    # por una respuesta parcial de red; no debe saltarse la validación de
+    # idioma origen ni la comprobación anti-basura.
+    if translation_cache_available and cache_get is not None:
+        cached = cache_get(text_processed, src_lang, target)
+        if cached is not None:
+            cached_text = str(cached)
+            if _resultado_valido("cache", cached_text, src_lang):
+                print(f"[translate] Cache HIT: '{cached_text[:50]}'")
+                return _preservar_honorificos(
+                    text_processed, cached_text, src_lang, target)
+            print("[translate] Cache rechazado por validación; se reintenta")
+
     # CT2 es el motor mas rapido (~0.12s en GPU) y no necesita executor.
     # Probarlo primero evita la contienda de workers con Google/Argos
     # y reduce la latencia de ~30s a <1s en el caso comun.
@@ -894,6 +1424,8 @@ def _translate_one(
         ct2_result = ct2_result.upper()
     if ct2_result and _resultado_valido("ctranslate2", ct2_result, src_lang):
         final_result = _post_process_translation(ct2_result, src_lang, target)
+        final_result = _preservar_honorificos(
+            text_processed, final_result, src_lang, target)
         print(f"[translate] ctranslate2 OK (fast path): '{final_result[:50]}'")
         if translation_cache_available and cache_set is not None:
             try:
@@ -908,11 +1440,26 @@ def _translate_one(
     #   2. Tarda ~3s en cargar el modelo la primera vez
     #   3. Requiere descarga de internet
     # Google retorna None si esta en backoff de rate limiting.
+    # CT2 ya tuvo la oportunidad de recuperar el texto. Si tampoco entrega
+    # una salida valida, saltar Google para ruido evidente evita falsos
+    # positivos y una peticion de red innecesaria por cada fragmento OCR.
+    # No aplicar este gate a CJK: la heuristica historica considera sus
+    # glifos no latinos "weird" y podria impedir el pivote ja/ko/zh -> en -> es.
+    is_cjk_source = src_lang in {"ja", "ko", "zh", "zh-cn", "zh-tw"}
+    if not is_cjk_source and _es_ocr_noise(text_processed):
+        print(
+            f"[translate] Ruido OCR sin traduccion segura; "
+            f"se conserva: '{text_processed[:50]}'"
+        )
+        return text_processed
+
     google_result = _translate_google(query_text, src_lang, target)
     if google_result and is_all_caps:
         google_result = google_result.upper()
     if google_result and _resultado_valido("google", google_result, src_lang):
         final_result = _post_process_translation(google_result, src_lang, target)
+        final_result = _preservar_honorificos(
+            text_processed, final_result, src_lang, target)
         print(f"[translate] google OK (fallback): '{final_result[:50]}'")
         if translation_cache_available and cache_set is not None:
             try:
@@ -926,5 +1473,26 @@ def _translate_one(
     # 30s+ con backoff exponencial, devolvemos el texto original
     # inmediatamente. El usuario ve el texto sin traducir pero al menos
     # no se cuelga todo el pipeline por un solo bloque.
+    # Fallback offline para CJK->es: los modelos disponibles son CJK->en y
+    # en->es. Se usa SOLO despuÃ©s de Google directo para no degradar la
+    # calidad cuando el traductor online estÃ¡ disponible.
+    pivot_source = {"zh-cn": "zh", "zh-tw": "zh"}.get(src_lang, src_lang)
+    if target == "es" and pivot_source in {"ja", "ko", "zh"}:
+        pivot_en = _translate_ctranslate2(text_processed, pivot_source, "en")
+        if pivot_en and _resultado_valido("ctranslate2-pivot-cjk-en", pivot_en, pivot_source):
+            pivot_es = _translate_ctranslate2(pivot_en, "en", "es")
+            if pivot_es and _resultado_valido("ctranslate2-pivot-en-es", pivot_es, "en"):
+                final_result = _post_process_translation(pivot_es, "en", "es")
+                final_result = _preservar_honorificos(
+                    text_processed, final_result, src_lang, target)
+                print(f"[translate] ctranslate2 pivot {pivot_source}->en->es OK: "
+                      f"'{final_result[:50]}'")
+                if translation_cache_available and cache_set is not None:
+                    try:
+                        cache_set(text_processed, src_lang, target, final_result)
+                    except Exception as e:
+                        print(f"[translate] Error guardando en cache: {e}")
+                return final_result
+
     print(f"[translate] SIN_TRAD (fallback final): '{text_processed[:50]}'")
     return text_processed

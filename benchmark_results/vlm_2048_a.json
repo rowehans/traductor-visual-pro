@@ -1,0 +1,76 @@
+{
+ "benchmark": "benchmark_vlm_maxlen.py",
+ "max_length": 2048,
+ "pages": [
+  21,
+  28
+ ],
+ "total_s": 377.519,
+ "vlm_total_s": 365.025,
+ "vlm_recovered_total": 14,
+ "per_page": {
+  "21": {
+   "total_s": 310.779,
+   "vlm_s": 300.177,
+   "vlm_recovered": 8,
+   "n_blocks": 11,
+   "avg_conf": 0.854,
+   "trigger": true,
+   "trigger_reason": "large_image_panel",
+   "texts": [
+    "CUFNE DENENE RELPVNTEPARA CEAREARLA.",
+    "EL",
+    "ENTONCES ENTONCES EPORQUEYO PUEDO...? EPORQUEYO PUEDO...?",
+    "ENTONNEES",
+    "NE PORIA JBFLMR BiAD7",
+    "NO...",
+    "[Unreadable]",
+    "[Unreadable]",
+    "[Unreadable]",
+    "[Unreadable]",
+    "oTa"
+   ],
+   "stages": {
+    "prefilter": 0.588,
+    "rapid": 3.461,
+    "yolo": 0.0,
+    "ctd": 0.0,
+    "rapid_aggr": 0.0,
+    "ruta_c": 1.327,
+    "vlm": 300.177
+   }
+  },
+  "28": {
+   "total_s": 66.74,
+   "vlm_s": 64.848,
+   "vlm_recovered": 6,
+   "n_blocks": 13,
+   "avg_conf": 0.819,
+   "trigger": true,
+   "trigger_reason": "large_image_panel",
+   "texts": [
+    "BAJCE",
+    "DA IGUAL",
+    "DIRALPRESHNAL",
+    "EA 4RIE",
+    "INTEREJANTE",
+    "INTERESANTE.",
+    "LFUYAN!EI VERDAE",
+    "OH.",
+    "SE QUE TIENES",
+    "SE amo TIFNFT",
+    "UCHUULJINMANGAS.COM",
+    "YA HAS RECIED MUCHAS COSAS QUE HUBIESTEN SIDO IMPOSIBLES DE HACER SIN DIVINIDAD, ¿COMO ES QUE ERES TAN INGRORANTE...?",
+    "YAHAI HFHO MIN HAS"
+   ],
+   "stages": {
+    "prefilter": 0.515,
+    "rapid": 0.923,
+    "yolo": 0.0,
+    "ctd": 0.0,
+    "rapid_aggr": 0.0,
+    "vlm": 64.848
+   }
+  }
+ }
+}

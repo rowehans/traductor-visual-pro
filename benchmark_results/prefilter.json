@@ -1,0 +1,85 @@
+{
+  "pdf": "Capítulo 43 de Cómo criar villanos correctamente.pdf",
+  "pages": [
+    3,
+    11,
+    12
+  ],
+  "per_page": {
+    "3": {
+      "sin_prefilter": {
+        "n_blocks": 8,
+        "avg_conf": 0.777,
+        "ocr_s": 6.6979
+      },
+      "con_prefilter": {
+        "n_blocks": 6,
+        "avg_conf": 0.711,
+        "ocr_s": 3.0065
+      },
+      "prefilter_s": 1.3808,
+      "delta_conf": -0.066,
+      "delta_blocks": -2,
+      "subetapas": {
+        "franjas": 0.0015,
+        "lineas_morf": 0.003,
+        "lineas_inpaint": 1.4218,
+        "speckle_morf": 0.0037,
+        "speckle_inpaint": 0.0276,
+        "bilateral": 0.0023,
+        "gaussian": 0.0944,
+        "median": 0.0408
+      }
+    },
+    "11": {
+      "sin_prefilter": {
+        "n_blocks": 3,
+        "avg_conf": 0.288,
+        "ocr_s": 0.918
+      },
+      "con_prefilter": {
+        "n_blocks": 10,
+        "avg_conf": 0.653,
+        "ocr_s": 3.0543
+      },
+      "prefilter_s": 1.4562,
+      "delta_conf": 0.365,
+      "delta_blocks": 7,
+      "subetapas": {
+        "franjas": 0.0015,
+        "lineas_morf": 0.0032,
+        "lineas_inpaint": 1.3782,
+        "speckle_morf": 0.0035,
+        "speckle_inpaint": 0.0307,
+        "bilateral": 0.0027,
+        "gaussian": 0.001,
+        "median": 0.0021
+      }
+    },
+    "12": {
+      "sin_prefilter": {
+        "n_blocks": 3,
+        "avg_conf": 0.778,
+        "ocr_s": 3.0116
+      },
+      "con_prefilter": {
+        "n_blocks": 3,
+        "avg_conf": 0.579,
+        "ocr_s": 2.7423
+      },
+      "prefilter_s": 1.4146,
+      "delta_conf": -0.199,
+      "delta_blocks": 0,
+      "subetapas": {
+        "franjas": 0.0015,
+        "lineas_morf": 0.0029,
+        "lineas_inpaint": 1.4219,
+        "speckle_morf": 0.0037,
+        "speckle_inpaint": 0.0197,
+        "bilateral": 0.0028,
+        "gaussian": 0.0011,
+        "median": 0.002
+      }
+    }
+  }
+}

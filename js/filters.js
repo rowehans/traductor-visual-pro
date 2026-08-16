@@ -21,6 +21,10 @@ export const MARGIN_NOISE_PATTERNS = [
   /\b\d{1,4}\s+de\s+\d{1,4}\b/i,
   /\bp[aá]g(?:ina)?\.?\s?\d{1,4}\b/i,
   /\b(?:p[aá]g(?:ina)?|page)\s+\d+\s+(?:de|of)\s+\d+\b/i,
+  // Timestamps y metadatos de exportación: 20260713-11032519C, 458pm.
+  /\b\d{8,14}[A-Za-z0-9_\-]*\b/,
+  /\b\d{1,6}\s*[,.]?\s*\d{1,4}\s*p\.?\s*m\.?\b/i,
+  /\b\d{1,4}\s*p\.?\s*m\.?\b/i,
 ];
 
 /**

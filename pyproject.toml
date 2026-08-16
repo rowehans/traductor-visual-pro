@@ -12,35 +12,44 @@ module = [
     "argostranslate.*",
     "langdetect",
     "deep_translator",
-    "waitress",
     "cv2",
+    # Fusión multi-OCR (Ago 2026): módulos instalados sin stubs/py.typed
+    "ctranslate2",
+    "ctranslate2.*",
+    "transformers",
+    "onnxruntime",
+    "rapidocr_onnxruntime",
+    "fitz",
+    "ultralytics",
 ]
 ignore_missing_imports = true
 
-# Flask and extensions
+# flask_limiter - no trae stubs (sin py.typed); se instala en el CI de
+# GitHub (lint-test/server-test) porque ratelimit.py y routes/api.py lo
+# importan a nivel de módulo, pero mypy no puede resolver sus tipos.
 [[tool.mypy.overrides]]
 module = [
-    "flask.*",
     "flask_limiter.*",
-    "flask_sqlalchemy.*",
 ]
 ignore_missing_imports = true
 
-# Numpy - be lenient with ndarray types
+# waitress - sin stubs (import-untyped); servidor de producción (Fase 2.1).
+# Instalado en requirements.txt y en los jobs de CI que arrancan server.py.
+# Solo el módulo raíz se importa (`from waitress import serve` en server.py
+# y main.py); "waitress.*" quedó sin uso y mypy lo marcaba como unused.
 [[tool.mypy.overrides]]
-module = "numpy.*"
+module = [
+    "waitress",
+]
 ignore_missing_imports = true
 
-# PyTorch
+# PyTorch - NO instalado en el CI de GitHub (lint-test no instala torch);
+# la sección es necesaria aunque torch tenga py.typed en el venv local.
 [[tool.mypy.overrides]]
 module = "torch.*"
 ignore_missing_imports = true
 
-# Allow monkey-patching on session.request
+# Allow monkey-patching on session.request (translator.py:123)
 [[tool.mypy.overrides]]
 module = "translator"
-disable_error_code = ["method-assign"]
-
-[[tool.mypy.overrides]]
-module = "server"
 disable_error_code = ["method-assign"]
