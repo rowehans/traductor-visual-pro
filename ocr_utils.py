@@ -293,7 +293,12 @@ def _get_yolo_engine() -> Any:
                     return None
             # Import DINÁMICO: ultralytics no se importa al cargar ocr_utils
             # (el .exe no lo necesita; si falta, el tier simplemente no aporta).
-            from ultralytics import YOLO  # type: ignore[attr-defined]
+            # `type: ignore` SIN código: el error difiere según el entorno — local
+            # con ultralytics instalado da attr-defined (el módulo no re-exporta
+            # YOLO explícitamente) y el CI sin él da import-not-found. Cualquier
+            # código específico quedaría unused en el otro entorno; el ignore
+            # genérico suprime ambos y siempre tiene algo que suprimir.
+            from ultralytics import YOLO  # type: ignore
             engine = YOLO(YOLO_MODEL_PATH if os.path.exists(YOLO_MODEL_PATH)
                           else "yolov8n.pt")
             _yolo_engine = engine

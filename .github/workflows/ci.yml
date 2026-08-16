@@ -58,14 +58,16 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --quiet \
-            pytest pytest-mock \
+            pytest pytest-mock pytest-cov \
             flask opencv-python-headless numpy pillow \
             langdetect deep-translator \
             flask-sqlalchemy \
             flask-limiter \
             requests \
             waitress \
-            mypy types-requests types-psutil lxml
+            pyspellchecker \
+            bandit \
+            mypy==2.3.0 types-requests types-psutil lxml
 
       - name: Run CI (syntax + mypy + tests, sin servidor)
         run: |
@@ -169,13 +171,15 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --quiet \
-            pytest pytest-mock \
+            pytest pytest-mock pytest-cov \
             flask opencv-python-headless numpy pillow \
             langdetect deep-translator \
             flask-sqlalchemy \
             flask-limiter \
             requests \
-            waitress
+            waitress \
+            pyspellchecker \
+            bandit
 
       # mypy ya se corrió en lint-test (job anterior). Omitirlo aquí evita
       # duplicar el trabajo; este job verifica servidor + endpoints reales.

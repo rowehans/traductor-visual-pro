@@ -20,7 +20,6 @@ module = [
     "onnxruntime",
     "rapidocr_onnxruntime",
     "fitz",
-    "ultralytics",
 ]
 ignore_missing_imports = true
 
