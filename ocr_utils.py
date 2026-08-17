@@ -1111,6 +1111,13 @@ _OCR_FOREIGN_SPELLCHECKERS: dict[str, Any] = {}
 # entrada entre bloques largos de la misma página.
 _SPELL_LANG_MAX_CHARS: Final[int] = 600
 
+# Cache de idioma por muestra del spellcheck (2026-08-16): los bloques de
+# una misma página comparten idioma y a menudo muestras idénticas (mismo
+# prefijo de 600 chars). La detección robusta ya cachea por texto exacto;
+# este cache colapsa además las muestras repetidas entre bloques/páginas.
+# Plain dict acotado (más simple y testeable que lru_cache importado).
+_SPELL_LANG_CACHE: dict[str, str] = {}
+
 # Umbral de longitud para usar la corrección barata propia en vez de
 # sp.correction(). pyspellchecker es rápido en palabras cortas (known + edición
 # 1 generan pocos strings) pero explota en largas: la expansión de distancia 2
@@ -1550,7 +1557,22 @@ def _ocr_spellcheck(text: str) -> str:
         from translator import _detect_language_robust
         sample = text if len(text) <= _SPELL_LANG_MAX_CHARS \
             else text[:_SPELL_LANG_MAX_CHARS]
-        if _detect_language_robust(sample) != "es":
+        # Cache de idioma por muestra (2026-08-16): el merge final llama a
+        # _ocr_spellcheck por bloque y la detección de idioma es el costo
+        # dominante del spellcheck (langdetect ~4.5 ms/llamada; el prefijo de
+        # 600 chars ya acota los textos largos). Los bloques de una misma
+        # página comparten idioma y muchas veces muestras idénticas; el cache
+        # por muestra colapsa esas llamadas. La clave es la MUESTRA (no el
+        # texto completo): dos bloques con el mismo inicio comparten entrada,
+        # y el resultado solo depende del contenido de la muestra, así que es
+        # determinista. Bounded (1024) para que el merge de capítulos largos
+        # no crezca sin límite.
+        lang = _SPELL_LANG_CACHE.get(sample)
+        if lang is None:
+            lang = _detect_language_robust(sample)
+            if len(_SPELL_LANG_CACHE) < 1024:
+                _SPELL_LANG_CACHE[sample] = lang
+        if lang != "es":
             return text
     except Exception as exc:
         # Ante un fallo del detector, conservar el OCR es mas seguro que
@@ -3122,13 +3144,26 @@ def _page_signature(img_bgr: _Img, grid: int = 8, cell_dark_ratio: float = 0.05)
             if cell.size and float(cell.mean()) > cell_dark_ratio:
                 bits |= 1 << (gy * grid + gx)
     # El layout por sí solo colisiona entre páginas con la misma composición.
-    # Añadir un digest corto del thumbnail conserva la velocidad (~32x32 bytes)
+    # Añadir un digest corto del thumbnail conserva la velocidad (~9x8 bytes)
     # y evita reutilizar decisiones OCR para imágenes con contenido distinto.
-    thumb = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA)
-    content_digest = hashlib.blake2b(
-        f"{sh}x{sw}".encode("ascii") + thumb.tobytes(),
-        digest_size=8,
-    ).hexdigest()
+    #
+    # Firma estable (2026-08-16, plan §10.2 item 1): el digest EXACTO del
+    # thumbnail de 32x32 (blake2b de los bytes crudos) era demasiado sensible
+    # — cualquier variación mínima de píxeles entre corridas (JPEG,
+    # antialiasing, prefilter) cambiaba el digest y la firma, rompiendo el
+    # cache de decisiones entre corridas (la pág 13 del cap. 43 registró dos
+    # firmas distintas). Se sustituye por un dHash (difference hash) de 9x8:
+    # compara la luminancia de píxeles adyacentes → 64 bits robustos a ruido
+    # leve. La MISMA página renderizada dos veces → mismo dHash; dos páginas
+    # distintas del mismo documento → dHash distinto (el arte difiere).
+    thumb = cv2.resize(gray, (9, 8), interpolation=cv2.INTER_AREA)
+    dhash = 0
+    for y in range(8):
+        row = thumb[y]
+        for x in range(8):
+            if row[x] > row[x + 1]:
+                dhash |= 1 << (y * 8 + x)
+    content_digest = f"{dhash:016x}"
     return f"{dark_ratio:.1f}:{bits:0{grid * grid}x}:{content_digest}"
 
 

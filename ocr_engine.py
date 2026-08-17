@@ -54,6 +54,8 @@ from config import (
     UOCR_NEG_WEAK_MAX_BLOCKS,
     UOCR_NEG_WEAK_MIN_CONF,
     UOCR_NEG_MAX_REINTENTOS,
+    UOCR_NEG_CERO_MIN,
+    UOCR_NEG_CERO_TTL_S,
 )
 
 
@@ -99,7 +101,11 @@ _DECISION_CACHE_PATH = ROOT / "cache" / "ocr_decision_cache.json"
 # 4 campos) se descartan en la carga.
 # v6: _page_signature incorpora un digest del contenido del thumbnail; las
 # entradas v5 basadas solo en layout deben invalidarse para evitar colisiones.
-_DECISION_CACHE_VERSION = 6
+# v7: _page_signature cambia el digest exacto por un dHash (robusto a ruido
+# leve — plan §10.2 item 1) y el archivo añade la sección "ceros" (ledger de
+# ceros confirmados del VLM con TTL largo). Los archivos v6 (digest exacto +
+# sin ledger) se descartan en la carga.
+_DECISION_CACHE_VERSION = 7
 _DISK_LOCK = threading.Lock()
 
 
@@ -127,6 +133,18 @@ class OCRManager:
     # Sesión 134: el 4º campo es el contador de re-disparos permitidos por la
     # salvaguarda de detección débil (caso p5) — ver config.py.
     _uocr_neg_cache: dict[str, tuple[float, int, float, int]] = {}
+    # ── Ledger de CEROS CONFIRMADOS (2026-08-16, plan §10.2 item 1) ──
+    # firma → (ts, count, n_blocks, avg_conf): cuántas veces una firma ha
+    # sido un cero del VLM en ventanas TTL distintas. Cuando count >=
+    # UOCR_NEG_CERO_MIN y la última confirmación está dentro de
+    # UOCR_NEG_CERO_TTL_S (7 días), _is_decision_negativa_vigente suprime
+    # el VLM incluso sin entrada vigente en _uocr_neg_cache (el TTL corto
+    # de 30 min expiró entre corridas). El 3º/4º campo guardan los stats de
+    # la ÚLTIMA confirmación para la salvaguarda mucho_mas_debil (si una
+    # gemela se detecta MUCHO más débil, el VLM vuelve a correr). Se
+    # persiste en la sección "ceros" del archivo de decisiones; un recovery
+    # (_limpiar_decision_negativa) borra la entrada — la señal se refuta.
+    _uocr_neg_ceros: dict[str, tuple[float, int, int, float]] = {}
     _uocr_cache_lock: threading.Lock = threading.Lock()
 
     # ── Cache de decisión del TRIGGER por firma (sesión 116) ──
@@ -1244,6 +1262,27 @@ class OCRManager:
         vigente = False
         mutado = False
         with self._uocr_cache_lock:
+            # 0) Cero confirmado (plan §10.2 item 1): la firma falló >= MIN
+            # veces en ventanas TTL distintas dentro del TTL largo (7 días) →
+            # suprimir el VLM AUNQUE el TTL corto de 30 min ya expiró (el
+            # caso de las págs 13/17 del cap. 43: 0 recuperaciones en todas
+            # las corridas, 31-68 s/llamada). Salvaguarda mucho_mas_debil
+            # contra los stats de la ÚLTIMA confirmación: si la página actual
+            # se detecta MUCHO más débil, el VLM vuelve a correr (el diálogo
+            # artístico que el híbrido ahora pierde es justo el que el VLM
+            # podría leer). El gate es FIRME frente a la salvaguarda débil
+            # (sesión 134): un cero confirmado no re-dispara más.
+            cero = self._uocr_neg_ceros.get(firma)
+            if cero is not None:
+                ts_c, count_c, n_c_c, conf_c_c = cero
+                if (count_c >= UOCR_NEG_CERO_MIN
+                        and (time.time() - ts_c) < UOCR_NEG_CERO_TTL_S
+                        and not (n_blocks < n_c_c
+                                 and avg_conf < conf_c_c * 0.8)):
+                    print(f"[process-page] VLM: cero confirmado por firma "
+                          f"{firma[:16]}… ({count_c} fallos) — saltando "
+                          f"inferencia")
+                    return True
             entrada = self._uocr_neg_cache.get(firma)
             if entrada is None:
                 return False
@@ -1296,6 +1335,25 @@ class OCRManager:
         re-registra→re-dispara infinito)."""
         now = time.time()
         with self._uocr_cache_lock:
+            # Ledger de ceros confirmados (plan §10.2 item 1): cada registro
+            # de negativa (el VLM corrió y no recuperó nada) incrementa el
+            # contador de la firma — la señal de "este layout no aporta"
+            # que, al alcanzar UOCR_NEG_CERO_MIN en ventanas TTL distintas,
+            # extiende la supresión con TTL largo (7 días) vía
+            # _is_decision_negativa_vigente. Los stats se actualizan a los de
+            # ESTA confirmación (el par más reciente para la salvaguarda
+            # mucho_mas_debil). Podado por TTL largo + LRU (mismo patrón que
+            # el cache de negativas) para no crecer sin límite.
+            prev_cero = self._uocr_neg_ceros.get(firma)
+            count_cero = (prev_cero[1] + 1) if prev_cero else 1
+            self._uocr_neg_ceros[firma] = (now, count_cero, n_blocks, avg_conf)
+            if len(self._uocr_neg_ceros) > UOCR_CACHE_MAX_ENTRIES:
+                while len(self._uocr_neg_ceros) > UOCR_CACHE_MAX_ENTRIES:
+                    oldest = min(
+                        self._uocr_neg_ceros,
+                        key=lambda k: self._uocr_neg_ceros[k][0],
+                    )
+                    del self._uocr_neg_ceros[oldest]
             prev = self._uocr_neg_cache.get(firma)
             re_disparos = prev[3] if prev else 0
             self._uocr_neg_cache[firma] = (now, n_blocks, avg_conf, re_disparos)
@@ -1328,7 +1386,13 @@ class OCRManager:
             existe = firma in self._uocr_neg_cache
             if existe:
                 del self._uocr_neg_cache[firma]
-        if existe and UOCR_NEG_CACHE_PERSIST:
+            # Sesión 2026-08-16 (plan §10.2 item 1): la recuperación también
+            # refuta el CERO CONFIRMADO — si el VLM SÍ recuperó algo en esta
+            # página, el ledger no debe seguir suprimiendo a las gemelas.
+            en_ceros = firma in self._uocr_neg_ceros
+            if en_ceros:
+                del self._uocr_neg_ceros[firma]
+        if (existe or en_ceros) and UOCR_NEG_CACHE_PERSIST:
             self._persistir_cache()
 
     @classmethod
@@ -1414,6 +1478,26 @@ class OCRManager:
                                 key=lambda k: cls._uocr_neg_cache[k][0],
                             )[:len(cls._uocr_neg_cache) - UOCR_CACHE_MAX_ENTRIES]:
                                 del cls._uocr_neg_cache[firma]
+                        # Ledger de ceros confirmados (plan §10.2 item 1):
+                        # [ts, count, n_blocks, avg_conf], podado por el TTL
+                        # LARGO (7 días) + cap LRU. Se carga solo con el flag
+                        # de persistencia activo (misma política que "neg").
+                        ceros = data.get("ceros", {}) or {}
+                        for firma, entry in ceros.items():
+                            try:
+                                ts, count, n_blocks, conf = entry
+                                if ahora - float(ts) < UOCR_NEG_CERO_TTL_S:
+                                    cls._uocr_neg_ceros[firma] = (
+                                        float(ts), int(count),
+                                        int(n_blocks), float(conf))
+                            except (TypeError, ValueError):
+                                continue
+                        if len(cls._uocr_neg_ceros) > UOCR_CACHE_MAX_ENTRIES:
+                            for firma in sorted(
+                                cls._uocr_neg_ceros,
+                                key=lambda k: cls._uocr_neg_ceros[k][0],
+                            )[:len(cls._uocr_neg_ceros) - UOCR_CACHE_MAX_ENTRIES]:
+                                del cls._uocr_neg_ceros[firma]
             except Exception as e:
                 print(f"[ocr_engine] cache de decisiones corrupto, "
                       f"recreando desde cero: {e}")
@@ -1438,6 +1522,10 @@ class OCRManager:
         if UOCR_NEG_CACHE_PERSIST:
             with cls._uocr_cache_lock:
                 data["neg"] = dict(cls._uocr_neg_cache)
+                # Plan §10.2 item 1: el ledger de ceros confirmados viaja con
+                # la persistencia — 2 corridas en procesos separados acumulan
+                # los fallos de la misma página (firma dHash estable).
+                data["ceros"] = dict(cls._uocr_neg_ceros)
         path = _DECISION_CACHE_PATH
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1456,6 +1544,9 @@ class OCRManager:
         arranca sin decisiones heredadas de capítulos anteriores."""
         with cls._uocr_cache_lock:
             cls._uocr_neg_cache.clear()
+            # Plan §10.2 item 1: el ledger de ceros confirmados también se
+            # limpia — una sesión nueva arranca sin supresiones heredadas.
+            cls._uocr_neg_ceros.clear()
         with cls._trigger_dec_lock:
             cls._trigger_dec_cache.clear()
         cls._cache_cargado = False

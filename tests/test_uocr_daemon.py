@@ -498,8 +498,10 @@ class TestRecoverArtDialogue:
                "text": ""}
 
         def fake_infer_once(path: str, out_dir: str, max_length: int,
-                            crop_mode: bool = True,
-                            image_size: int = 640) -> tuple[str, list[dict[str, object]], float]:
+                            crop_mode: bool = True, image_size: int = 640,
+                            prompt: str | None = None,
+                            ngram_size: int | None = None,
+                            ngram_window: int | None = None) -> tuple[str, list[dict[str, object]], float]:
             return ("", [{"type": "text", "x": 320, "y": 320, "w": 100,
                            "h": 40, "text": "ARTE"}], 0.1)
 
@@ -544,13 +546,17 @@ class TestRunOcr:
         monkeypatch.setattr(ud, "ROOT", str(tmp_path))
 
         def fake_infer_once(image_path: str, out_dir: str, max_length: int,
-                            crop_mode: bool = True) -> tuple[str, list[dict[str, object]], float]:
+                            crop_mode: bool = True, image_size: int = 640,
+                            prompt: str | None = None,
+                            ngram_size: int | None = None,
+                            ngram_window: int | None = None) -> tuple[str, list[dict[str, object]], float]:
             return ("Hola", [{"type": "text", "x": 10, "y": 20, "w": 100,
                                "h": 30, "text": "Hola"}], 0.1)
 
         monkeypatch.setattr(ud, "_infer_once", fake_infer_once)
         monkeypatch.setattr(ud, "_recover_art_dialogue",
-                            lambda img, blocks, ml: (blocks, 0))
+                            lambda img, blocks, ml, prompt=None,
+                            ngram_size=None, ngram_window=None: (blocks, 0))
         img = tmp_path / "p.png"
         _fake_png(str(img), 640, 640)
 
@@ -608,6 +614,88 @@ class TestHandler:
         h.do_POST()
         assert h._sent_code == 400
 
+    def test_do_post_prompt_no_string_400(self) -> None:
+        """Plan §10.2 item 2: prompt no-string → 400 (no silenciar el error
+        de configuración del A/B)."""
+        ud._status.update(state="ready")
+        h = _make_handler("/ocr", body=b'{"image_path": "a.png", '
+                                         b'"max_length": 1000, "prompt": 5}')
+        h.do_POST()
+        assert h._sent_code == 400
+
+    def test_do_post_ngram_invalido_400(self) -> None:
+        """Plan §10.2 item 2: ngram no-entero o fuera de 1-64 → 400."""
+        ud._status.update(state="ready")
+        for body in (b'{"image_path": "a.png", "max_length": 1000, '
+                     b'"ngram": "x"}',
+                     b'{"image_path": "a.png", "max_length": 1000, '
+                     b'"ngram": 0}',
+                     b'{"image_path": "a.png", "max_length": 1000, '
+                     b'"ngram": 99}'):
+            h = _make_handler("/ocr", body=body)
+            h.do_POST()
+            assert h._sent_code == 400
+
+    def test_do_post_prompt_y_ngram_se_reenvian(self,
+                                               monkeypatch: pytest.MonkeyPatch) -> None:
+        """Plan §10.2 item 2: prompt/ngram válidos llegan a _run_ocr (el A/B
+        los varía por request sin reiniciar el daemon)."""
+        ud._status.update(state="ready")
+        monkeypatch.setattr(ud, "_is_allowed_input_path", lambda v: True)
+        capturado: dict[str, object] = {}
+
+        def _spy(p: str, ml: int, prompt: str | None = None,
+                 ngram_size: int | None = None,
+                 image_size: int | None = None) -> dict[str, object]:
+            capturado["prompt"] = prompt
+            capturado["ngram"] = ngram_size
+            capturado["image_size"] = image_size
+            return {"text": "Hola", "blocks": []}
+
+        monkeypatch.setattr(ud, "_run_ocr", _spy)
+        h = _make_handler("/ocr", body=b'{"image_path": "x.png", '
+                                         b'"max_length": 1000, "prompt": '
+                                         b'"<image>extrae", "ngram": 15}')
+        h.do_POST()
+        assert h._sent_code == 200
+        assert capturado["prompt"] == "<image>extrae"
+        assert capturado["ngram"] == 15
+        assert capturado["image_size"] is None  # no enviado → default
+
+    def test_do_post_image_size_invalido_400(self) -> None:
+        """Plan §10.2 item 5: image_size no-entero o fuera de 256-1024 → 400."""
+        ud._status.update(state="ready")
+        for body in (b'{"image_path": "a.png", "max_length": 1000, '
+                     b'"image_size": "x"}',
+                     b'{"image_path": "a.png", "max_length": 1000, '
+                     b'"image_size": 100}',
+                     b'{"image_path": "a.png", "max_length": 1000, '
+                     b'"image_size": 2048}'):
+            h = _make_handler("/ocr", body=body)
+            h.do_POST()
+            assert h._sent_code == 400
+
+    def test_do_post_image_size_se_reenvia(self,
+                                          monkeypatch: pytest.MonkeyPatch) -> None:
+        """Plan §10.2 item 5: image_size válido llega a _run_ocr."""
+        ud._status.update(state="ready")
+        monkeypatch.setattr(ud, "_is_allowed_input_path", lambda v: True)
+        capturado: dict[str, object] = {}
+
+        def _spy2(p: str, ml: int, prompt: str | None = None,
+                  ngram_size: int | None = None,
+                  image_size: int | None = None) -> dict[str, object]:
+            capturado["image_size"] = image_size
+            return {"text": "Hola", "blocks": []}
+
+        monkeypatch.setattr(ud, "_run_ocr", _spy2)
+        h = _make_handler("/ocr", body=b'{"image_path": "x.png", '
+                                         b'"max_length": 1000, '
+                                         b'"image_size": 512}')
+        h.do_POST()
+        assert h._sent_code == 200
+        assert capturado["image_size"] == 512
+
     def test_do_post_image_path_no_permitido_400(
             self, monkeypatch: pytest.MonkeyPatch) -> None:
         ud._status.update(state="ready")
@@ -629,7 +717,8 @@ class TestHandler:
         ud._status.update(state="ready")
         monkeypatch.setattr(ud, "_is_allowed_input_path", lambda v: True)
         monkeypatch.setattr(ud, "_run_ocr",
-                            lambda p, ml: {"text": "Hola", "blocks": []})
+                            lambda p, ml, prompt=None, ngram_size=None,
+                            image_size=None: {"text": "Hola", "blocks": []})
         h = _make_handler("/ocr",
                           body=b'{"image_path": "x.png", "max_length": 1000}')
         h.do_POST()
@@ -641,7 +730,8 @@ class TestHandler:
         ud._status.update(state="ready")
         monkeypatch.setattr(ud, "_is_allowed_input_path", lambda v: True)
         monkeypatch.setattr(ud, "_run_ocr_batch",
-                            lambda imgs, ml: {"pages": [], "n_images": 1})
+                            lambda imgs, ml, prompt=None, ngram_size=None,
+                            image_size=None: {"pages": [], "n_images": 1})
         h = _make_handler("/ocr-batch",
                           body=b'{"images": ["a.png"], "max_length": 1000}')
         h.do_POST()

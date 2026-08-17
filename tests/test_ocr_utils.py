@@ -369,8 +369,19 @@ class TestSpellcheckLangPrefix:
 
     Los bloques fusionados del merge final pueden superar miles de caracteres
     y langdetect escala con la longitud; el caller pasa _SPELL_LANG_MAX_CHARS
-    como máximo, sin cambiar la decisión de idioma en el corpus.
+    como máximo, sin cambiar la decisión de idioma en el corpus. Además, el
+    resultado se cachea por muestra (_SPELL_LANG_CACHE) para que los bloques
+    de una misma página que comparten prefijo no re-ejecuten langdetect.
     """
+
+    @pytest.fixture(autouse=True)
+    def _lang_cache_limpio(self):
+        # El cache por muestra es module-level: cada test arranca limpio para
+        # que las aserciones de llamadas al detector sean deterministas.
+        from ocr_utils import _SPELL_LANG_CACHE
+        _SPELL_LANG_CACHE.clear()
+        yield
+        _SPELL_LANG_CACHE.clear()
 
     def test_long_text_detects_on_trimmed_prefix(self, mocker):
         from ocr_utils import _SPELL_LANG_MAX_CHARS, _ocr_spellcheck
@@ -397,6 +408,52 @@ class TestSpellcheckLangPrefix:
         _ocr_spellcheck(short_text)
         detect.assert_called_once()
         assert detect.call_args.args[0] == short_text
+
+    def test_cache_por_muestra_reutiliza_el_detector(self, mocker):
+        """Dos bloques con la misma muestra comparten la entrada de cache: el
+        detector robusto se llama UNA vez y el segundo bloque usa el cache."""
+        from ocr_utils import _SPELL_LANG_CACHE, _ocr_spellcheck
+
+        detect = mocker.patch("translator._detect_language_robust",
+                              return_value="es")
+        texto = "el detective investigo el suceso"
+
+        _ocr_spellcheck(texto)   # miss -> detecta y cachea
+        _ocr_spellcheck(texto)   # hit -> sin llamada al detector
+        detect.assert_called_once()
+        assert _SPELL_LANG_CACHE.get(texto) == "es"
+
+    def test_cache_no_escribe_cuando_ya_lleno(self, mocker):
+        """El cache es bounded: al alcanzar 1024 entradas deja de crecer (el
+        detector sigue llamándose en cada miss, comportamiento correcto)."""
+        from ocr_utils import _SPELL_LANG_CACHE, _ocr_spellcheck
+
+        detect = mocker.patch("translator._detect_language_robust",
+                              return_value="es")
+        # Llenar hasta el bound exacto (1024) y verificar que un miss
+        # posterior NO escribe: el detector resuelve el miss y el cache
+        # no crece por encima del bound.
+        for i in range(1024):
+            _SPELL_LANG_CACHE[f"texto de prueba numero {i}"] = "es"
+
+        _ocr_spellcheck("otro texto para probar")
+        assert len(_SPELL_LANG_CACHE) == 1024
+        detect.assert_called_once()  # el miss se resolvió vía detector
+
+    def test_cache_no_contamina_idiomas_distintos(self, mocker):
+        """Un bloque no-es cacheado hace que los bloques con la MISMA muestra
+        no pasen por el diccionario español (misma decisión que sin cache)."""
+        from ocr_utils import _SPELL_LANG_CACHE, _ocr_spellcheck
+
+        detect = mocker.patch("translator._detect_language_robust",
+                              return_value="en")
+        texto = "the house"
+
+        assert _ocr_spellcheck(texto) == texto
+        assert _SPELL_LANG_CACHE.get(texto) == "en"
+        # Segundo bloque idéntico: cache hit, sin llamada extra al detector
+        assert _ocr_spellcheck(texto) == texto
+        detect.assert_called_once()
 
     def test_prefix_does_not_change_language_decision(self):
         # Propiedad: el prefijo recortado clasifica igual que el texto
@@ -590,6 +647,39 @@ class TestPageSignature:
         assert second_signature
         assert first_signature != second_signature
         assert len(first_signature.split(":")) == 3
+
+    def test_signature_estable_bajo_ruido_leve(self):
+        """Firma estable (plan §10.2 item 1): el digest del contenido es un
+        dHash robusto a variación mínima de píxeles — la MISMA página
+        renderizada dos veces (JPEG/antialiasing distinto) debe compartir
+        firma para que el cache de decisiones sobreviva entre corridas."""
+        from ocr_utils import _page_signature
+
+        base = np.full((160, 120, 3), 230, dtype=np.uint8)
+        # Arte oscuro (células 40-90 / 60-100 de la cuadrícula 8x8)
+        base[40:90, 60:100] = 60
+        base[90:120, 10:50] = 80
+        # Texto claro (marca pocas celdas oscuras):
+        base[30:34, 30:70] = 150
+
+        rng = np.random.default_rng(42)
+        ruido = rng.integers(-6, 7, size=base.shape, dtype=np.int16)
+        segunda = np.clip(base.astype(np.int16) + ruido, 0, 255).astype(np.uint8)
+
+        assert _page_signature(base) == _page_signature(segunda)
+
+    def test_signature_distinta_para_paginas_diferentes(self):
+        """Dos páginas del MISMO documento con contenido distinto → firma
+        distinta (el dHash discrimina arte, no solo layout)."""
+        from ocr_utils import _page_signature
+
+        base = np.full((160, 120, 3), 230, dtype=np.uint8)
+        base[40:90, 60:100] = 60   # panel oscuro arriba-derecha
+        otra = base.copy()
+        otra[40:90, 60:100] = 230  # sin panel (arte en otra zona)
+        otra[100:140, 20:70] = 50  # panel oscuro abajo-izquierda
+
+        assert _page_signature(base) != _page_signature(otra)
 
 
 # ═══════════════════════════════════════════════════════════════

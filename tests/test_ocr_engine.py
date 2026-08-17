@@ -2325,3 +2325,227 @@ class TestPersistenciaDisco:
         monkeypatch.setattr("ocr_engine.UOCR_NEG_CACHE_PERSIST", False)
         mgr2 = self._recargar_desde_disco()
         assert not mgr2._is_decision_negativa_vigente("firma_neg_apagada", 2, 0.4)
+
+    def test_carga_descarta_entradas_malformadas_y_aplica_cap_lru(self):
+        """Cobertura de las ramas defensivas de la carga: entradas con forma
+        inválida (TypeError/ValueError) se ignoran una a una sin tumbar la
+        carga; y cuando el archivo trae más entradas que el máximo, el cap
+        LRU por timestamp poda las más viejas (trigger, neg y ceros)."""
+        OCRManager.clear_decision_cache()
+        path = ocr_engine._DECISION_CACHE_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ahora = time.time()
+        # 300 entradas de trigger (cap 256): las 44 más viejas se podan.
+        trigger = {f"t{i}": [ahora - i, 2, 0.5, True, 0] for i in range(300)}
+        # Entrada malformada (tupla corta) → se descarta sin crashear.
+        trigger["t_mal"] = [ahora, 2]  # unpack a 5 falla → TypeError
+        trigger["t_mal2"] = ["no-es-ts", 2, 0.5, True, 0]  # ValueError
+        # Igual para negativas (cap 256):
+        neg = {f"n{i}": [ahora - i, 5, 0.6, 0] for i in range(300)}
+        neg["n_mal"] = [ahora, 5]  # unpack a 4 falla
+        # Y para el ledger de ceros (misma cap):
+        ceros = {f"c{i}": [ahora - i, 2, 3, 0.1] for i in range(300)}
+        ceros["c_mal"] = [ahora, 2, 3]  # unpack a 4 falla
+        path.write_text(json.dumps({
+            "version": ocr_engine._DECISION_CACHE_VERSION,
+            "trigger": trigger,
+            "neg": neg,
+            "ceros": ceros,
+        }), encoding="utf-8")
+
+        mgr = self._recargar_desde_disco()
+        with ocr_engine.OCRManager._trigger_dec_lock:
+            assert len(ocr_engine.OCRManager._trigger_dec_cache) <= 256
+        with ocr_engine.OCRManager._uocr_cache_lock:
+            assert len(ocr_engine.OCRManager._uocr_neg_cache) <= 256
+            assert len(ocr_engine.OCRManager._uocr_neg_ceros) <= 256
+        # Las más frescas sobreviven al cap:
+        assert mgr._trigger_cache_get("t0") is not None
+        assert mgr._is_decision_negativa_vigente("n0", 5, 0.6)
+        with ocr_engine.OCRManager._uocr_cache_lock:
+            assert "c0" in ocr_engine.OCRManager._uocr_neg_ceros
+        # Las malformadas no entraron:
+        assert mgr._trigger_cache_get("t_mal") is None
+        assert mgr._trigger_cache_get("t_mal2") is None
+        assert not mgr._is_decision_negativa_vigente("n_mal", 5, 0.6)
+
+    def test_persistencia_y_clear_toleran_errores_de_io(self, monkeypatch):
+        """Las ramas OSError de _persistir_cache y clear_decision_cache
+        degradan con aviso sin crashear (disco lleno, permisos, antivirus)."""
+        import ocr_engine as oe
+
+        def _boom_os_replace(src, dst):
+            raise OSError("disco lleno (simulado)")
+
+        OCRManager.clear_decision_cache()
+        mgr = OCRManager()
+        monkeypatch.setattr(oe.os, "replace", _boom_os_replace)
+        # El put intenta persistir → el OSError se captura y avisa:
+        mgr._trigger_cache_put("firma_io", 2, 0.31, True)
+        assert mgr._trigger_cache_get("firma_io") == (2, 0.31, True)  # en memoria sigue
+
+        # clear con unlink que falla → no lanza:
+        from pathlib import Path
+
+        def _boom_unlink(self, *args, **kw):
+            raise OSError("permiso denegado (simulado)")
+
+        monkeypatch.setattr(Path, "unlink", _boom_unlink)
+        OCRManager.clear_decision_cache()  # no debe lanzar
+
+    def test_carga_corrupta_con_version_fresca_se_descarta(self):
+        """Versión desconocida con JSON válido: se descarta todo el archivo y
+        se elimina (clean start), cubriendo la rama de version mismatch."""
+        OCRManager.clear_decision_cache()
+        path = ocr_engine._DECISION_CACHE_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "version": 999,
+            "trigger": {"fresca": [time.time(), 3, 0.6, True, 0]},
+            "ceros": {"p13": [time.time(), 2, 3, 0.1]},
+        }), encoding="utf-8")
+
+        mgr = self._recargar_desde_disco()
+        assert mgr._trigger_cache_get("fresca") is None
+        with ocr_engine.OCRManager._uocr_cache_lock:
+            assert ocr_engine.OCRManager._uocr_neg_ceros == {}
+        assert not path.exists()
+
+
+# ═══════════════════════════════════════════════════════════════
+# Cero confirmado del VLM (plan §10.2 item 1, 2026-08-16)
+# ═══════════════════════════════════════════════════════════════
+
+class TestCeroConfirmado:
+    """Gate persistente para páginas con recuperación VLM SIEMPRE 0 (pág
+    13/17 del cap. 43). El cache §8.4.1 suprime dentro del TTL corto (30
+    min); el ledger de ceros confirmados (_uocr_neg_ceros) extiende la
+    supresión a TTL largo (7 días) cuando la firma falló >= UOCR_NEG_CERO_MIN
+    veces en ventanas TTL distintas — la firma estable (dHash) hace que la
+    MISMA página matchee entre corridas."""
+
+    def test_un_fallo_no_confirma_cero(self):
+        """Un solo fallo no congela: sin entrada vigente (TTL corto expirado),
+        la página vuelve a disparar el VLM hasta confirmarse."""
+        OCRManager.clear_decision_cache()
+        mgr = OCRManager()
+        mgr._registrar_decision_negativa("p13", 3, 0.0)
+        # Sin entrada activa (TTL corto expirado/evictado) → no vigente:
+        with OCRManager._uocr_cache_lock:
+            OCRManager._uocr_neg_cache.clear()
+        assert not mgr._is_decision_negativa_vigente("p13", 3, 0.0)
+
+    def test_dos_fallos_confirman_cero(self):
+        """Dos fallos en ventanas TTL distintas (la entrada corta se limpió
+        entre medias, como entre corridas) → cero confirmado: sin entrada
+        activa, la consulta suprime el VLM."""
+        OCRManager.clear_decision_cache()
+        mgr = OCRManager()
+        mgr._registrar_decision_negativa("p13", 6, 0.59)
+        with OCRManager._uocr_cache_lock:
+            OCRManager._uocr_neg_cache.clear()  # expira el TTL corto
+        mgr._registrar_decision_negativa("p13", 3, 0.0)
+        with OCRManager._uocr_cache_lock:
+            OCRManager._uocr_neg_cache.clear()
+        assert mgr._is_decision_negativa_vigente("p13", 3, 0.0)
+        # El ledger acumuló las dos confirmaciones:
+        with OCRManager._uocr_cache_lock:
+            assert OCRManager._uocr_neg_ceros["p13"][1] == 2
+
+    def test_cero_confirmado_salvaguarda_mucho_mas_debil(self):
+        """Un cero confirmado NO suprime si la página actual se detecta MUCHO
+        más débil que la última confirmación — el diálogo artístico que el
+        híbrido ahora pierde es justo el que el VLM podría leer."""
+        OCRManager.clear_decision_cache()
+        mgr = OCRManager()
+        mgr._registrar_decision_negativa("p13", 3, 0.0)
+        with OCRManager._uocr_cache_lock:
+            OCRManager._uocr_neg_cache.clear()
+        # La ÚLTIMA confirmación (6/0.59) es la que fija los stats del ledger:
+        mgr._registrar_decision_negativa("p13", 6, 0.59)
+        with OCRManager._uocr_cache_lock:
+            OCRManager._uocr_neg_cache.clear()
+        # Detección actual MUCHO más débil que la última (6/0.59):
+        # 2 < 6 Y 0.30 < 0.59*0.8=0.472 → la salvaguarda libera → VLM corre.
+        assert not mgr._is_decision_negativa_vigente("p13", 2, 0.30)
+        # Detección comparable → suprime:
+        assert mgr._is_decision_negativa_vigente("p13", 6, 0.59)
+
+    def test_cero_confirmado_no_aplica_con_ttl_largo_expirado(self):
+        """Pasado el TTL largo (7 días), el cero confirmado deja de suprimir
+        — el VLM vuelve a tener su oportunidad."""
+        from ocr_engine import UOCR_NEG_CERO_TTL_S
+        OCRManager.clear_decision_cache()
+        mgr = OCRManager()
+        mgr._registrar_decision_negativa("p13", 6, 0.59)
+        with OCRManager._uocr_cache_lock:
+            OCRManager._uocr_neg_cache.clear()
+        mgr._registrar_decision_negativa("p13", 3, 0.0)
+        with OCRManager._uocr_cache_lock:
+            OCRManager._uocr_neg_cache.clear()
+            # Envejecer el ledger más allá del TTL largo:
+            for firma in OCRManager._uocr_neg_ceros:
+                ts, c, n, cf = OCRManager._uocr_neg_ceros[firma]
+                OCRManager._uocr_neg_ceros[firma] = (
+                    time.time() - UOCR_NEG_CERO_TTL_S - 1, c, n, cf)
+        assert not mgr._is_decision_negativa_vigente("p13", 3, 0.0)
+
+    def test_recovery_limpia_el_cero_confirmado(self):
+        """Si el VLM SÍ recupera algo (o el daemon cae), la recuperación
+        refuta el cero confirmado: _limpiar_decision_negativa borra la
+        entrada del ledger y las gemelas vuelven a intentar el VLM."""
+        OCRManager.clear_decision_cache()
+        mgr = OCRManager()
+        mgr._registrar_decision_negativa("p13", 6, 0.59)
+        with OCRManager._uocr_cache_lock:
+            OCRManager._uocr_neg_cache.clear()
+        mgr._registrar_decision_negativa("p13", 3, 0.0)
+        with OCRManager._uocr_cache_lock:
+            OCRManager._uocr_neg_cache.clear()
+        assert mgr._is_decision_negativa_vigente("p13", 3, 0.0)
+        mgr._limpiar_decision_negativa("p13")
+        assert not mgr._is_decision_negativa_vigente("p13", 3, 0.0)
+
+    def test_cero_confirmado_se_persiste_y_se_recarga(self):
+        """El ledger viaja con la persistencia: 2 corridas en procesos
+        separados acumulan los fallos de la misma página y un proceso nuevo
+        honra el cero confirmado (sección "ceros" del archivo)."""
+        OCRManager.clear_decision_cache()
+        mgr = OCRManager()
+        mgr._registrar_decision_negativa("p17", 1, 0.53)
+        with OCRManager._uocr_cache_lock:
+            OCRManager._uocr_neg_cache.clear()
+        mgr._registrar_decision_negativa("p17", 2, 0.1)
+        with OCRManager._uocr_cache_lock:
+            OCRManager._uocr_neg_cache.clear()
+
+        # La sección "ceros" está en el archivo:
+        path = ocr_engine._DECISION_CACHE_PATH
+        assert path.exists()
+        datos = json.loads(path.read_text(encoding="utf-8"))
+        assert datos.get("ceros", {}).get("p17") is not None
+
+        # Proceso nuevo (memoria limpia) → recarga y honra:
+        with OCRManager._trigger_dec_lock:
+            OCRManager._trigger_dec_cache.clear()
+        with OCRManager._uocr_cache_lock:
+            OCRManager._uocr_neg_cache.clear()
+        OCRManager._cargar_cache_disco(force=True)
+        mgr2 = OCRManager()
+        assert mgr2._is_decision_negativa_vigente("p17", 2, 0.1)
+
+    def test_clear_decision_cache_limpia_el_ledger(self):
+        """clear_decision_cache también borra el ledger de ceros — una sesión
+        nueva arranca sin supresiones heredadas de capítulos anteriores."""
+        OCRManager.clear_decision_cache()
+        mgr = OCRManager()
+        mgr._registrar_decision_negativa("p13", 6, 0.59)
+        with OCRManager._uocr_cache_lock:
+            OCRManager._uocr_neg_cache.clear()
+        mgr._registrar_decision_negativa("p13", 3, 0.0)
+        with OCRManager._uocr_cache_lock:
+            assert len(OCRManager._uocr_neg_ceros) == 1
+        OCRManager.clear_decision_cache()
+        with OCRManager._uocr_cache_lock:
+            assert len(OCRManager._uocr_neg_ceros) == 0
+        assert not mgr._is_decision_negativa_vigente("p13", 3, 0.0)

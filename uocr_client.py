@@ -203,17 +203,28 @@ def wait_ready(timeout_s: float = 900.0) -> bool:
 
 
 def process_page(image_path: str, max_length: int = UOCR_MAX_LENGTH,
-                 wait_timeout_s: float = 900.0) -> dict[str, Any]:
+                 wait_timeout_s: float = 900.0, prompt: str | None = None,
+                 ngram: int | None = None,
+                 image_size: int | None = None) -> dict[str, Any]:
     """Envía una imagen al daemon y devuelve {text, infer_s, blocks}.
 
     Si el modelo aún carga, espera hasta wait_timeout_s antes de fallar.
+    prompt/ngram/image_size (plan §10.2 items 2 y 5): opcionales — los A/B
+    los pasan por request sin reiniciar el daemon.
     """
     if not wait_ready(wait_timeout_s):
         return {"error": "modelo no listo", "status": health()}
     try:
+        body: dict[str, Any] = {"image_path": str(image_path),
+                                "max_length": max_length}
+        if prompt is not None:
+            body["prompt"] = prompt
+        if ngram is not None:
+            body["ngram"] = ngram
+        if image_size is not None:
+            body["image_size"] = image_size
         return _request(
-            "POST", "/ocr",
-            {"image_path": str(image_path), "max_length": max_length},
+            "POST", "/ocr", body,
             timeout=1800.0,  # la inferencia 4-bit puede tardar ~1-5 min
         )
     except Exception as e:
@@ -221,7 +232,9 @@ def process_page(image_path: str, max_length: int = UOCR_MAX_LENGTH,
 
 
 def process_batch(image_paths: list[str], max_length: int = UOCR_MAX_LENGTH,
-                  wait_timeout_s: float = 900.0) -> dict[str, Any]:
+                  wait_timeout_s: float = 900.0, prompt: str | None = None,
+                  ngram: int | None = None,
+                  image_size: int | None = None) -> dict[str, Any]:
     """Envía VARIAS páginas al daemon en una sola inferencia VLM (Fase 1).
 
     Usa POST /ocr-batch del daemon, que ejecuta _model.infer_multi() — las
@@ -242,10 +255,16 @@ def process_batch(image_paths: list[str], max_length: int = UOCR_MAX_LENGTH,
     if not wait_ready(wait_timeout_s):
         return {"error": "modelo no listo", "status": health()}
     try:
+        body: dict[str, Any] = {"images": [str(p) for p in image_paths],
+                                "max_length": max_length}
+        if prompt is not None:
+            body["prompt"] = prompt
+        if ngram is not None:
+            body["ngram"] = ngram
+        if image_size is not None:
+            body["image_size"] = image_size
         return _request(
-            "POST", "/ocr-batch",
-            {"images": [str(p) for p in image_paths],
-             "max_length": max_length},
+            "POST", "/ocr-batch", body,
             # N páginas 4-bit en una sola generación: hasta ~5 min cada una
             timeout=1800.0 * max(1, min(len(image_paths), 4)),
         )

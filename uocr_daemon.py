@@ -174,13 +174,41 @@ def _cleanup_old_out_dirs() -> None:
         pass
 
 
+# Prompt y anti-repetición del VLM (plan §10.2 item 2, 2026-08-16):
+# configurables por request (/ocr y /ocr-batch aceptan "prompt" y "ngram"
+# opcionales) para poder A/B el prompt y el no_repeat_ngram SIN reiniciar el
+# daemon (el modelo tarda ~2 min en recargar).
+#
+# A/B de pág 21 (2026-08-16, benchmark_vlm_maxlen.py --pages 21, max_length
+# 1280): ngram 35 → 210.6 s VLM / 8 bloques; ngram 15 → 194.4 s / 8 bloques
+# con TEXTOS IDÉNTICOS (−16 s, −7.7 %; el ngram solo bloquea repeticiones
+# exactas, no puede perder recuperación). Prompt instructivo de diálogo
+# ('<image>Extract all dialogue text...') → 32.9 s pero SOLO 2/8 bloques
+# (−84 % tiempo, −6 bloques — el prompt degrada el formato de detección del
+# modelo): DESCARTADO. Default de ngram aplicado: 15.
+_PROMPT_DEFAULT = "<image>document parsing."
+_NGRAM_SIZE_DEFAULT = 15
+_NGRAM_WINDOW_DEFAULT = 128
+# Plan §10.2 item 5: image_size del pase principal (prefill). El A/B
+# 640 vs 512 mide si el prefill (~23 s/llamada, casi todo el coste de la
+# llamada principal de 16 tokens) se puede recortar sin perder recuperación.
+_IMAGE_SIZE_DEFAULT = 640
+
+
 def _infer_once(image_path: str, out_dir: str, max_length: int,
-                crop_mode: bool = True, image_size: int = 640) -> tuple[str, list[dict[str, Any]], float]:
+                crop_mode: bool = True, image_size: int = 640,
+                prompt: str | None = None,
+                ngram_size: int | None = None,
+                ngram_window: int | None = None) -> tuple[str, list[dict[str, Any]], float]:
     """Ejecuta UNA inferencia del modelo y devuelve (texto_md, bloques, infer_s).
 
     Captura stdout (el modelo emite <|det|>...<|/det|> con coordenadas por
     print()) y lee result.md (texto limpio). Reutilizada por _run_ocr y por
     el re-OCR de bloques image (crop_mode=False).
+
+    prompt/ngram_size/ngram_window: si se pasan, sobreescriben los defaults
+    del módulo (_PROMPT_DEFAULT/_NGRAM_SIZE_DEFAULT/_NGRAM_WINDOW_DEFAULT) —
+    el A/B los pasa por request sin tocar el proceso del daemon.
     """
     import contextlib
     import io
@@ -190,12 +218,15 @@ def _infer_once(image_path: str, out_dir: str, max_length: int,
     with contextlib.redirect_stdout(stream):
         _model.infer(
             _tokenizer,
-            prompt="<image>document parsing.",
+            prompt=prompt or _PROMPT_DEFAULT,
             image_file=image_path,
             output_path=out_dir,
             base_size=1024, image_size=image_size, crop_mode=crop_mode,
             max_length=max_length,
-            no_repeat_ngram_size=35, ngram_window=128,
+            no_repeat_ngram_size=(
+                _NGRAM_SIZE_DEFAULT if ngram_size is None else ngram_size),
+            ngram_window=(
+                _NGRAM_WINDOW_DEFAULT if ngram_window is None else ngram_window),
             save_results=True,
         )
     infer_s = time.time() - t0
@@ -215,7 +246,9 @@ _ART_RECOVER_CANVAS = 640  # el modelo con crop_mode=False procesa a 640x640
 
 
 def _recover_art_dialogue(image_path: str, blocks: list[dict[str, Any]],
-                          max_length: int) -> tuple[list[dict[str, Any]], int]:
+                          max_length: int, prompt: str | None = None,
+                          ngram_size: int | None = None,
+                          ngram_window: int | None = None) -> tuple[list[dict[str, Any]], int]:
     """Re-OCR de bloques type="image" grandes para recuperar diálogo en arte.
 
     Para cada bloque image con área >30% de la página:
@@ -277,6 +310,8 @@ def _recover_art_dialogue(image_path: str, blocks: list[dict[str, Any]],
             _, sub_blocks, sub_s = _infer_once(
                 crop_path, tmp_dir, max_length,
                 crop_mode=False, image_size=_ART_RECOVER_CANVAS,
+                prompt=prompt, ngram_size=ngram_size,
+                ngram_window=ngram_window,
             )
         except Exception as e:  # nosec — un panel fallido no debe tumbar la página
             print(f"[uocr-daemon] re-OCR panel image {bi} falló: {e}", flush=True)
@@ -379,7 +414,10 @@ def _map_multi_blocks_to_page(blocks: list[dict[str, Any]], page_w: int,
 _MAX_BATCH_IMAGES = 4  # límite VRAM: 4 páginas 640x640 prefill simultáneo en GTX 4GB
 
 
-def _run_ocr_batch(image_paths: list[str], max_length: int) -> dict[str, Any]:
+def _run_ocr_batch(image_paths: list[str], max_length: int,
+                    prompt: str | None = None, ngram_size: int | None = None,
+                    ngram_window: int | None = None,
+                    image_size: int | None = None) -> dict[str, Any]:
     """OCR de VARIAS páginas en una sola inferencia VLM (infer_multi).
 
     Fase 1 del plan: amortiza el prefill del modelo (el costo por página cae
@@ -410,12 +448,15 @@ def _run_ocr_batch(image_paths: list[str], max_length: int) -> dict[str, Any]:
         with contextlib.redirect_stdout(stream):
             _model.infer_multi(
                 _tokenizer,
-                prompt="<image>document parsing.",
+                prompt=prompt or _PROMPT_DEFAULT,
                 image_files=image_paths,
                 output_path=out_dir,
-                image_size=640,
+                image_size=image_size or _IMAGE_SIZE_DEFAULT,
                 max_length=max_length,
-                no_repeat_ngram_size=35, ngram_window=128,
+                no_repeat_ngram_size=(
+                    _NGRAM_SIZE_DEFAULT if ngram_size is None else ngram_size),
+                ngram_window=(
+                    _NGRAM_WINDOW_DEFAULT if ngram_window is None else ngram_window),
                 save_results=True,
             )
         infer_s = time.time() - t0
@@ -428,7 +469,10 @@ def _run_ocr_batch(image_paths: list[str], max_length: int) -> dict[str, Any]:
                 mapped = _map_multi_blocks_to_page(blocks, pw, ph)
                 # Re-OCR de arte por página (calidad): los paneles image
                 # grandes se recortan y re-envían individualmente.
-                mapped, n_rec = _recover_art_dialogue(path, mapped, max_length)
+                mapped, n_rec = _recover_art_dialogue(
+                    path, mapped, max_length,
+                    prompt=prompt, ngram_size=ngram_size,
+                    ngram_window=ngram_window)
                 result_pages.append({"blocks": mapped,
                                      "recovered_from_art": n_rec})
             except Exception as e:  # nosec — una página fallida no tumba el batch
@@ -445,7 +489,10 @@ def _run_ocr_batch(image_paths: list[str], max_length: int) -> dict[str, Any]:
         _infer_lock.release()
 
 
-def _run_ocr(image_path: str, max_length: int) -> dict[str, Any]:
+def _run_ocr(image_path: str, max_length: int,
+              prompt: str | None = None, ngram_size: int | None = None,
+              ngram_window: int | None = None,
+              image_size: int | None = None) -> dict[str, Any]:
     import torch  # noqa: PLC0415 — import diferido (ya cargado por _load_model)
     # Timeout de espera: si otra inferencia cuelga (OOM, etc.), no bloquear
     # la siguiente petición indefinidamente.
@@ -457,9 +504,17 @@ def _run_ocr(image_path: str, max_length: int) -> dict[str, Any]:
         torch.cuda.reset_peak_memory_stats()
         t0 = time.time()
         # Pase principal: crop_mode=True (9-grid sobre la página completa)
-        text, blocks, _ = _infer_once(image_path, out_dir, max_length, crop_mode=True)
+        # Plan §10.2 item 5: image_size del prefill configurable por request
+        # (el A/B 640 vs 512 decide si el prefill se recorta sin perder
+        # recuperación).
+        text, blocks, _ = _infer_once(
+            image_path, out_dir, max_length, crop_mode=True,
+            prompt=prompt, ngram_size=ngram_size, ngram_window=ngram_window,
+            image_size=image_size or _IMAGE_SIZE_DEFAULT)
         # Post-procesado: recuperar diálogo incrustado en arte
-        blocks, n_rec = _recover_art_dialogue(image_path, blocks, max_length)
+        blocks, n_rec = _recover_art_dialogue(
+            image_path, blocks, max_length,
+            prompt=prompt, ngram_size=ngram_size, ngram_window=ngram_window)
         infer_s = time.time() - t0
         vram = round(torch.cuda.max_memory_allocated() / 1e9, 2)
         print(f"[uocr-daemon] OCR hecho en {infer_s:.1f}s | {len(blocks)} bloques "
@@ -522,6 +577,36 @@ class _Handler(BaseHTTPRequestHandler):
         if not (256 <= max_length <= 65536):
             self._send(400, {"error": f"max_length fuera de rango: {max_length}"})
             return
+        # Plan §10.2 item 2: prompt y no_repeat_ngram opcionales por request
+        # (el A/B los varía sin reiniciar el daemon — el modelo tarda ~2 min
+        # en recargar). Solo str/entero válidos; inválidos → 400 (no silenciar
+        # el error de configuración).
+        prompt = body.get("prompt")
+        if prompt is not None and not isinstance(prompt, str):
+            self._send(400, {"error": "prompt debe ser un string"})
+            return
+        ngram = body.get("ngram")
+        if ngram is not None:
+            try:
+                ngram = int(ngram)
+            except (TypeError, ValueError):
+                self._send(400, {"error": "ngram debe ser un entero"})
+                return
+            if not (1 <= ngram <= 64):
+                self._send(400, {"error": f"ngram fuera de rango: {ngram}"})
+                return
+        # Plan §10.2 item 5: image_size del prefill opcional por request.
+        image_size = body.get("image_size")
+        if image_size is not None:
+            try:
+                image_size = int(image_size)
+            except (TypeError, ValueError):
+                self._send(400, {"error": "image_size debe ser un entero"})
+                return
+            if not (256 <= image_size <= 1024):
+                self._send(400, {"error": f"image_size fuera de rango: "
+                                          f"{image_size}"})
+                return
         try:
             _cleanup_old_out_dirs()
             if self.path == "/ocr-batch":
@@ -535,7 +620,9 @@ class _Handler(BaseHTTPRequestHandler):
                 if bad:
                     self._send(400, {"error": "paths de imagen no permitidos"})
                     return
-                result = _run_ocr_batch(images, max_length)
+                result = _run_ocr_batch(images, max_length, prompt=prompt,
+                                        ngram_size=ngram,
+                                        image_size=image_size)
                 self._send(200, result)
                 return
             image_path = body.get("image_path")
@@ -543,7 +630,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "image_path no permitido"})
                 return
             assert isinstance(image_path, str)  # _is_allowed_input_path ya lo validó
-            result = _run_ocr(image_path, max_length)
+            result = _run_ocr(image_path, max_length, prompt=prompt,
+                              ngram_size=ngram, image_size=image_size)
             self._send(200, result)
         except Exception as e:  # nosec
             traceback.print_exc()

@@ -376,6 +376,31 @@ UOCR_CACHE_MAX_ENTRIES: Final[int] = 256         # eviction LRU: capítulos ~5-1
 #        comparable no re-dispara — el trade-off aceptado del determinismo.
 UOCR_NEG_CACHE_PERSIST: Final[bool] = True
 
+# ─── Cero confirmado del VLM (2026-08-16, plan §10.2 item 1) ──────
+# Las páginas 13 y 17 del cap. 43 disparan el VLM (large_image_panel) y
+# recuperan 0 bloques en TODAS las corridas (4-5, determinista). El cache
+# §8.4.1 ya las suprime dentro del TTL (30 min), pero entre corridas el
+# TTL expira y la firma antigua (digest exacto del thumbnail, demasiado
+# sensible) derivaba → volvían a pagar 31-68 s cada vez.
+#
+# Con la firma estable (dHash, ver _page_signature en ocr_utils.py) y este
+# registro de CEROS CONFIRMADOS, una página que falló >= UOCR_NEG_CERO_MIN
+# veces en ventanas TTL distintas queda suprimida con un TTL largo (7 días)
+# — misma página (dHash), mismo documento (scope doc_id de la sesión 126),
+# y con la salvaguarda mucho_mas_debil intacta: si una gemela se detecta
+# MUCHO más débil que la última vez, el VLM vuelve a correr (el diálogo
+# artístico que el híbrido ahora pierde es justo el que el VLM podría leer).
+#
+# El ledger de ceros vive en el MISMO archivo de decisiones (sección
+# "ceros") y viaja con la persistencia: 2 corridas en procesos separados
+# acumulan los fallos de la misma página. Un recovery (el VLM SÍ recuperó
+# algo) borra la entrada del ledger — la señal de cero se refuta. El TTL
+# largo es deliberadamente amplio (7 días): dentro del MISMO documento la
+# página es la misma y ya falló N veces; si el modelo VLM mejora, el
+# usuario puede limpiar con clear_decision_cache().
+UOCR_NEG_CERO_MIN: Final[int] = 2          # fallos >= N en ventanas TTL distintas → cero confirmado
+UOCR_NEG_CERO_TTL_S: Final[float] = 7 * 24 * 3600.0   # TTL del cero confirmado (7 días)
+
 # ─── Salvaguarda de detección débil en las negativas §8.4.1 (sesión 134) ──
 # El caso p5 (sesiones 128-129): el híbrido detecta una página artística con
 # MUY pocos bloques y confianza baja (p5 registró la negativa con 2-3 bloques

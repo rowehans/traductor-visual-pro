@@ -1280,6 +1280,36 @@ trigger). Requiere A/B con `analisis_calidad.py`.
 >   firma antes de tocar. `benchmark_spell_touchpoints.py` queda como
 >   herramienta de re-medición.
 
+> **A/B DEL CACHE DE LANGDETECT (2026-08-16) — MEDIDO Y DESCARTADO EL
+> CACHE POR FIRMA; el prefijo ya resolvió el costo** — se implementó el
+> cache por muestra (`_SPELL_LANG_CACHE`, bounded 1024, en `_ocr_spell-
+> check`; patrón del cache de negativas del VLM §8.4.1) y se midió con
+> `benchmark_langdetect_cache.py` (capítulo completo, daemon detenido,
+> `langdetect_cache.json`):
+>
+> | Métrica | Valor |
+> |---|---|
+> | Llamadas reales al cuerpo del detector (misses lru) | **82** (no 523) |
+> | Textos únicos / firmas de caracteres únicas | 82 / **82** → **ahorro potencial 0 %** |
+> | Tiempo real de langdetect en el capítulo | **1.05 s = 1.4 %** del wall (76.9 s) |
+> | Firmas con resultado inconsistente dentro | 0 |
+>
+> **Lectura**: la medición previa de 2.95 s/523 llamadas era del estado
+> ANTERIOR al prefijo de 600 chars; con el prefijo, el lru_cache de
+> `_detect_language_robust` ya colapsa las muestras repetidas y solo 82
+> textos únicos llegan al cuerpo (1.05 s). El cache por FIRMA de caracteres
+> (perfil de frecuencias + flags de script) tiene **0 % de potencial**: los
+> 82 textos OCR son todos firmas únicas, no hay colapso que explotar, y los
+> 0 colapsos que existirían son consistentes. El cache por muestra
+> implementado (clave = prefijo/texto exacto) es determinista y sin costo
+> pero redundante con el lru_cache del detector en el corpus actual; se
+> mantiene como red de seguridad para bloques repetidos y páginas largas
+> (bounded 1024, sin crecimiento). **VEREDICTO: la palanca de langdetect
+> queda cerrada — el costo residual (1.05 s = 1.4 % del capítulo) es
+> estructural y no recortable por cache.** 6 tests nuevos en
+> `TestSpellcheckLangPrefix` (reutilización por muestra, bound, no-
+> contaminación de idiomas, fixture de cache limpio).
+
 > **A/B: LÍMITE DE EDICIÓN DEPENDIENTE DE LA LONGITUD (2026-08-15)** —
 > calibrado con el capítulo completo instrumentado
 > (`benchmark_spellcheck_ab.py --collect`, 53 págs, daemon detenido,
@@ -1821,6 +1851,7 @@ validación con `analisis_calidad.py`).
 | `benchmark_foreign_gate.py` (nuevo) | **análisis de los 17 bloques mixtos (2026-08-16)**: captura los bloques que llegan al chequeo y mide para los foreign=True la evidencia extranjera, las correcciones forzadas con gate desactivado y la ambigüedad del detector — ver §4.6 |
 | `benchmark_results/foreign_gate.json` | **veredicto del call-site del check extranjero (2026-08-16, 53 págs, daemon detenido)**: gate INERTE en 15/17 bloques (0 correcciones forzadas; 13 todo-mayúsculas + 2 salvados por el filtro d1); la única protección real es pág 29 'ASi QUE SEGUi' (×2): preserva 'SEGUi'→'Seguir' a cambio de bloquear 'ASi'→'Así'; los 15 falsos triggers son huecos del diccionario es ('relacionado','bolsas','vemos','dia','separo','verte','has' — españolas válidas ausentes del dict, es=False pt/en=True); NO se afina el call-site (tiempo nulo + gate por ambigüedad sería neto-negativo); fix de precisión = cobertura del diccionario es, no gatear — ver §4.6 |
 | `benchmark_spell_touchpoints.py` (nuevo) | **mapa de todos los touchpoints de pyspellchecker (2026-08-16)**: instrumenta correction/known/candidates/índice/réplica/foreign check + langdetect y cargas, con atribución por pila de sitios — ver §4.6 |
+| `benchmark_langdetect_cache.py` + `langdetect_cache.json` (nuevos) | **A/B del cache de langdetect (2026-08-16)**: 82 misses reales en el capítulo, 82 firmas únicas → ahorro potencial 0 %, costo residual 1.05 s = 1.4 % del wall; veredicto de cierre en §4.6 (cache por muestra implementado en `_ocr_spellcheck`, bounded 1024, 6 tests) |
 | `benchmark_results/spell_touchpoints.json` | **costo por página de los touchpoints (2026-08-16, 53 págs, daemon detenido)**: NO hay pyspellchecker fuera de `_ocr_spellcheck` (solo preload de server.py); API real ~9 ms/pág concentrada en pág 41 (0.476 s camino corto); foreign/replica/candidates <0.03 s; índice 0.17 s one-time (cae en el filtro d1, no la réplica); **HALLAZGO: langdetect = 2.95 s = 70 % de la maquinaria spellcheck (5.65 ms × 523 bloques), nuevo candidato de optimización por firma/página** — ver §4.6 |
 | `tools/analizar_vlm_1280.py` (nuevo) | fusiona los chunks del benchmark production y compara trigger/recuperación/bloques/tiempo contra el baseline 2048 |
 | `config.py`, `ocr_engine.py`, `ocr_utils.py`, `server.py`, `app.js`, `js/config.js`, `README.md` | **2026-08-15: preset `MODO_CPU` (soporte sin GPU dedicada)**: flag único que apaga el VLM (gate en `_reforzar_con_unlimited` junto a UOCR_ENABLED), fuerza YOLO a CPU (`_resolver_device_yolo`) y sirve `ocr_scale` reducido (0.8) al frontend vía `/api/config` (el frontend lo aplica a `state.scale`). 3 tests nuevos (gate MODO_CPU, resolver, /api/config) |
@@ -1828,3 +1859,192 @@ validación con `analisis_calidad.py`).
 | `benchmark_rutac_batch.py` (nuevo) | **A/B del batch estructural de la Ruta C (2026-08-15)**. Tras la integración, compara PRODUCCIÓN mismo-proceso vía el toggle `_RUTA_C_STRIP_BATCH`: baseline = per-crop (False), alt = strip (True) — ambos con fallback EasyOCR por crop y merge final. Harness: instrumenta det/rec/cls/crop_list/group/spellcheck; `--no-spellcheck` aísla el núcleo — ver §4.6 |
 | `benchmark_results/rutac_batch_ab.json` (prototipo, 2026-08-15) / `rutac_batch_prod_ab.json` (producción integrada) | **medición del batch estructural**: prototipo 8 págs/52 crops: 20.49 s → 4.79 s (−76.6 %, det-calls 52 → 8). Producción integrada (3 págs, núcleo): **9.81 s → 2.32 s (−76 %), det-calls 24 → 3**, bloques pág 4 idénticos — ver §4.6 |
 | `ocr_utils.py` | **2026-08-15: batch estructural de la Ruta C INTEGRADO** (`_ruta_c_prepare_crops`, `_rapidocr_strip_batch`, `_rapidocr_blocks_from_lines`, `_RUTA_C_STRIP_BATCH` toggle): det por chunk + UNA text_rec para todos los crops, fallback EasyOCR por crop conservado; `_run_rapidocr` refactorizado a DRY sobre el constructor de bloques (sin cambio de comportamiento). 11 tests nuevos (10 strip + 1 toggle) y 10 de la Ruta C adaptados al seam — ver §4.6 |
+
+## 10. Trabajo pendiente y orden recomendado (2026-08-16)
+
+> **ESTADO ACTUAL VERIFICADO EN CÓDIGO** (2026-08-17): producción corre con
+> Ruta C = strip batch integrado + upscale 3.5× + fallback EasyOCR por crop +
+> fix de diálogos; `UOCR_MAX_LENGTH = 1280`; spellcheck con réplica acotada +
+> prefijo langdetect + cache por muestra (bounded 1024); preset `MODO_CPU`;
+> gate persistente de ceros confirmados (pág 13/17, §10.7 item 1) +
+> `no_repeat_ngram=15` en el daemon VLM (§10.7 item 2);
+> CI local completo (1011/1011 tests, mypy 0, cobertura por módulo OK,
+> `ocr_engine.py` 97.0 % vs umbral 94.6 %).
+>
+> **§10.2 quedó EJECUTADO en su totalidad el 2026-08-16** — los 7 ítems de
+> implementación se cerraron con datos (veredictos en §10.7). Lo que queda
+> de este plan es proceso (baseline de calidad, commit, limpieza) y
+> hardware (GPU con más VRAM).
+
+### 10.1. Cerrado con datos (NO re-abrir sin cambio de corpus/hardware)
+
+| Ítem | Veredicto medido |
+|---|---|
+| 4.2 multi-proceso OCR | NO procede — el semáforo no satura con la carga real |
+| 4.4A prefilter condicional | NO procede — ahorro <2 %, doble pasada en débiles; trigger v4.2 medido 0/53 |
+| 4.4B inpaint res. reducida | Descartada — regresiona la pág débil (control pág 11) |
+| 4.4C detector de líneas selectivo | Descartada — no hay líneas en el corpus (0.006 % área); inpaint 0.53 s/pág es estructural |
+| 4.5 afinar rapid_cond_skip | Umbral actual ya es óptimo |
+| Gate intra-crop de la Ruta C | NO procede — no agrega bloques nuevos |
+| Gate de pág 17 | NO aplicado — ahorra 22.3 s exactos pero < ruido de medición |
+| Cache de langdetect por firma | 0 % de potencial (82 textos = 82 firmas); residual 1.05 s = 1.4 % estructural |
+| Límite de edición dependiente de longitud | Calibrado: 3-5→1, 6-14→2, >14→0 (solo 3 correcciones reales en el capítulo) |
+| Foreign gate (17 bloques mixtos) | Inerte en 15/17; única protección real es pág 29; no afinar |
+| Batch VLM | Descartado en esta GPU (2.2× más lento); re-evaluar solo con otra GPU |
+
+### 10.2. Pendiente de IMPLEMENTAR — ordenado por ROI/riesgo (todo medido)
+
+**Nivel 1 — VLM (74-81 % del capítulo; la palanca más grande que queda):**
+
+1. **Gate persistente para pág 13** (y 17): recuperación **0 en 4-5 corridas**;
+   pág 13 cuesta 31-68 s/llamada (el doble que 17). El cache de negativas
+   (§8.4.1) ya es un gate por historial pero falla por TTL 30 min + firma
+   derivada. Vías: TTL extendido para ceros confirmados o firma estable (hash
+   de la imagen en vez del grid). Validación: mismo A/B de gate que pág 17.
+   **Ahorro esperado: 50-90 s/capítulo sin pérdida. Riesgo: bajo.**
+2. **Prompt del VLM + `no_repeat_ngram`** (uocr_daemon.py): pág 21 divaga
+   1933 tokens (18 chars reales; ngram 35 no la corta). Atacar el bucle
+   (ngram 15-20) o el prompt fijo `'<image>document parsing.'` → instructivo
+   de diálogo artístico. **Ahorro esperado: 60-100 s en pág 21. Riesgo:
+   medio** — A/B de recuperación con `benchmark_vlm_maxlen.py` antes de tocar.
+3. **Prefill del VLM 640→512 px**: la llamada principal genera 16 tokens en
+   ~23 s (casi todo prefill). Coste fijo por página trigger (~2-3 s×11
+   páginas si baja 15 %). **Riesgo: bajo-medio** (A/B de recuperación).
+
+**Nivel 2 — residual sin VLM (42 páginas, 2.95-3.3 s/pág):**
+
+4. **Afinar el gate de CTD** (peor ROI del residual: 30.8 s por 21 bloques,
+   1.47 s/bloque vs 0.29 de YOLO): subir `COMIC_DETECTOR_GATE_MAX_CONF`
+   0.35→0.30 o bajar `MIN_BLOCKS` 3→2, o dedup de regiones ya cubiertas por
+   YOLO. **Ahorro esperado: hasta ~30 s/capítulo. Riesgo: medio** — los 21
+   bloques son texto flotante real; A/B con `benchmark_ab_utils.py` primero.
+5. **YOLO/CTD a CPU permanente con daemon activo**: libera VRAM para EasyOCR
+   durante la inferencia VLM (la degradación actual hace las 42 páginas
+   2-5× más lentas con daemon: 119→448-651 s). **Ahorro: sin medir aún —
+   A/B pendiente. Riesgo: bajo.**
+6. **Heurístico pre-OCR de ruido**: correr el prefilter (0.53 s/pág) solo en
+   páginas ruidosas; gana en 13/53 páginas. **Ahorro: 14-23 s/capítulo.
+   Riesgo: bajo** (el trigger v4.2 ya se midió 0/53 raw vs pref).
+
+**Nivel 3 — UI/servidor:**
+
+7. **4.3 — worker thread para export/render del PDF en el navegador**
+   (único ítem de UI pendiente; baja prioridad, sin tocar el pipeline OCR).
+
+### 10.3. Calidad y proceso (no son optimizaciones, pero bloquean el cierre)
+
+8. **Baseline de calidad del corpus actual — MEDIDO (2026-08-16)**: el
+   75.8 % de Julio (128 págs, pipeline viejo) NO es comparable con el 32.2 %
+   del cap. 53 re-medido post-fix del strip (96/314 UNTRANSLATED por
+   ruido/fragmentos; §6 "RE-MEDICIÓN DE CALIDAD POST-FIX DEL STRIP").
+   Pendiente: criterio de "aceptable" para el corpus actual y re-medición
+   estable periódica.
+9. **Commit pendiente** de la sesión del plan §10 (langdetect cache + gate
+   persistente + ngram 15 + benchmarks): `ocr_utils.py`, `ocr_engine.py`,
+   `config.py`, `uocr_daemon.py`, `uocr_client.py`, `tests/*`,
+   `PLAN_OPTIMIZACION_RENDIMIENTO.md`, benchmarks + JSONs.
+10. **Limpiar artefactos sin commitear**: `gh_logs*.txt`, `gh_run_logs.zip`,
+    `preview_pages/`, `_tmp_vlm_pages/` (regenerables) — decidir qué se
+    archiva/ignora para que `git status` vuelva a ser legible.
+
+### 10.4. Triggers condicionales (NO son trabajo fijo)
+
+- **4.7 → 4.1**: re-medir el split detector/recognizer SOLO si el corpus
+  cambia (p. ej. origen ja/ko/zh masivo). Hoy el detector CRAFT domina
+  (72.9 %); el recognizer no es el cuello.
+- **4.2**: multi-proceso solo si un stress test futuro muestra saturación
+  del semáforo (hoy: no satura).
+
+### 10.5. Estructural (requiere hardware/decisión)
+
+- **GPU con más VRAM**: única palanca estructural real para el VLM (hoy el
+  daemon 2.25 GB + EasyOCR ~1 GB + YOLO ~1 GB no caben en 4 GB → degradación
+  a CPU con daemon activo). Con más VRAM se re-evalúan batch VLM, prefill
+  mayor y quizá el prompt sin penalización.
+
+### 10.7. EJECUCIÓN 2026-08-16 — veredictos medidos (plan implementado 1→7)
+
+> **1. Gate persistente pág 13/17 — IMPLEMENTADO.** Firma estable: el digest
+> exacto del thumbnail (32×32 blake2b) se sustituyó por un **dHash 9×8**
+> (64 bits robustos a variación mínima de píxeles) en `_page_signature`
+> (misma página entre corridas → misma firma; la pág 13 registraba dos
+> firmas). TTL extendido: ledger de **ceros confirmados** (`_uocr_neg_ceros`,
+> sección "ceros" del cache, TTL 7 días): una firma que falló ≥
+> `UOCR_NEG_CERO_MIN=2` veces en ventanas TTL distintas suprime el VLM con
+> salvaguarda mucho_mas_debil intacta y recovery que la refuta
+> (`_limpiar_decision_negativa`). **Validación real** (`benchmark_gate_cero_confirmado.py`,
+> daemon UP, pág 13, `gate_cero_confirmado.json`): pasada 1 = 99.96 s (VLM,
+> 0 rec), pasada 2 = 45.61 s (VLM, 0 rec), **pasada 3 = 1.38 s (VLM saltado,
+> mismos 6 bloques)** — el gate ahorra 44+ s por re-corrida sin pérdida.
+> `_DECISION_CACHE_VERSION` 6→7; 7 tests nuevos (`TestCeroConfirmado`) + 2
+> de estabilidad dHash. **Ahorro: 50-90 s/capítulo en re-corridas.**
+>
+> **2. Prompt + ngram del VLM — ngram 15 APLICADO, prompt DESCARTADO.**
+> `_PROMPT_DEFAULT`/`_NGRAM_SIZE_DEFAULT` configurables por request
+> (`/ocr` y `/ocr-batch` aceptan `prompt`/`ngram`; cliente + handler + 6
+> tests nuevos). A/B pág 21 (max_length 1280, daemon UP): **ngram 35 →
+> 210.6 s / 8 bloques; ngram 15 → 194.4 s / 8 bloques, TEXTOS IDÉNTICOS**
+> (−16 s, −7.7 %; el ngram solo bloquea repeticiones exactas, no puede
+> perder recuperación) → default aplicado 15. **Prompt instructivo de
+> diálogo ('<image>Extract all dialogue text...') → 32.9 s pero SOLO 2/8
+> bloques (−84 % tiempo, −6 bloques)**: el prompt degrada el formato de
+> detección del modelo → DESCARTADO.
+>
+> **3. Gate de CTD — CERRADO CON DATOS, NO tocar.** `benchmark_ctd_gate_ab.py`
+> (capítulo completo, daemon caído, `ctd_gate_ab.json`): CTD corre en
+> 18/53 páginas (30.0 s, 22 bloques brutos) y **TODAS tienen conf 0.00
+> post-YOLO** — cualquier umbral que las saltara eliminaría el tier entero
+> (el gate actual ya es el piso; las opciones del plan partían de un
+> malentendido de la dirección del umbral).
+>
+> **4. YOLO/CTD a CPU con daemon — CERRADO CON DATOS, NO procede.**
+> Medición directa del pico VRAM del daemon durante una generación larga
+> (pág 21, max_length 1280): **3.04 GB**. Con EasyOCR (~1 GB) el total
+> roza los 4 GB de la 1050 Ti → mantener EasyOCR en GPU durante la
+> inferencia VLM es inviable; la degradación a RapidOCR CPU es la política
+> correcta. YOLO CPU costaría además +0.6 s/pág (730 vs 130 ms).
+>
+> **5. Prefill 640→512 — DESCARTADO CON DATOS.** A/B págs 16+21
+> (`vlm21_prefill512.json`): **512 pierde 8 de 13 bloques recuperados
+> (62 %)** aunque corta el tiempo −42 % (167.8 vs 291.2 s). El prefill 640
+> se mantiene; `image_size` quedó configurable por request (item 5,
+> parametrizado junto a prompt/ngram) para futuros A/B.
+>
+> **6. Heurístico pre-OCR de ruido — MEDIDO Y DESCARTADO.** Unión de
+> features pre-OCR (dark_ratio, varianza Laplaciana, **densidad de
+> speckle** = componentes conectadas por píxel oscuro) con el outcome del
+> A/B 4.4A: el speckle predice moderadamente (umbral 0.0035 → recall 58 %,
+> 9 FP) pero el ahorro (~20 s/capítulo, <2 %) no justifica degradar las
+> 4-5 páginas débiles que el heurístico se pierde (pág 17: conf 0.43→0.95
+> con el prefilter). Misma conclusión que 4.4A.
+>
+> **7. 4.3 worker thread — CERRADO: ya cubierto.** pdf.js ya renderiza en
+> web workers (`GlobalWorkerOptions.workerSrc`, app.js:470-545) y el loop
+> de export (`exportFullPdf`) es async no-bloqueante (await por página;
+> el trabajo síncrono por página es composición de canvas de ms). Un
+> OffscreenCanvas worker añadiría complejidad por beneficio marginal.
+>
+> **Artifacts nuevos**: `benchmark_gate_cero_confirmado.py`,
+> `benchmark_ctd_gate_ab.py`, `benchmark_results/gate_cero_confirmado.json`,
+> `ctd_gate_ab.json`, `vlm21_ngram35.json`, `vlm21_ngram15.json`,
+> `vlm21_prompt_dialogue.json`, `vlm21_prefill640.json`,
+> `vlm21_prefill512.json`. Tests: +17 (7 cero confirmado + 2 dHash + 6
+> handler prompt/ngram/image_size + 2 image_size) y 3 fakes actualizados.
+
+### 10.6. Orden recomendado de ejecución
+
+```
+1. Gate persistente pág 13/17 (VLM)     → A/B de gate, riesgo bajo, 50-90 s
+2. Prompt + ngram del VLM (pág 21)      → A/B de recuperación, 60-100 s
+3. Gate de CTD más estricto             → A/B con harness, ~30 s
+4. YOLO/CTD a CPU con daemon (A/B)      → libera VRAM, sin medir aún
+5. Prefill VLM 512                       → A/B de recuperación, coste fijo
+6. Heurístico pre-OCR de ruido          → 14-23 s, riesgo bajo
+7. 4.3 worker thread PDF (UI)           → baja prioridad
+8. Baseline de calidad + commit + limpieza de artefactos
+```
+
+Cada paso se cierra con: A/B mismo-proceso o intercalado (daemon detenido o
+ready según corresponda), `run_ci.py` completo verde y sin regresión de
+cobertura. Los pasos 1-2 dependen del daemon VLM ready; 3-6 son medibles con
+el daemon detenido.

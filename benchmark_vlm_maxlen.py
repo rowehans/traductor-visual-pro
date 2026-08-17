@@ -28,6 +28,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pages", default="21,16,28,36")
     ap.add_argument("--max_length", type=int, default=2048)
+    ap.add_argument("--ngram", type=int, default=None,
+                    help="no_repeat_ngram_size del daemon (plan §10.2 item 2)")
+    ap.add_argument("--prompt", default=None,
+                    help="prompt del VLM (plan §10.2 item 2)")
+    ap.add_argument("--image_size", type=int, default=None,
+                    help="image_size del prefill (plan §10.2 item 5)")
     ap.add_argument("--json", default="benchmark_results/vlm_maxlen.json")
     args = ap.parse_args()
 
@@ -35,14 +41,19 @@ def main() -> None:
 
     # Parchear ANTES de cualquier llamada: process_page capturó UOCR_MAX_LENGTH
     # como default en la definición — setear el atributo no surte efecto. Se
-    # envuelve process_page para forzar max_length explícito.
+    # envuelve process_page para forzar max_length/ngram/prompt explícitos.
     _orig_process_page = uocr_client.process_page
 
     def _forced_process(image_path: str, **kwargs: Any) -> dict[str, Any]:
-        return _orig_process_page(image_path, max_length=args.max_length, **kwargs)
+        return _orig_process_page(
+            image_path, max_length=args.max_length,
+            ngram=args.ngram, prompt=args.prompt,
+            image_size=args.image_size, **kwargs)
 
     uocr_client.process_page = _forced_process  # type: ignore[assignment]
-    print(f"== max_length = {args.max_length} ==  páginas={pages}")
+    print(f"== max_length = {args.max_length} ngram = {args.ngram} "
+          f"image_size = {args.image_size} prompt = {args.prompt!r} ==  "
+          f"páginas={pages}")
 
     doc = fitz.open(bp.PDF)
     ocr = OCRManager()
@@ -100,6 +111,9 @@ def main() -> None:
     result = {
         "benchmark": "benchmark_vlm_maxlen.py",
         "max_length": args.max_length,
+        "ngram": args.ngram,
+        "image_size": args.image_size,
+        "prompt": args.prompt,
         "pages": pages,
         "total_s": round(total_t, 3),
         "vlm_total_s": round(total_vlm, 3),
