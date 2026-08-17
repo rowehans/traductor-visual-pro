@@ -39,10 +39,23 @@ def render_page(doc: Any, page_no: int, scale: float) -> Any:
     return img[:, :, ::-1].copy()
 
 
+# Las funciones/métodos originales se cachean UNA vez. Cada página reinstala
+# los wrappers; si envolvieran al wrapper de la página anterior (cadena), las
+# llamadas posteriores escribirían en los dicts de las páginas ya serializadas
+# y los contadores se inflarían (bug medido: pág 1 con 53 calls de prefilter
+# en una corrida de 53). Envolver SIEMPRE la original rompe la cadena.
+_ORIG_FN: dict[str, Any] = {}
+
+
+def _get_orig(scope: Any, name: str) -> Any:
+    key = f"{id(scope)}:{name}"
+    if key not in _ORIG_FN:
+        _ORIG_FN[key] = getattr(scope, name)
+    return _ORIG_FN[key]
+
+
 def _wrap_timing(name: str, key: str, timings: dict[str, float], counts: dict[str, int]) -> None:
-    fn = getattr(ocr_utils, name, None)
-    if fn is None:
-        return
+    fn = _get_orig(ocr_utils, name)
 
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         t0 = time.time()
@@ -65,9 +78,7 @@ def _wrap_method(
     results: dict[str, int],
 ) -> None:
     """Envuelve un método del OCRManager para medir tiempo y resultados."""
-    fn = getattr(obj, name, None)
-    if fn is None:
-        return
+    fn = _get_orig(obj, name)
 
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         t0 = time.time()
@@ -95,7 +106,7 @@ def _install_trigger_capture(ocr: OCRManager, holder: dict[str, Any]) -> None:
 
     En modo fusion `_trigger_con_cache` se llama UNA vez por página (línea 931).
     """
-    fn = getattr(ocr, "_trigger_con_cache")
+    fn = _get_orig(ocr, "_trigger_con_cache")
 
     def wrapper(
         firma: str,
@@ -230,7 +241,7 @@ def main() -> None:
             "rapid_aggr_salvaged": rapid_salvaged,
             "negative_skip_841": negative_skip,
             "stages": {k: round(v, 3) for k, v in timings.items()},
-            "calls": counts,
+            "calls": dict(counts),
         }
         print(f"pág {pno:>2}: {dt:5.2f}s  bloques={len(blocks):>2}  conf={avg_conf:.2f}  "
               f"trigger={trigger}({trigger_holder['reason']})  vlm={vlm_called}  "

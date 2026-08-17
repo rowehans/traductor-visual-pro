@@ -1661,7 +1661,8 @@ class TestRecoverRegionsWithEasyocr:
             ([[30, 40], [150, 40], [150, 90], [30, 90]], "EASY FALLBACK", 0.91)]
 
         with patch("ocr_utils._rapidocr_strip_batch",
-                   return_value={}) as strip_batch:
+                   return_value={}) as strip_batch, \
+             patch("ocr_utils._run_rapidocr", return_value=[]):
             with patch("ocr_utils._get_ocr_reader", return_value=reader) as get_reader:
                 with patch("ocr_utils._run_ocr_on_image",
                            side_effect=lambda r, crop, **kw: r.readtext(crop)):
@@ -1690,7 +1691,8 @@ class TestRecoverRegionsWithEasyocr:
         malformed = [{"text": "RAPID", "confidence": "nan-no-valido"}]
 
         with patch("ocr_utils._rapidocr_strip_batch",
-                   return_value={0: malformed}):
+                   return_value={0: malformed}), \
+             patch("ocr_utils._run_rapidocr", return_value=[]):
             with patch("ocr_utils._get_ocr_reader", return_value=reader):
                 with patch("ocr_utils._run_ocr_on_image",
                            side_effect=lambda r, crop, **kw: r.readtext(crop)):
@@ -1783,7 +1785,8 @@ class TestRecoverRegionsWithEasyocr:
 
         mock_reader.readtext.side_effect = fake_readtext
         with patch("ocr_utils._get_ocr_reader", return_value=mock_reader):
-            with patch("ocr_utils._rapidocr_strip_batch", return_value={}):
+            with patch("ocr_utils._rapidocr_strip_batch", return_value={}), \
+                 patch("ocr_utils._run_rapidocr", return_value=[]):
                 with patch("ocr_utils._run_ocr_on_image",
                            side_effect=lambda reader, up_img, **kw: reader.readtext(up_img)):
                     with patch("ocr_utils._group_and_merge_blocks",
@@ -1857,7 +1860,8 @@ class TestRecoverRegionsWithEasyocr:
 
         with patch("ocr_utils._get_ocr_reader", return_value=mock_reader) as get_reader:
             with patch("ocr_utils._rapidocr_strip_batch",
-                       return_value={}) as strip_batch:
+                       return_value={}) as strip_batch, \
+                 patch("ocr_utils._run_rapidocr", return_value=[]):
                 with patch("ocr_utils._run_ocr_on_image",
                            side_effect=lambda reader, up_img, **kw: reader.readtext(up_img)):
                     with patch("ocr_utils._group_and_merge_blocks",
@@ -2092,6 +2096,7 @@ class TestRecoverRegionsWithEasyocr:
                 "text": "こんにちは", "confidence": 0.20,
             }]},
         )
+        mocker.patch("ocr_utils._run_rapidocr", return_value=[])
         mocker.patch(
             "ocr_utils._run_ocr_on_image",
             side_effect=lambda current_reader, crop, **kwargs: (
@@ -2108,6 +2113,179 @@ class TestRecoverRegionsWithEasyocr:
 
         assert blocks and blocks[0]["text"] == "こんにちは"
         get_reader.assert_called_once_with("ja", prefer_gpu=False)
+
+    def test_strip_debil_dispara_retry_individual_y_recupera(self):
+        """Fix 2026-08-16 (pérdida de diálogos del strip): si el strip
+        devuelve ruido corto/bajo (conf <0.85 y <6 chars — p.ej. 'OE O'
+        0.5, 'P!' 0.46, 'S E' 0.71), se reintenta ESE crop con
+        _run_rapidocr individual y se recupera el texto real."""
+        from unittest.mock import patch
+        from ocr_utils import _recover_regions_with_easyocr
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        garbage = [{"x": 30, "y": 40, "w": 120, "h": 50, "text": "OE O",
+                    "confidence": 0.5, "textColor": "#000000"}]
+        real = [{"x": 30, "y": 40, "w": 120, "h": 50,
+                 "text": "COMERLASHOY?", "confidence": 0.94,
+                 "textColor": "#000000"}]
+
+        with patch("ocr_utils._rapidocr_strip_batch",
+                   return_value={0: garbage}):
+            with patch("ocr_utils._run_rapidocr",
+                       return_value=real) as rapid_retry:
+                with patch("ocr_utils._group_and_merge_blocks",
+                           side_effect=lambda b, h: b):
+                    blocks = _recover_regions_with_easyocr(
+                        img, regions, upscale=3.5)
+
+        rapid_retry.assert_called_once()
+        assert blocks and blocks[0]["text"] == "COMERLASHOY?"
+        assert blocks[0]["engine"] == "rapidocr-region"
+
+    def test_strip_confiable_no_dispara_retry(self):
+        """Fix 2026-08-16: una lectura confiable del strip (conf >=0.85, o
+        frase larga >=0.7 con >=6 chars) NO reintenta — el retry solo se paga
+        donde el strip falla, para no erosionar el ahorro del batch."""
+        from unittest.mock import patch
+        from ocr_utils import _recover_regions_with_easyocr
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        confiable = [{"x": 30, "y": 40, "w": 120, "h": 50,
+                      "text": "ERASETUCCOMOLOS ILAM", "confidence": 0.81,
+                      "textColor": "#000000"}]
+
+        with patch("ocr_utils._rapidocr_strip_batch",
+                   return_value={0: confiable}):
+            with patch("ocr_utils._run_rapidocr",
+                       return_value=[]) as rapid_retry:
+                with patch("ocr_utils._group_and_merge_blocks",
+                           side_effect=lambda b, h: b):
+                    blocks = _recover_regions_with_easyocr(
+                        img, regions, upscale=3.5)
+
+        rapid_retry.assert_not_called()
+        assert blocks and blocks[0]["text"] == "ERASETUCCOMOLOS ILAM"
+        assert blocks[0]["engine"] == "rapidocr-region"
+
+    def test_hybrid_fallback_corre_easyocr_si_strip_debil_con_texto_previo(self):
+        """Fix 2026-08-16 (fallback híbrido): strip débil (conf < 0.7) + texto
+        previo del híbrido solapando el crop → correr igualmente EasyOCR y
+        FUSIONAR ambos (el merge final deduplica por overlap)."""
+        from unittest.mock import patch
+        from ocr_utils import _recover_regions_with_easyocr
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        debil = [{"x": 30, "y": 40, "w": 120, "h": 50, "text": "OE O",
+                  "confidence": 0.5, "textColor": "#000000"}]
+        previo = [{"x": 100, "y": 80, "w": 40, "h": 30,
+                   "text": "YA HABIA TEXTO"}]
+        reader = MagicMock()
+        reader.readtext.return_value = [
+            ([[30, 40], [150, 40], [150, 90], [30, 90]], "TEXTO EASY", 0.91)]
+
+        with patch("ocr_utils._rapidocr_strip_batch",
+                   return_value={0: debil}):
+            with patch("ocr_utils._run_rapidocr", return_value=[]):
+                with patch("ocr_utils._get_ocr_reader",
+                           return_value=reader) as get_reader:
+                    with patch("ocr_utils._run_ocr_on_image",
+                               side_effect=lambda r, crop, **kw: r.readtext(crop)):
+                        with patch("ocr_utils._group_and_merge_blocks",
+                                   side_effect=lambda b, h: b):
+                            with patch("ocr_utils._classify_rotate_crop",
+                                       side_effect=lambda x: (x, False, 0.0)):
+                                blocks = _recover_regions_with_easyocr(
+                                    img, regions, upscale=3.5,
+                                    hybrid_blocks=previo)
+
+        get_reader.assert_called_once()
+        texts = {b["text"] for b in blocks}
+        assert "OE O" in texts        # del strip (débil pero >= 0.45)
+        assert "TEXTO EASY" in texts  # fusionado desde EasyOCR
+
+    def test_hybrid_fallback_no_corre_easyocr_sin_texto_previo(self):
+        """Fix 2026-08-16: strip débil SIN texto previo del híbrido en el
+        crop → NO correr EasyOCR extra (solo los bloques del strip)."""
+        from unittest.mock import patch
+        from ocr_utils import _recover_regions_with_easyocr
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        debil = [{"x": 30, "y": 40, "w": 120, "h": 50, "text": "OE O",
+                  "confidence": 0.5, "textColor": "#000000"}]
+        lejos = [{"x": 300, "y": 300, "w": 10, "h": 10, "text": "LEJOS"}]
+
+        with patch("ocr_utils._rapidocr_strip_batch",
+                   return_value={0: debil}):
+            with patch("ocr_utils._run_rapidocr", return_value=[]):
+                with patch("ocr_utils._get_ocr_reader") as get_reader:
+                    with patch("ocr_utils._group_and_merge_blocks",
+                               side_effect=lambda b, h: b):
+                        blocks = _recover_regions_with_easyocr(
+                            img, regions, upscale=3.5,
+                            hybrid_blocks=lejos)
+
+        get_reader.assert_not_called()
+        assert {b["text"] for b in blocks} == {"OE O"}
+
+    def test_hybrid_fallback_no_corre_easyocr_con_daemon_infiriendo(self):
+        """Fix 2026-08-16: con _uocr_inferring activo, EasyOCR NO se corre
+        aunque haya texto previo (no competir por la GTX)."""
+        from unittest.mock import patch
+        from ocr_utils import (_recover_regions_with_easyocr,
+                               _uocr_inferring)
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        debil = [{"x": 30, "y": 40, "w": 120, "h": 50, "text": "OE O",
+                  "confidence": 0.5, "textColor": "#000000"}]
+        previo = [{"x": 100, "y": 80, "w": 40, "h": 30,
+                   "text": "YA HABIA TEXTO"}]
+
+        with patch("ocr_utils._rapidocr_strip_batch",
+                   return_value={0: debil}):
+            with patch("ocr_utils._run_rapidocr", return_value=[]):
+                with patch("ocr_utils._get_ocr_reader") as get_reader:
+                    try:
+                        _uocr_inferring.set()
+                        blocks = _recover_regions_with_easyocr(
+                            img, regions, upscale=3.5,
+                            hybrid_blocks=previo)
+                    finally:
+                        _uocr_inferring.clear()
+
+        get_reader.assert_not_called()
+        assert {b["text"] for b in blocks} == {"OE O"}
+
+    def test_hybrid_fallback_no_corre_easyocr_si_strip_confiable(self):
+        """Fix 2026-08-16: strip confiable (conf >= 0.7) aunque haya texto
+        previo → NO correr EasyOCR extra."""
+        from unittest.mock import patch
+        from ocr_utils import _recover_regions_with_easyocr
+
+        img = np.ones((300, 400, 3), dtype=np.uint8) * 128
+        regions = [{"x": 100, "y": 80, "w": 60, "h": 40}]
+        confiable = [{"x": 30, "y": 40, "w": 120, "h": 50,
+                      "text": "ERASETUCCOMOLOS ILAM", "confidence": 0.81,
+                      "textColor": "#000000"}]
+        previo = [{"x": 100, "y": 80, "w": 40, "h": 30,
+                   "text": "YA HABIA TEXTO"}]
+
+        with patch("ocr_utils._rapidocr_strip_batch",
+                   return_value={0: confiable}):
+            with patch("ocr_utils._run_rapidocr", return_value=[]):
+                with patch("ocr_utils._get_ocr_reader") as get_reader:
+                    with patch("ocr_utils._group_and_merge_blocks",
+                               side_effect=lambda b, h: b):
+                        blocks = _recover_regions_with_easyocr(
+                            img, regions, upscale=3.5,
+                            hybrid_blocks=previo)
+
+        get_reader.assert_not_called()
+        assert blocks and blocks[0]["text"] == "ERASETUCCOMOLOS ILAM"
 
 
 # ─── Parámetros de _run_rapidocr (Fase 2: reintento agresivo) ────
@@ -2557,7 +2735,11 @@ class _FakeYoloResult:
 
 class TestDetectTextRegionsYolo:
     """_detect_text_regions_in_page — mapea detecciones YOLO a regiones en el
-    formato de la Ruta C, filtra por clase/área y degrada seguro."""
+    formato de la Ruta C, filtra por clase/área y degrada seguro.
+
+    Mockea torch.cuda.is_available — el conftest registra un stub de torch en
+    el CI (que no instala torch deliberadamente; ver pyproject.toml) para que
+    estos tests corran igual y la cobertura de la Ruta C se mantenga."""
 
     @pytest.fixture(autouse=True)
     def _limpiar_flags(self):
@@ -2953,7 +3135,9 @@ class TestDetectTextRegionsComicDetector:
     modelo (blk/seg/det) con el post-proceso de dmMaze (NMS por clase, DBNet
     unclip, máscara no cubierta) y mapea a coordenadas de página con la
     inversa EXACTA del letterbox. onnxruntime se mockea por completo (Paso 2
-    de PLAN_MANGA_OCR): los tests no cargan el modelo real."""
+    de PLAN_MANGA_OCR): los tests no cargan el modelo real. El conftest
+    registra un stub de onnxruntime en el CI (que no instala las deps de OCR
+    pesadas; ver pyproject.toml) para que estos tests corran igual."""
 
     @pytest.fixture(autouse=True)
     def _reset_engine(self):

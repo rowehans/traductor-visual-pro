@@ -1209,20 +1209,29 @@ def _get_foreign_spellchecker(lang: str) -> Any:
             return None
 
 
-def _contains_foreign_latin_tokens(text: str, spanish_checker: Any) -> bool:
-    """Detecta tokens de otros idiomas actuales dentro de un bloque latino."""
+def _contains_foreign_latin_tokens(text: str, spanish_checker: Any,
+                                   tokens: list[str] | None = None) -> bool:
+    """Detecta tokens de otros idiomas actuales dentro de un bloque latino.
+
+    ``tokens`` (opcional) deja que el caller pase los tokens YA separados,
+    sin puntuación y en minúsculas (los que _ocr_spellcheck prepara una sola
+    vez para el loop de corrección), evitando repetir el split/strip/-
+    lowercase. Cuando es None se tokeniza desde ``text`` (comportamiento
+    histórico, el de los tests que llaman solo con texto).
+    """
     if spanish_checker is None:
         return False
-    tokens = [
-        token.strip("'\".,;:!?¡¿()[]{}")
-        for token in text.split()
-    ]
-    tokens = [
-        token.lower() for token in tokens
-        # Incluye tokens de 2 letras en la deteccion ("go", "my", "je",
-        # etc.), aunque el corrector siga sin modificar palabras tan cortas.
-        if len(token) > 1 and not any(char.isdigit() for char in token)
-    ]
+    if tokens is None:
+        tokens = [
+            token.strip("'\".,;:!?¡¿()[]{}")
+            for token in text.split()
+        ]
+        tokens = [
+            token.lower() for token in tokens
+            # Incluye tokens de 2 letras en la deteccion ("go", "my", "je",
+            # etc.), aunque el corrector siga sin modificar palabras tan cortas.
+            if len(token) > 1 and not any(char.isdigit() for char in token)
+        ]
     if not tokens:
         return False
 
@@ -1554,16 +1563,31 @@ def _ocr_spellcheck(text: str) -> str:
     # Obtener spellchecker UNA VEZ fuera del loop
     sp = _get_spellchecker()
 
+    # Tokenización compartida: el strip de puntuación y el lowercase se
+    # calculan UNA sola vez y se reutilizan tanto en la detección extranjera
+    # (le pasamos los tokens ya limpios a _contains_foreign_latin_tokens,
+    # que antes volvía a hacer split/strip/filter sobre el texto) como en el
+    # loop de corrección. El detector extranjero incluye los acrónimos (los
+    # recibe en minúsculas, igual que cuando tokenizaba desde el texto); el
+    # loop los excluye con su chequeo isupper.
+    limpios: list[tuple[str, str, str]] = []
+    for p in palabras:
+        stripped = p.strip("'\".,;:!?¡¿()[]{}")
+        limpios.append((p, stripped, stripped.lower()))
+
     # Un detector de idioma de bloque puede clasificar como espanol una
     # frase corta mixta (por ejemplo: "Quiero go home"). Antes de corregir,
     # comparar los tokens contra los diccionarios de los idiomas latinos que
     # ya soporta el proyecto. Si hay evidencia extranjera, preservar todo el
     # bloque evita cambiar solo una parte de la frase.
-    if len(palabras) >= 2 and _contains_foreign_latin_tokens(text, sp):
+    if len(palabras) >= 2 and _contains_foreign_latin_tokens(
+            text, sp,
+            tokens=[low for _, stripped, low in limpios
+                    if len(stripped) > 1
+                    and not any(c.isdigit() for c in stripped)]):
         return text
 
-    for p in palabras:
-        stripped = p.strip("'\".,;:!?¡¿()[]{}")
+    for p, stripped, p_lower in limpios:
         if not stripped or len(stripped) <= 2:
             corregidas.append(p)
             continue
@@ -1578,8 +1602,8 @@ def _ocr_spellcheck(text: str) -> str:
             corregidas.append(p)
             continue
 
-        # Intentar correccion con pyspellchecker
-        p_lower = stripped.lower()
+        # Intentar correccion con pyspellchecker (p_lower ya viene en
+        # minúsculas de la tokenización compartida)
 
         if sp is not None:
             # Optimización 2026-08-15 (costo oculto del A/B de la Ruta C):
@@ -2445,6 +2469,96 @@ _RUTA_C_STRIP_MAX_CHUNK_H: int = 1900
 # como válvula de rollback si el strip diera problemas en algún corpus: con
 # False, _recover_regions_with_easyocr vuelve a _run_rapidocr por crop.
 _RUTA_C_STRIP_BATCH: bool = True
+# Fix 2026-08-16 (pérdida de diálogos del strip): el det DBNet sobre el strip
+# apilado detecta mal ciertas líneas — el strip leyó ruido ('Y' 0.25, 'P!' 0.46,
+# 'OE O' 0.5, 'S E' 0.71, 'IIFARRA' 0.49) o NADA en los crops de las págs
+# 1/4/40/52, mientras el crop INDIVIDUAL las lee a 0.94-0.99 (verificado con
+# el A/B benchmark_strip_fix_ab y el VLM). Cuando el strip no devuelve nada
+# CONFiable para un crop (ver _rapid_blocks_usable), se reintenta ESE crop con
+# _run_rapidocr individual (el motor exacto del camino pre-strip); el fallback
+# EasyOCR NO lee esos crops (basura 'じ‥'/'鼻' — medido), así que el retry es
+# rapid, no EasyOCR. A/B 2026-08-16: recupera los 4 diálogos perdidos.
+_RUTA_C_STRIP_RETRY_INDIVIDUAL: bool = True
+_RUTA_C_STRIP_RETRY_CONF_HI: Final[float] = 0.85
+_RUTA_C_STRIP_RETRY_CONF_LO: Final[float] = 0.7
+_RUTA_C_STRIP_RETRY_MIN_LEN: Final[int] = 6
+# Fallback híbrido (2026-08-16): cuando el strip (ya con el retry individual)
+# sigue DÉBIL (conf < 0.7) en un crop que ya tenía TEXTO del híbrido (el
+# texto previo detectado en esa zona), NO descartar el crop: correr igualmente
+# EasyOCR y FUSIONAR ambos resultados (el merge final deduplica por overlap).
+# Protege el texto real del híbrido de ser descartado por un bloque débil de
+# la Ruta C. Complementa al retry rapid-individual (que recupera los 4
+# diálogos perdidos); esta capa cubre el caso donde el retry tampoco lee bien
+# y el híbrido ya había capturado el texto en la zona.
+_RUTA_C_STRIP_HYBRID_FALLBACK: bool = True
+_RUTA_C_STRIP_HYBRID_MIN_CONF: Final[float] = 0.7
+_RUTA_C_HYBRID_OVERLAP_MIN: Final[float] = 0.1
+
+
+def _rapid_blocks_max_conf(blocks: list[Any]) -> float:
+    """Máxima confianza de los bloques rapid (0.0 si vacío/malformado)."""
+    mx = 0.0
+    for rb in blocks:
+        if not isinstance(rb, dict):
+            continue
+        try:
+            rb_conf = float(rb.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(rb_conf):
+            mx = max(mx, rb_conf)
+    return mx
+
+
+def _crop_has_prior_text(region: dict[str, Any],
+                         prior_blocks: list[dict[str, Any]]) -> bool:
+    """¿El híbrido (o bloques previos) ya leyó texto en esta zona del crop?
+
+    Solape > _RUTA_C_HYBRID_OVERLAP_MIN con algún bloque previo con texto.
+    Los callers ya excluyen los crops con overlap > 0.5 ANTES de la Ruta C;
+    aquí se captura el solape PARCIAL (el híbrido tocó la zona sin cubrirla
+    del todo), que es el caso donde un bloque débil de la Ruta C puede hacer
+    que la fusión descarte el texto real del híbrido.
+    """
+    for hb in prior_blocks:
+        if not isinstance(hb, dict):
+            continue
+        if not str(hb.get("text", "")).strip():
+            continue
+        try:
+            if _overlap_ratio(region, hb) > _RUTA_C_HYBRID_OVERLAP_MIN:
+                return True
+        except (TypeError, KeyError):
+            continue
+    return False
+
+
+def _rapid_blocks_usable(blocks: list[Any]) -> bool:
+    """¿El strip leyó algo CONFiable para este crop?
+
+    Confiable = conf >= 0.85 (lectura segura), o conf >= 0.7 con texto de
+    >= 6 chars (frase plausible a conf moderada). Distribución medida del
+    corpus (2026-08-16, 7 págs): el ruido del strip mide 0.25-0.71 ('Y',
+    'O', 'P!', 'S E', 'OE O', 'IIFARRA') y las lecturas reales largas
+    0.81-0.99 ('ERASETUCCOMOLOS ILAM' 0.81, 'AAHH...' 0.99) — un umbral
+    puro de confianza no las separa ('S E' 0.71 vs la frase larga 0.81);
+    la combinación conf + longitud sí.
+    """
+    for rb in blocks:
+        if not isinstance(rb, dict):
+            continue
+        try:
+            rb_text = str(rb.get("text", "")).strip()
+            rb_conf = float(rb.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if not rb_text or not np.isfinite(rb_conf):
+            continue
+        if (rb_conf >= _RUTA_C_STRIP_RETRY_CONF_HI
+                or (rb_conf >= _RUTA_C_STRIP_RETRY_CONF_LO
+                    and len(rb_text) >= _RUTA_C_STRIP_RETRY_MIN_LEN)):
+            return True
+    return False
 
 
 def _ruta_c_prepare_crops(
@@ -2682,6 +2796,7 @@ def _recover_regions_with_easyocr(
     regions: list[dict[str, Any]],
     lang_hint: str = "es",
     upscale: float = 3.5,
+    hybrid_blocks: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Re-OCR de regiones de texto/globos a nivel individual (Ruta C).
 
@@ -2707,6 +2822,13 @@ def _recover_regions_with_easyocr(
     chunk + UNA llamada text_rec para todos (−76.6 % del núcleo en el A/B,
     benchmark_rutac_batch.py); el fallback EasyOCR por crop se conserva para
     los crops que el strip no recupera.
+
+    Fallback híbrido (2026-08-16): ``hybrid_blocks`` es el texto YA leído
+    (híbrido/YOLO previos) en la página. Si el strip (con su retry individual)
+    queda DÉBIL (< _RUTA_C_STRIP_HYBRID_MIN_CONF) en un crop que solapa ese
+    texto previo, se corre igualmente EasyOCR y se FUSIONAN ambos resultados —
+    protege el texto real previo de ser descartado por un bloque débil de la
+    Ruta C en la fusión final.
 
     Returns:
         Bloques en formato interno ({x, y, w, h, text, confidence, fontSize}).
@@ -2762,6 +2884,25 @@ def _recover_regions_with_easyocr(
             # _RUTA_C_STRIP_BATCH=False se re-OCRea el crop individual.
             if _RUTA_C_STRIP_BATCH:
                 rapid_blocks = strip_by_crop.get(i, [])
+                # Fix 2026-08-16: si el strip no devolvió nada >= 0.7 para
+                # ESTE crop (ruido 'OE O' 0.5 / 'S E' 0.6 / 'P!' 0.46 o nada),
+                # reintentar el crop individual con _run_rapidocr — el det
+                # DBNet sobre el crop solo lee bien las líneas que el strip
+                # apilado detecta mal (A/B: recupera los 4 diálogos perdidos
+                # sin coste en los crops que el strip sí resuelve).
+                if (_RUTA_C_STRIP_RETRY_INDIVIDUAL
+                        and not _rapid_blocks_usable(rapid_blocks)):
+                    retry_blocks = _run_rapidocr(
+                        up_img_ocr, filter_page_margins=False,
+                        box_thresh=_RUTA_C_RAPID_BOX_THRESH,
+                        unclip_ratio=_RUTA_C_RAPID_UNCLIP_RATIO)
+                    # Solo reemplazar si el retry produjo algo: si devuelve
+                    # vacío, se conservan los bloques originales del strip
+                    # (aunque débiles) porque su TEXTO alimenta el script
+                    # hint del fallback (_script_language_hints) para elegir
+                    # el lector CJK en lugar del latino de "auto".
+                    if retry_blocks:
+                        rapid_blocks = retry_blocks
             else:
                 rapid_blocks = _run_rapidocr(
                     up_img_ocr, filter_page_margins=False,
@@ -2803,11 +2944,26 @@ def _recover_regions_with_easyocr(
                         "engine": "rapidocr-region",
                         "type": region_type,
                     })
-                # Si el daemon infiere o RapidOCR recuperó el crop, no
-                # ejecutamos EasyOCR adicional sobre el mismo globo.
-                continue
-            # RapidOCR no recuperó el crop: solo aquí se permite fallback a
-            # EasyOCR GPU, que se carga de forma lazy una única vez.
+                # Fallback híbrido (2026-08-16): el strip ya con el retry
+                # individual sigue DÉBIL (< _RUTA_C_STRIP_HYBRID_MIN_CONF) y
+                # el crop ya tenía texto del híbrido en la zona → NO descartar:
+                # correr igualmente EasyOCR y FUSIONAR con lo recuperado
+                # arriba (el merge final deduplica por overlap). Protege el
+                # texto real del híbrido de ser descartado por un bloque débil
+                # de la Ruta C (caso pág 4 del A/B). Con daemon infiriendo
+                # (use_rapid) EasyOCR está prohibido → continue.
+                if not (_RUTA_C_STRIP_HYBRID_FALLBACK
+                        and not use_rapid
+                        and hybrid_blocks is not None
+                        and _rapid_blocks_max_conf(rapid_blocks)
+                        < _RUTA_C_STRIP_HYBRID_MIN_CONF
+                        and _crop_has_prior_text(r, hybrid_blocks)):
+                    # El daemon infiere o RapidOCR leyó bien el crop (o no
+                    # aplica el fallback híbrido): no ejecutar EasyOCR extra.
+                    continue
+                # Cae al EasyOCR de abajo para fusionar con lo ya recuperado.
+            # RapidOCR no recuperó el crop (o el fallback híbrido pide
+            # fusionar): aquí se permite EasyOCR GPU, lazy una única vez.
             if reader is None:
                 fallback_lang = lang_hint
                 prefer_gpu = True

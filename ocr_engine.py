@@ -732,7 +732,8 @@ class OCRManager:
             regiones_utilizadas = list(regions)
             if regions:
                 yolo_blocks = self.ou._recover_regions_with_easyocr(
-                    img_bgr, regions, ocr_lang, upscale=3.5)
+                    img_bgr, regions, ocr_lang, upscale=3.5,
+                    hybrid_blocks=blocks)
                 print(f"[process-page] Fase 6 (YOLO): {len(regions)} regiones "
                       f"(globos/cartelas/títulos) → {len(yolo_blocks)} bloques "
                       f"recuperados")
@@ -802,7 +803,8 @@ class OCRManager:
                 ]
             if regions:
                 ctd_blocks = self.ou._recover_regions_with_easyocr(
-                    img_bgr, regions, ocr_lang, upscale=3.5)
+                    img_bgr, regions, ocr_lang, upscale=3.5,
+                    hybrid_blocks=blocks)
                 print(f"[process-page] Fase 6.5 (CTD): {len(regions)} regiones "
                       f"(texto sin globo) → {len(ctd_blocks)} bloques recuperados")
         except Exception as cerr:
@@ -1496,7 +1498,8 @@ class OCRManager:
                 ]
             if regions:
                 bubble_blocks = self.ou._recover_regions_with_easyocr(
-                    img_bgr, regions, ocr_lang, upscale=3.5)
+                    img_bgr, regions, ocr_lang, upscale=3.5,
+                    hybrid_blocks=blocks)
                 print(f"[process-page] Ruta C: {len(uimage_panels)} paneles + "
                       f"full-page → {len(regions)} globos → "
                       f"{len(bubble_blocks)} bloques recuperados")

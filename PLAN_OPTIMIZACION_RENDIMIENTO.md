@@ -399,6 +399,8 @@ baja frente a 2.5.
 > el prefilter cuesta 1.4 s y NO aporta (pág 3: −2 bloques/−0.07 conf;
 > pág 12: −0.20 conf); solo paga en páginas DÉBILES (pág 11: +7 bloques,
 > conf 0.29→0.65). Resultado completo: `benchmark_results/prefilter.json`.
+> (2026-08-16: `benchmark_prefilter_selective.py` + `prefilter_selective.json`
+> — 4.4C medida y descartada, ver bloque RESULTADO 4.4C abajo.)
 
 **Dónde**: `ocr_utils.py::_pre_filter_image`.
 
@@ -430,6 +432,66 @@ que ya se peleó).
 > es **4.4C** (detector de líneas más selectivo para reducir el área de la
 > máscara — el detector 1×15 + umbral 50 marca 88–94 % del área, que es la
 > causa raíz del coste), no bajar la resolución del inpaint.
+
+> **RESULTADO (4.4C IMPLEMENTADA, MEDIDA Y DESCARTADA con datos,
+> 2026-08-16, `benchmark_prefilter_selective.py`, 14 págs canónicas a
+> escala 1.2, daemon detenido, `prefilter_selective.json`)**: el detector
+> selectivo de LÍNEAS REALES no tiene señal en este corpus — las páginas
+> del cap. 43 NO tienen líneas de escaneo finas que aislar. Un detector
+> de trazos OSCUROS (umbral 120 + apertura 1×15 + componentes anchos y
+> finos: ancho ≥ 20 % de página y alto ≤ 8 px) marca **0.006 % del área en
+> las 14 páginas (0.00 % en 12, bordes de panel en 4/29)** → el inpaint de
+> líneas bajaría a 0.000-0.006 s — PERO no hay nada que limpiar: el
+> detector actual (umbral de BRILLO tras apertura 1×15, umbral 50) marca
+> 80-99 % (promedio 94.1 %) porque en un manga de fondo plano la apertura
+> brillante conserva la página completa, no líneas. El inpaint a página
+> completa es un SUAVIZADO de ruido distribuido, no la limpieza de líneas
+> que el comentario del código asume. A/B del caso límite (quitar el paso
+> de líneas por completo, solo speckle + bilateral, 0.48 → 0.02 s/pág):
+> la salida NO es neutra — se cuela ruido como bloques basura (Δ +44
+> bloques en las 14 págs, +5 a +7 en 1/4/8/39/43/52, textos '#'/'W'/
+> 'BNNN'/'HOLLNNE'/'VDHO'), la pág 11 de control se mantiene (2/0.70 vs
+> 2/0.66, sin regresión ni mejora) y en 43 baja la confianza (0.71 →
+> 0.45). El inpaint de líneas actual está limpiando ruido distribuido en
+> toda la página (por eso su máscara es ~94 %), y su coste de 0.53 s/pág
+> es ESTRUCTURAL para este corpus: no se puede reducir por selectividad
+> (no hay líneas que aislar) ni por resolución (4.4B ya midió regresión en
+> la pág débil). Vía restante: 4.4A (prefilter condicional per-página,
+> riesgo alto — cambia la imagen de entrada del tier1 y el trigger).
+
+> **A/B DE DISEÑO DE 4.4A (2026-08-16, `benchmark_prefilter_4_4a.py`,
+> capítulo completo 53 págs, mismo-proceso raw vs pref con cache de
+> decisiones fresca por variante, daemon detenido, `prefilter_4_4a.json`)**:
+> la pregunta clave (cuántas páginas justifican el prefilter y qué pasaría
+> con el trigger) queda respondida con datos:
+> - **Distribución de calidad sin prefilter**: 27/53 (50.9 %) caen bajo un
+>   umbral LAXO (n<6 o conf<0.6), pero solo **9/53 (17 %)** bajo un umbral
+>   ESTRICTO (n<6 Y conf<0.6): págs 1, 17, 21, 26, 33, 36, 37, 41, 45.
+> - **Dónde el prefilter realmente gana**: 13/53 (24.5 %) con ≥2 bloques o
+>   +0.10 conf (pág 17 conf 0.43→0.95, 33 0.56→0.86, 41 +4 bloques,
+>   46 +5, 48 +3, 1 +2 — las páginas débiles de verdad, casi todas las del
+>   umbral estricto + 4/46/47/48 que el umbral laxo no marca). En las otras
+>   40 páginas el prefilter NO cambia el resultado (Δblk=0, Δconf=0.00):
+>   los 0.53 s/pág son puro overhead en el 75 % del capítulo.
+> - **Riesgo del trigger v4.2: MEDIDO y CERO** — de las 53 páginas, NINGUNA
+>   cambia su decisión de trigger entre raw y pref (11 triggers en ambas,
+>   las mismas páginas). El riesgo central de 4.4A (que saltarse el
+>   prefilter en páginas normales altere qué páginas disparan VLM) no se
+>   materializa en este capítulo.
+> - **Ahorro bruto**: 0.53 s × páginas no-débiles = ~14 s (umbral laxo) o
+>   ~23 s (estricto) por capítulo — < 2 % del tiempo total. El delta de
+>   tiempo medido en el benchmark no es fiable (raw salió MÁS lento que pref
+>   por estado de GPU: 4.74 vs 3.19 s/pág, el prefilter medido en
+>   aislamiento es 0.53 s/pág); se usa el coste de producción.
+> - **Veredicto del diseño**: el ahorro real (~14-23 s/capítulo) es marginal
+>   frente al riesgo de implementación (doble pasada OCR en páginas débiles,
+>   ya que la debilidad solo se conoce DESPUÉS de correr el tier-1, más el
+>   re-prefilter de RapidOCR que hoy reutiliza la imagen ya filtrada).
+>   Con el trigger v4.2 ya cubriendo las páginas débiles (las 9 del umbral
+>   estricto son en su mayoría triggers VLM que el prefilter no decide),
+>   4.4A NO procede: el coste estructural de 0.53 s/pág queda como está
+>   documentado, y la palanca restante real sería un heuristico PRE-OCR
+>   barato de detección de ruido, no una doble pasada.
 
 ### 4.5. Afinar `_rapid_cond_skip` para páginas con conf 0.15–0.20
 
@@ -696,6 +758,108 @@ trigger). Requiere A/B con `analisis_calidad.py`.
 >   el capítulo tarda ~20 min por las 11 llamadas VLM) +
 >   `tools/analizar_vlm_1280.py` (fusión y comparación).
 
+> **ROI DEL VLM POR PÁGINA (2026-08-16, consolidado de las 5 corridas
+> completas: vlm_full53, vlm_full53_2, all3, gate_p17 base/off — 51 llamadas
+> VLM)**: la recuperación por página es NOTABLEMENTE DETERMINISTA (5/5
+> corridas con el mismo recuento en 16/21/25/28/31/32/36/37; 15 siempre 1;
+> 13 y 17 SIEMPRE 0 — en las 4-5 corridas donde el VLM corrió). Tabla
+> ordenada de s/bloque (vlm_stage / bloques recuperados, agregado 5
+> corridas):
+>
+> | Pág | VLM total | Bloques | s/bloque | Lectura |
+> |---|---|---|---|---|
+> | 31 | 197.5 s | 20 (5/5 × 4) | **9.9** | MEJOR ROI |
+> | 28 | 306.2 s | 30 (× 6) | 10.2 | |
+> | 16 | 279.8 s | 25 (× 5) | 11.2 | |
+> | 25 | 252.3 s | 20 (× 4) | 12.6 | |
+> | 21 | 913.1 s | 40 (× 8) | 22.8 | el más caro en absoluto (pero 8 bloques reales) |
+> | 37 | 132.9 s | 5 (× 1) | 26.6 | |
+> | 36 | 133.7 s | 5 (× 1) | 26.7 | |
+> | 32 | 153.6 s | 5 (× 1) | 30.7 | |
+> | 15 | 422.9 s | 5 (× 1) | **84.6** | PEOR ROI con recuperación (1 bloque carísimo) |
+> | 13 | 170.4 s | 0 (4/4) | ∞ | SIN RECUPERACIÓN (4/4 corridas) |
+> | 17 | 101.9 s | 0 (4/4) | ∞ | SIN RECUPERACIÓN (4/4 corridas) |
+>
+> Lectura para futuros gates: (1) 13 y 17 son los candidatos claros —
+> SIEMPRE 0 recuperación (el gate de 17 ya se midió: −22 s sin pérdida,
+> pero < ruido de medición del capítulo); el gate de 13 ahorraría ~34-68
+> s/corrida (el doble que 17). (2) 15 es el peor ROI con recuperación: 1
+> bloque por 71-97 s/corrida — el diálogo que recupera vale 84 s/bloque;
+> un gate por página para 15 solo tendría sentido si ese bloque concreto
+> deja de ser valioso. (3) 32/36/37 (1 bloque, 21-42 s) están en el límite:
+> el coste por bloque duplica al de 31/28/16/25. (4) El determinismo
+> 5/5 sugiere que un gate por firma de página (no por heurística global)
+> sería seguro de calibrar con los datos existentes.
+
+> **A/B DEL GATE DE PÁG 17 (2026-08-16, `benchmark_gate_p17_ab.py`, capítulo
+> completo 1-53, daemon ready, `gate_p17_base.json` vs `gate_p17_off.json`)** —
+> pág 17 es la única llamada VLM del capítulo con 0 recuperación. Resultado:
+> anular su trigger (wrapper de `_trigger_con_cache` que devuelve False solo
+> en pág 17; rapid-agresivo y el resto del pipeline intactos) baja la pág de
+> 25.5 s → 3.2 s (**−22.3 s exactos**), triggers 11 → 10, VLM 11 → 10,
+> **recuperación 31 = 31 (sin pérdida)**. Sin efectos laterales: las 42
+> páginas no-VLM suman 448.7 vs 449.0 s (Δ 0.3 s, noise). PERO el total del
+> capítulo solo baja 1068.7 → 1072.9 s (+4.2 s, es decir NADA): el ahorro de
+> 22.3 s queda enmascarado por la varianza de generación del VLM en otras
+> páginas (pág 15 +20.8 s, 28 +10.5 s, 16 +8.9 s vs 36 −12.2 s, 25 −3.9 s —
+> mismas llamadas, misma recuperación, generación estocástica). **Veredicto:
+> el gate de pág 17 ahorra ~22 s (~2 % del capítulo) sin perder nada, pero
+> es del orden de la varianza entre corridas — implementarlo añadiría un
+> caso especial al trigger por un ahorro menor que el ruido de medición.
+> Se documenta y NO se aplica** (el ahorro real del capítulo es la
+> generación, no el gate; la pág 17 ya está dentro del ruido).
+
+> **ANÁLISIS DE PÁG 13 — ¿VALE LA PENA SU LLAMADA VLM? (2026-08-16): NO.
+> Datos consolidados: 0 recuperaciones en 4/4 corridas donde el VLM corrió
+> (vlm_full53_2 68.0 s, all3 31.9 s, gate_p17_base 31.5 s, gate_p17_off
+> 39.0 s — siempre rec=0; en vlm_full53 la saltó el cache de negativas).
+> Token-level (daemon-side a max_length 1280): 32 tokens nuevos en 2
+> llamadas generate y 1 bloque crudo — la misma huella que la pág 17
+> (también 32 tokens/1 bloque crudo/rec=0): el VLM no encuentra diálogo
+> artístico que extraer. El trigger es `large_image_panel` (panel oscuro
+> grande) pero el panel no tiene texto incrustado. **Por qué la saltó el
+> cache solo UNA vez**: el mecanismo §8.4.1 ya es un gate por historial de
+> recuperación (firma → negativa con TTL 30 min), pero para pág 13 falla
+> por dos motivos: (1) el TTL expira entre corridas separadas >30 min (las
+> corridas consecutivas de benchmark borran el cache con
+> `clear_decision_cache` y re-registran); (2) la firma de pág 13 es
+> INESTABLE entre corridas — la negativa persistida se registró con 6
+> bloques/conf 0.81 en 3 corridas pero el cache mostró entradas con 6/0.59
+> y 3/0.00 (dos firmas distintas para la misma página) — la salvaguarda
+> `much_mas_debil` y la deriva de la firma impiden que la negativa
+> sobreviva. **Recomendación: no vale la pena — gate por historial con
+> firma estable.** Pág 13 (y 17) son las 2 únicas páginas con 0
+> recuperación en TODAS las corridas; el costo de 13 (31-68 s, el doble
+> que 17) sí justifica un tratamiento. La vía correcta: extender el TTL de
+> negativas para ceros confirmados o usar una firma más estable (p. ej.
+> hash de la imagen prefilter vs el grid de oscuridad que deriva con los
+> bloques del híbrido), validando con el A/B del gate de 13 igual que el
+> de 17.
+
+> **AISLAMIENTO DE PÁG 21 — ¿SE PUEDE BAJAR MÁS EL PEO CASO? (2026-08-16,
+> `benchmark_vlm_maxlen.py --pages 21` a 1024 vs 1280, mismo-proceso con el
+> daemon real, `vlm21_1024.json` + `vlm21_1280.json`)**: NO — bajar el cap
+> a 1024 no ahorra nada útil. Mediciones frescas: 1024 → vlm 167.0 s, 7
+> bloques recuperados (10 finales); 1280 → vlm 177.1 s, 8 recuperados (11
+> finales). **La diferencia de 1 bloque es OTRO duplicado `[Unreadable]`**
+> (los textos reales son idénticos entre 1024 y 1280: 'CUFNE DENENE
+> RELPVNTEPARA CEAREARLA.', 'ENTONCES ENTONCES', 'EPORQUEYO PUEDO...?',
+> 'NE PORIA JBFLMR', 'NO...'), o sea: 1024 recorta ~10 s (6 % de la etapa
+> vlm de pág 21, ~1.3 % del capítulo) SIN ganar nada y CON el riesgo ya
+> medido de perder texto real en otras páginas (16/28 pierden bloques a
+> 1024, ver A/B de §3.3). La estructura del costo de pág 21 está aislada:
+> **2 llamadas `generate` — (1) infer principal: 16 tokens en ~23 s (casi
+> todo prefill de imagen a 640 px); (2) re-OCR del panel grande
+> (`_recover_art_dialogue`, crop_mode=False): el resto, 1933 tokens a 2048
+> y ~1280 (el cap) en producción — el modelo DIVAGA en bucle de repetición
+> (18 chars de texto real, no_repeat_ngram 35 no alcanza a cortarla). El
+> cap ya la trunca en producción (300 → ~196 s, −35 %); el remanente del
+> costo es prefill + los ~1280 tokens truncados, no recortable por cap sin
+> perder el texto del panel. **Veredicto: `UOCR_MAX_LENGTH = 1280` se
+> mantiene** — es el punto calibrado; 1024 no mejora el ROI y arriesga las
+> otras páginas. Palanca real restante para pág 21: el prompt (fijo
+> '<image>document parsing.' en uocr_daemon.py) o el prefill, no el cap.
+
 > **BATCH ESTRUCTURAL DE CROPS DE LA RUTA C (2026-08-15,
 > benchmark_rutac_batch.py) — la palanca estructural diseñada y medida.**
 > **Veredicto: el diseño VALIDA (−76.6 % en el núcleo de la Ruta C); la
@@ -831,6 +995,79 @@ trigger). Requiere A/B con `analisis_calidad.py`.
 > Resultado: `benchmark_results/production_strip_full53.json`. El objetivo
 > Fase 1 "< 3.5 s/pág" queda CUMPLIDO (3.07 s/pág) — nota: esta corrida
 > incluye el fix del spellcheck del turno anterior (10.43 s → 3.7 ms en
+
+> **⚠ REVISIÓN DE LOS 6 BLOQUES PERDIDOS (2026-08-16, verificación
+> mismo-proceso + VLM independiente, `strip_blocks_check.json` +
+> `strip_targeted.json` + recortes en `strip_visual/`)**: la conclusión
+> "varianza de segmentación" del A/B anterior era INCORRECTA — **4 de los 6
+> bloques son CONTENIDO REAL PERDIDO** (diálogo confirmado por el daemon VLM
+> sobre los recortes, lectura independiente del OCR): pág 1
+> 'EN VERDAD ES INCREIBLE...', pág 4 '...Y SI HUBIESE ACEPTADO...', pág 40
+> '¡PADRINO!!! ¡ESTO ESTÁ MUY RICO!', pág 52 '¿EN VERDAD QUIERES VOLVER A
+> COMERLAS HOY?'. Solo 2 son segmentación real (pág 30 'ahhosuou' = ruido;
+> pág 34 'CLING' → 'cuno' = onomatopeya leída distinto). **Mecanismo de la
+> pérdida (debug por crop)**: el det DBNet del strip apilado detecta mal la
+> línea dentro del crop — pág 52 crop 1: rapid individual lee
+> 'QUIERESVOLVERA EENVERDAD/COMERLASHOY?' (conf 0.94/0.99) pero el strip lee
+> 'OE O' (0.5); pág 1 crop 1: individual 'ENVERDADES INCREIBLE' (0.97) vs
+> strip 'S E' (0.6); pág 40 crop 1: 'ESTOESTA IPADRINO!!/MUYRICO!' (0.97/0.98)
+> vs strip 'P!' (0.46). El ruido del strip supera `RUTA_C_RAPID_MIN_CONF=0.45`
+> → `usable_rapid` no vacío → **el fallback EasyOCR por crop NO corre** → el
+> diálogo real se pierde silenciosamente. Pág 4 es distinto: el fallback
+> EasyOCR SÍ corre pero lee basura del crop ('鼻'), y el bloque resultante
+> solapa (iou 0.53) con la burbuja del híbrido 'YSIHUBIESE ACEPTADO.' que la
+> fusión descarta como duplicada — contenido real perdido por la fusión.
+> **Costo real del strip**: −2.38 s/pág (medido, válido) a cambio de perder
+> ~4 diálogos reales en el capítulo (de ~300 bloques, ~1.3 %). **A/B DEL FIX + APLICADO (2026-08-16, `benchmark_strip_fix_ab.py`, 7 págs,
+> mismo-proceso alternado base/fix, daemon ready, `strip_fix_ab.json`)** —
+> la hipótesis "subir el umbral de usable_rapid a 0.7 → el fallback EasyOCR
+> recupera" FUE MEDIDA Y DESCARTADA: con 0.7 el ruido sí se filtra ('p!',
+> 'oe o', 's e' desaparecen) pero **EasyOCR lee basura en esos crops**
+> ('じ‥', '鼻') — los 4 diálogos NO se recuperan. El motor que sí los lee es
+> **rapid-INDIVIDUAL por crop** (0.94-0.99, confirmado por la referencia
+> per-crop). **Fix aplicado**: retry por crop con `_run_rapidocr` individual
+> cuando el strip no devuelve nada CONFiable (regla conf+longitud calibrada
+> con la distribución real: ruido 0.25-0.71 corto vs lecturas reales largas
+> 0.81-0.99 — 'S E' 0.71 vs 'ERASETUCCOMOLOS ILAM' 0.81, un umbral puro no
+> las separa): confiable = conf ≥ 0.85, o conf ≥ 0.7 con ≥ 6 chars
+> (`_RUTA_C_STRIP_RETRY_INDIVIDUAL=True` + `_rapid_blocks_usable`).
+> **Resultado: 4/4 diálogos recuperados** (págs 1, 4, 40, 52: fragmento
+> base=False → fix=True; los garbage 's e'/'鼻'/'p!'/'oe o' desaparecen;
+> pág 30 'por'→'por por' y pág 34 'cuno'→'cling' son segmentación/lectura
+> benigna). **El ahorro del strip se mantiene**: fix 2.6-5.6 s vs per-crop
+> 4.2-7.5 s en las 7 páginas; el retry solo suma ~0.3-1.2 s en las páginas
+> con crops fallidos y es noise-neutral en las sanas (pág 43: 3.30 vs 3.91).
+> El retry conserva los bloques originales del strip si devuelve vacío
+> (para no perder el script hint CJK del fallback). Tests: 2 nuevos (retry
+> dispara en ruido y recupera; no dispara en lectura confiable) + 5
+> adaptados (parchean `_run_rapidocr` a []); CI completo verde 987/987.
+> **Capa extra (fallback híbrido, 2026-08-16)**: además, cuando el strip
+> (ya con el retry) sigue DÉBIL (< `_RUTA_C_STRIP_HYBRID_MIN_CONF`=0.7) en
+> un crop que solapa (>0.1) TEXTO PREVIO del híbrido (`hybrid_blocks` se
+> pasa desde los 3 callers de ocr_engine: YOLO/CTD/burbujas), se corre
+> IGUALMENTE EasyOCR y se FUSIONAN ambos resultados — protege el texto real
+> del híbrido de ser descartado por un bloque débil de la Ruta C en la
+> fusión (caso pág 4). 4 tests nuevos (dispara con texto previo + strip
+> débil y fusiona; no dispara sin texto previo, con daemon infiriendo, ni
+> con strip confiable); CI completo verde 991/991.
+
+> **RE-CORRIDA DEL CAPÍTULO COMPLETO CON EL FIX APLICADO (2026-08-16,
+> `benchmark_production.py` 1-53, daemon ready, `production_fix_full53.json`
+> + `.log`)** — costo por página del fix en el pipeline completo:
+> total 175.7 s / 53 págs = 3.32 s/pág (vs 162.5 s = 3.07 s/pág pre-fix de
+> `production_strip_full53.json`, +8.1 %). El delta está dominado por el
+> estado de GPU (una sola corrida, sin intercalado), no por el fix: las 4
+> páginas afectadas contra el baseline non-VLM corregido
+> (`production_nonvlm_fixed.json`, mismo harness) quedan dentro del ruido
+> de ±1 s: pág 1 11.59 vs 11.07 s, pág 4 8.42 vs 8.32 s, pág 40 3.87 vs
+> 4.31 s, pág 52 6.22 vs 5.75 s (Δ ≤ 0.5 s). El trigger mantiene 11/53 y el
+> VLM se llama en las mismas 11 páginas (sin re-triggers por el fix).
+> Veredicto: el fix recupera los 4 diálogos a un coste ≤ 0.5 s/página en
+> las páginas afectadas (≤ 9 ms/pág en el promedio del capítulo), dentro
+> del ruido — el tradeoff pre-fix (diálogos perdidos a cambio de −2.38 s/
+> pág) queda cerrado con el fix activo.
+
+> Nota de la corrida: el bloque de arriba continúa con el texto original de
 > pág 4), que contribuye parte del ahorro dentro de `ruta_c`.
 
 > **FAST-PATH EXTENDIDO A LOS SPELLCHECKERS EXTRANJEROS (2026-08-15)** —
@@ -889,6 +1126,159 @@ trigger). Requiere A/B con `analisis_calidad.py`.
 >   cambiar producción por datos despreciables (disciplina del proyecto);
 >   `benchmark_foreign_check.py` queda como herramienta para re-auditar si
 >   cambia el corpus (p. ej. más español/mezcla).
+
+> **MEDICIÓN DEL CAMINO CORTO DE `sp.correction()` (2026-08-16,
+> `benchmark_foreign_check.py` AMPLIADO, 53 págs, daemon detenido,
+> `foreign_check_short2.json`)**: el "es known() 0.306 s / 801820 palabras"
+> de la auditoría anterior se atribuyó aquí por rango de longitud — el costo
+> del camino corto (<13 chars, que delega a `sp.correction()`) es **0.471 s
+> en el capítulo (8.9 ms/pág)**, y el 99.9 % está concentrado en **2 palabras
+> patológicas de OCR pegado**: 'clvdeg' (6 chars: 116 ms, 198893 words
+> known) y 'clvdegchmar' (11 chars: 354 ms, 601463 words). Desglose:
+>
+> | Rango | Llamadas | sp.correction | known() words | Correcciones reales |
+> |---|---|---|---|---|
+> | 3-5 | 11 | 0.001 s (0.09 ms/call) | 836 | **3** ('unf','amf','chmar') |
+> | 6-7 | 1 | **0.116 s** | 198893 | 0 |
+> | 8-10 | 4 | 0.000 s (0.011 ms/call) | 4 | 0 |
+> | 11-12 | 1 | **0.354 s** | 601463 | 0 |
+>
+> **Evaluación de bajar `_SPELL_CORRECTION_MIN_LEN` de 13 a 8-10** (la
+> hipótesis: con el índice arreglado la réplica ya es competitiva en cortas):
+> - **Equivalencia VERIFICADA: 10/10 palabras desconocidas de 8-12 chars**
+>   dan el MISMO resultado que `sp.correction()` (los "diffs" del capítulo
+>   eran un artefacto de mi comparación: cuando ambos devuelven `None` =
+>   sin corrección, el comportamiento efectivo es idéntico).
+> - **La réplica es 3-8× MÁS RÁPIDA en 8-12 fuera del diccionario**: 'unbuen'
+>   207→64 ms, 'podriausar' 458→90 ms, 'corectamen' 446→82 ms,
+>   'comerlashoy' 495→60 ms, 'matandoelt' 444→88 ms — el peor caso del
+>   camino corto (palabra pegada) baja de ~0.35-0.5 s a ~0.04-0.09 s.
+> - **No se pierde NINGUNA corrección real**: las 3 del capítulo son de
+>   3-5 chars (se quedan en `sp.correction()` con umbral 8) y las de 6-12
+>   no corrigen nada (0 corregidas) — bajar el umbral solo mueve las
+>   patológicas a la réplica, que no las corrige (None) pero las resuelve
+>   3-8× más rápido.
+> **VEREDICTO**: el ahorro es real pero **marginal en términos absolutos**
+> (0.471 s → ~0.09 s = ~0.38 s/capítulo ≈ 0.2 % del capítulo sin VLM; ~6 ms
+> por página) y está concentrado en 2 palabras raras del corpus. Con la
+> disciplina del proyecto (no cambiar producción por datos despreciables),
+> **NO se cambia el umbral** — el costo actual del camino corto ya es
+> 8.9 ms/pág y el fix del 2026-08-15 (réplica ≥13) resolvió el caso masivo
+> (spellcheck 10.43 s → 3.7 ms en pág 4). La palanca queda DOCUMENTADA y
+> lista (`_SPELL_CORRECTION_MIN_LEN=8` es seguro y verificado) si un corpus
+> futuro trae más texto español pegado de 8-12 chars; re-auditar con
+> `benchmark_foreign_check.py` antes de decidir.
+
+> **ANÁLISIS DE LOS 17 BLOQUES MIXTOS: ¿AFINAR CUÁNDO SE LLAMA EL CHECK?
+> (2026-08-16, `benchmark_foreign_gate.py`, 53 págs, daemon detenido,
+> `foreign_gate.json`)** — se capturaron los 112 bloques que llegan al
+> chequeo y, para los 17 `foreign=True`, se midió la evidencia extranjera
+> (tokens en/pt no-es), las **correcciones forzadas** (re-correr
+> `_ocr_spellcheck` con el gate desactivado y diff palabra a palabra — las
+> que el gate preserva) y la ambigüedad del detector (`_detect_language_
+> simple` vs el robusto que ya pasó el gate). Resultado por bloque:
+>
+> | Pág | Texto | Evidencia ext. | Correcciones forzadas |
+> |---|---|---|---|
+> | 2 | SUI DISTANCAAMENOS QUE | 'sui' (en) | 0 |
+> | 4 | ESTA RELACIONADO CON (×2) | 'relacionado' (pt) | 0 |
+> | 16 | TODO, HAS VENI- | 'has' (en) | 0 |
+> | 29 | IO CUC PUEDO DOCIR. (×2) | 'io' (2 chars) | 0 |
+> | **29** | **ASi QUE SEGUi (×2)** | **'segui' (pt)** | **2 c/u: 'ASi'→'Así', 'SEGUi'→'Seguir'** |
+> | 41 | vemos uegol No (+×1 largo) | 'vemos' (pt) | 0 |
+> | 41 | AL DIA SIGUIENTE... (×2) | 'dia' (pt) | 0 |
+> | 42 | ALEGRIAQUE PUEDA VERTE | 'verte' (pt) | 0 |
+> | 50 | SEPARO SUS (×2) | 'separo' (pt) | 0 |
+> | 50 | ...PEOUENAS BOLSAS... | 'bolsas' (pt) | 0 |
+> | 51 | CUANTOS ANOS MAS! | 'anos' (pt) | 0 |
+>
+> **Hallazgo central: el gate es INERTE para 15/17 bloques** — con el gate
+> desactivado el spellcheck produce EXACTAMENTE el mismo texto (0
+> correcciones forzadas): 13 son bloques TODO-MAYÚSCULAS (el loop se salta
+> cada palabra como acrónimo `isupper`) y 2 son de caso mixto salvados por
+> el filtro d1 (`'vemos'` → corrección d2 `'menos'` descartada por
+> `_SPELL_EDIT_1_MAX_LEN=5`). La única protección REAL del capítulo está en
+> pág 29: el gate preserva `'SEGUi'` (pt; acento-less quizá el español
+> `'seguí'`) de corromperse a `'Seguir'` (d1), a cambio de bloquear el fix
+> español `'ASi'`→`'Así'` (también d1) — 2 bloques con 2 cambios cada uno =
+> **4 correcciones totales preservadas en el capítulo, 2 sobre token
+> extranjero y 2 españolas perdidas**.
+>
+> **Causa raíz de los 15 triggers falsos: huecos del diccionario es**, no
+> contenido mixto — verificado: `'relacionado'`, `'bolsas'`, `'vemos'`,
+> `'dia'`, `'separo'`, `'verte'`, `'has'` son palabras españolas válidas
+> AUSENTES del diccionario es de pyspellchecker (`es=False`, `pt/en=True`),
+> así que el check las declara "desconocidas al español" y las encuentra en
+> pt/en → falso mixto. Agregarlas al diccionario re-clasificaría esos 15
+> bloques como españoles con **cero cambio de salida** (los 15 son inertes,
+> verificado empíricamente) — un fix de cobertura, no del call-site.
+>
+> **VEREDICTO sobre afinar CUÁNDO se llama el check:**
+> - **Por tiempo: NO** — 3.6 ms en 112 llamadas (0.032 ms/llamada); no hay
+>   nada que ahorrar en el punto de llamada.
+> - **"Solo cuando langdetect es ambiguo": NO** — 16/17 bloques son
+>   es-confiado (`simple` = es); el único ambiguo (pág 41 'vemos uegol No',
+>   `simple`=en) es inerte de todos modos. Un gate por ambigüedad saltaría
+>   el check en los 16 confiados → pág 29 perdería la ÚNICA protección
+>   extranjera real del capítulo ('SEGUi') para ganar 2 fixes de 'Así' —
+>   un intercambio neto negativo en una sola línea de diálogo.
+> - **El problema real es de PRECISIÓN, no del call-site**: 17/112 = 15 %
+>   de triggers sugiere un corpus 15 % mixto cuando el bloque genuinamente
+>   mixto es ~1 (pág 29). Si la señal importa en el futuro, el fix es la
+>   cobertura del diccionario es (con `wf.add`, como las 16 palabras manga),
+>   NO gatear la llamada. El call-site queda COMO ESTÁ; `benchmark_foreign_
+>   gate.py` queda como herramienta de re-auditoría.
+
+> **MAPEO + COSTO POR PÁGINA DE TODOS LOS TOUCHPOINTS DE PYSPELLCHECKER
+> (2026-08-16, `benchmark_spell_touchpoints.py`, 53 págs, daemon detenido,
+> `spell_touchpoints.json`)** — instrumentación con pila de sitios (misma
+> técnica) sobre TODOS los puntos que tocan pyspellchecker y su maquinaria.
+> **Mapa del pipeline**: `_ocr_spellcheck` tiene UN SOLO caller
+> (`_group_and_merge_blocks`, línea 3119); fuera de su cuerpo no hay
+> llamadas directas a pyspellchecker — los demás touchpoints son sus
+> helpers (`_contains_foreign_latin_tokens` con `known()` es/en/pt, la
+> réplica `_spellcheck_correction`, `_spell_candidates`, el índice
+> `_spell_words_by_len`) más el preload de `server.py` (one-time). Costo
+> real por capítulo:
+>
+> | Sitio | Llamadas | Tiempo | Nota |
+> |---|---|---|---|
+> | `langdetect` (contexto) | 523 | **2.954 s = 70 % del spellcheck** | 5.65 ms/llamada, prefijo 600 chars |
+> | `sp.correction()` (camino corto <13) | 17 | 0.476 s | 100 % en pág 41 (2 palabras patológicas) |
+> | `known()` interno de correction | 1212 | 0.313 s | expansión edit_1/edit_2 (dentro de lo anterior) |
+> | cargas one-time es/en/pt | 172/98/94 | 0.574 s | precargadas por server.py en producción |
+> | `_spell_candidates` | 11 | 0.188 s | 0.17 s es el BUILD one-time del índice |
+> | `_spell_words_by_len` (índice) | 11 | 0.170 s | build one-time (0.17 s) + 10 hits en cache |
+> | `foreign_check` (body real) | 112 | ~0.006 s | sin cargas: 110 calls = 0.0035 s (igual que la auditoría previa) |
+> | `_spellcheck_correction` (réplica) | 8 | 0.001 s | largas ≥13: todas rápidas |
+>
+> **Hallazgos**:
+> - **NO hay touchpoints de pyspellchecker fuera de `_ocr_spellcheck` en el
+>   pipeline** — todo confluye en la línea 3119; el único uso externo es el
+>   preload de server.py (es/en/pt), que ya vive en el arranque.
+> - **El costo real por página de los touchpoints API es ~9 ms/pág en
+>   total**, concentrado al 96 % en la pág 41 (el camino corto de las 2
+>   palabras patológicas). El foreign check, la réplica y los candidatos
+>   suman <0.03 s/capítulo; el build del índice (0.17 s) es one-time (cae
+>   en el primer candidato — descubierto: el FILTRO d1 de palabras cortas
+>   de `_ocr_spellcheck` llama `_spell_candidates` directamente, fuera de la
+>   réplica; ahí aterriza el build del índice).
+> - **NUEVO HALLAZGO ACCIONABLE: `langdetect` es el costo dominante de la
+>   maquinaria spellcheck (2.95 s = 70 %; en la mayoría de páginas ≈ 100 %
+>   de su spellcheck)**, NO pyspellchecker. La auditoría de 2026-08-15
+>   concluyó que langdetect "no era el cuello" para la pág 4 (el profile
+>   mostraba 26.2 s en correction); pero UNA VEZ corregido el corrector, el
+>   residual del spellcheck por bloque es langdetect: 5.65 ms × 523 bloques
+>   no-CJK. Candidato de optimización: cache por firma/página (patrón del
+>   cache de negativas del VLM §8.4.1) — los bloques de una misma página
+>   comparten idioma, y `_ocr_spellcheck` ya reutiliza el prefijo.
+> - **VEREDICTO**: los touchpoints de pyspellchecker fuera del loop de
+>   corrección NO justifican tocar nada (0.03 s/capítulo reales, todo lo
+>   demás es one-time y ya está en el arranque). La palanca real que abre
+>   este mapeo es langdetect (2.95 s), fuera del alcance de pyspellchecker
+>   pero dentro de la maquinaria del spellcheck; A/B con el patrón de
+>   firma antes de tocar. `benchmark_spell_touchpoints.py` queda como
+>   herramienta de re-medición.
 
 > **A/B: LÍMITE DE EDICIÓN DEPENDIENTE DE LA LONGITUD (2026-08-15)** —
 > calibrado con el capítulo completo instrumentado
@@ -989,8 +1379,26 @@ trigger). Requiere A/B con `analisis_calidad.py`.
 > | Baseline | Total | Promedio | Bloques | VLM rec. |
 > |---|---|---|---|---|
 > | strip daemon DOWN (`production_strip_full53`) | 162.5 s | 3.07 s/pág | 298 | 0 (VLM degradado) |
+> | strip + FIX del diálogo daemon DOWN (`production_fix_full53`) | 175.7 s | 3.32 s/pág | — | 0 (VLM degradado) |
 > | 1280_* daemon UP, 4 chunks (`production_1280_*`) | 1293 s | 24.4 s/pág | 321 | 31 |
 > | **ACTUAL (3.5×+strip+1280, daemon UP, corrida única)** | **691 s** | **13.04 s/pág** | **329** | **31** |
+> **DELTA EXACTO DAEMON UP vs DOWN (2026-08-16, consolidado de los JSONs
+> existentes — mismo estado de producción 3.5×+strip+1280, mismo harness)**: el
+> costo de la recuperación de diálogo artístico es el par `production_strip_full53`
+> (162.5 s) vs `production_vlm_full53` (709.8 s): **Δ = 547.3 s (9.12 min) por
+> 31 bloques recuperados (≈17.7 s/bloque)**. La suma de stages `vlm` de la
+> corrida es 573.1 s (el delta exacto pedido; la diferencia de ~26 s con el
+> Δ de wall-clock es el margen del trigger/degradación + varianza de las
+> páginas no-VLM: 122.4 vs 119.2 s, Δ −3.2 s — el pipeline sin VLM es
+> idéntico con o sin daemon). Contra el par alternativo all3 (691.0 s,
+> stages vlm 541.8 s): Δ = 528.5 s. Rango consolidado: **528-547 s de
+> wall-clock (542-573 s de stage VLM) ≈ 9 min/capítulo por 31 bloques**.
+> Desglose del delta por página trigger (las 11 de `large_image_panel`):
+> pág 21 +188 s/8 bloques (peor ROI, 23 s/bloque), 28 +57 s/6, 16 +54 s/5,
+> 25 +45 s/4, 31 +37 s/4, 15 +81 s/1, 32 +27 s/1, 36 +21 s/1, 37 +22 s/1,
+> 17 +21 s/0 (única llamada sin recuperación). El resto de páginas (no
+> trigger) queda en ±1.4 s — el delta es 100 % VLM, sin costo oculto en el
+> pipeline.
 > Lectura: (1) el VLM recupera **31 bloques reales** (pág 21: 8, pág 28: 6,
 > pág 16: 5, pág 25/31: 4 c/u) a costa de la inferencia (691 vs 162 s — el
 > precio de la recuperación de diálogo artístico); (2) vs los chunks 1280_*
@@ -1000,8 +1408,145 @@ trigger). Requiere A/B con `analisis_calidad.py`.
 > 207→22 s) y las llamadas VLM fueron más rápidas (pág 13: 87→34 s, pág 15:
 > 115→72 s — generación estocástica), aunque pág 21 bajó de 196→173 s con
 > el strip; (3) las páginas sin VLM se mantienen en el rango del baseline
-> strip (1.2-6.7 s). max_length=1280 queda verificado end-to-end: misma
-> recuperación (31) que la corrida 1280_* con el daemon en el mismo estado.
+> strip (1.2-6.7 s). max_length=1280 queda verificado end-to-end: misma> recuperación (31) que la corrida 1280_* con el daemon en el mismo estado.
+
+> **RE-MEDICIÓN DEL COSTO REAL DEL VLM (2026-08-16, `production_vlm_full53.json`,
+> daemon VLM READY desde el inicio, mismo corpus 53 págs, 3.5× + strip +
+> max_length 1280)**: corrida única completa para aislar cuánto del capítulo
+> es el VLM. Resultado: **promedio 13.39 s/pág, total 709.8 s (~11.8 min)**,
+> 11/53 triggers, **10 llamadas VLM reales** (pág 13 quedó en el cache de
+> negativas §8.4.1 esta corrida — antes llamaba VLM con 0 recuperación y
+> 32-87 s; el cache la saltó sin perder nada), 31 bloques recuperados,
+> suma de stages `vlm` = **573.1 s = 80.7 % del tiempo total del capítulo**.
+> Desglose del VLM por página (todas `large_image_panel`):
+>
+> | Pág | Total | VLM stage | Recuperados |
+> |---|---|---|---|
+> | 15 | 84.0 s | 82.7 s | 1 |
+> | 16 | 57.9 s | 55.2 s | 5 |
+> | 17 | 26.0 s | 23.0 s | 0 |
+> | 21 | 191.4 s | 190.2 s | 8 |
+> | 25 | 50.4 s | 47.1 s | 4 |
+> | 28 | 60.5 s | 59.3 s | 6 |
+> | 31 | 40.0 s | 38.9 s | 4 |
+> | 32 | 30.6 s | 29.4 s | 1 |
+> | 36 | 24.7 s | 23.4 s | 1 |
+> | 37 | 25.1 s | 23.9 s | 1 |
+>
+> **Lectura**: (1) el VLM es EL costo dominante del pipeline — 573 de 710 s
+> (80.7 %) están dentro de la inferencia VLM; el resto del capítulo (137 s)
+> coincide con el baseline sin VLM (162.5 s). (2) La pág 21 es el peor caso
+> absoluto (191 s, 27 % del capítulo) y el que más recupera (8 bloques) — no
+> es un candidato de recorte sin perder diálogo artístico real. (3) La pág 17
+> es el único trigger que no recuperó nada (0 bloques) — candidato natural a
+> evaluar si el gate puede filtrarla (pero fue 1 sola llamada de 23 s; el
+> ahorro máximo sería ~3 % del capítulo, y la medición del gate de §4.6 ya
+> mostró que afinar pierde recuperación en otras páginas). (4) La varianza
+> entre corridas (all3: 691 s vs esta: 710 s, +3 %) es la generación
+> estocástica del VLM + estado de GPU — no es una regresión de las
+> optimizaciones: las páginas sin VLM se mantienen idénticas (2-6 s) y la
+> recuperación es la misma (31). **Conclusión para el plan**: con el gate
+> v4.2 actual, 80 % del tiempo del capítulo es VLM irrecuperable sin perder
+> recuperación; la única palanca restante es estructural (más VRAM → batch,
+> modelo más rápido, o corpus sin arte).
+> **VALIDACIÓN CON EL HARNESS CORREGIDO (2026-08-16, re-corrida completa
+> `production_vlm_full53_2.json`, mismos 53 págs, daemon ready, wrappers NO
+> encadenados — `_ORIG_FN` cachea la original una vez)**: total 1026.5 s
+> (19.37 s/pág, más lenta que la corrida anterior por generación
+> estocástica), trigger 11/53, 11 llamadas VLM (pág 13 esta vez llamó con
+> 0 recuperación: el cache de negativas es por sesión), **31 bloques
+> recuperados = IDÉNTICO**. Suma de stages `vlm` = 761.4 s = 74.2 % del
+> total — el porcentaje baja 6.5 pp SOLO porque la generación fue más lenta
+> (761.4 vs 573.1 s de stage; el resto del capítulo, 265 s, coincide con el
+> baseline sin VLM 162.5-175.7 s). **Veredicto: la re-medición de la
+> participación del VLM (573-761 s, 74-81 % según la velocidad de
+> generación de la corrida) NO cambia por el harness — el fix de los
+> wrappers eliminó las llamadas fantasma (que inflaban los contadores de
+> prefilter/rapid, no los de `vlm`, cuyo stage ya era correcto), y la
+> varianza entre corridas es de la generación estocástica del modelo, no
+> del instrumento de medición.** La conclusión estructural se mantiene: el
+> VLM domina el capítulo y el residual sin VLM (~3.4 s/pág) ya está
+> analizado por separado.
+> **VARIANZA REAL DEL VLM — 3 CORRIDAS COMPLETAS CON EL MISMO HARNESS
+> (2026-08-16: vlm_full53, vlm_full53_2, vlm_full53_3, las 3 con
+> benchmark_production.py y wrappers NO encadenados)**:
+>
+> | Corrida | Total | VLM stage | % capítulo | No-VLM (42 págs) | Recuperados |
+> |---|---|---|---|---|---|
+> | 1 | 709.8 s | 573.1 s | 80.7 % | 119.2 s | 31 |
+> | 2 | 1026.5 s | 761.4 s | 74.2 % | 242.8 s | 31 |
+> | 3 | 1318.2 s | 627.5 s | 47.6 % | 650.9 s | 31 |
+>
+> **VLM stage: min 573.1 / max 761.4 / mediana 627.5 s (CV 15 %)** —
+> razonablemente estable (generación estocástica del modelo).
+> **Recuperación: 31 = 31 = 31 (determinista, cero varianza)** — el mismo
+> recuento por página en las 3 corridas (ver bloque ROI).
+> **% del capítulo: min 47.6 / max 80.7 / mediana 74.2 %** — la varianza
+> del porcentaje NO es del VLM: el denominador cambia porque las páginas
+> no-VLM se ralentizaron 119 → 243 → 651 s entre corridas (2.8 → 5.7 →
+> 15.5 s/pág) por estado de la máquina (GPU/memoria/térmica tras corridas
+> consecutivas), no por el pipeline (mismas etapas, mismos bloques).
+> **Conclusión con intervalo**: el VLM aporta 573-761 s estables por
+> capítulo (mediana 627 s) y recupera EXACTAMENTE 31 bloques siempre; su
+> participación del total cae en 48-81 % según lo rápido que corra el resto
+> de la máquina en esa sesión — el "80.7 %" inicial es el extremo de
+> máquina rápida, el ~74 % la mediana, y el piso ~48 % con la máquina
+> degradada. La conclusión estructural (el VLM es el costo dominante y la
+> recuperación es estable) se mantiene en las 3 corridas.
+
+> **ANÁLISIS DEL TIEMPO RESIDUAL SIN VLM (2026-08-16,
+> `production_nonvlm_fixed.json`, 42 págs sin VLM del cap. 43, harness
+> CORREGIDO)**: tras cuantificar que el VLM es 80.7 % del capítulo, se aisló
+> el residual (páginas de 2-6 s) para priorizar la próxima optimización.
+> Primero un FIX DE MEDICIÓN: los wrappers de `benchmark_production.py` se
+> encadenaban por página (cada `_wrap_timing` envolvía al wrapper de la
+> página anterior), inflando los contadores de las páginas tempranas (pág 1
+> reportaba 53 calls de prefilter y 10 de VLM en una corrida de 53). Ahora
+> cachean la función original una vez (`_ORIG_FN`) y `calls` se copia por
+> valor. **Desglose limpio del residual (141.7 s / 42 págs = 3.37 s/pág)**:
+>
+> | Etapa | Tiempo | % | Dónde corre | ROI |
+> |---|---|---|---|---|
+> | `ruta_c` (re-OCR de crops) | 49.4 s | 34.8 % | 31/42 págs | 0.29 s/bloque (vía YOLO) |
+> | `yolo` (detección + su Ruta C) | 44.8 s | 31.6 % | 31/42 (gate superado) | **155 bloques, 0.29 s/bloque** |
+> | `ctd` (comic-text-detector + su Ruta C) | 30.8 s | 21.8 % | 16/42 (cascada) | **21 bloques NUEVOS, 1.47 s/bloque** |
+> | `prefilter` (inpaint TELEA fijo) | 22.2 s | 15.6 % | 42/42 | fijo 0.53 s/pág (**ESTRUCTURAL** — 4.4B y 4.4C medidas y descartadas; el inpaint limpia ruido distribuido, no líneas; ver §4.4) |
+> | `rapid` (RapidOCR complemento) | 17.2 s | 12.1 % | 42/42 | fijo 0.41 s/pág |
+> | `_ocr_spellcheck` (merge) | 0.16-1.38 s/pág | 2.5-8 % | por bloque | ya optimizado (ms/bloque) |
+>
+> (La suma > 100 % porque `ruta_c` está ANIDADA dentro de `yolo`/`ctd` —
+> los métodos las llaman internamente, ocr_engine.py:734/804). **Lectura**:
+> (1) **El re-OCR de crops de la Ruta C domina el residual** — YOLO + CTD
+> juntos son 75.6 s (53 %) y ambos alimentan el mismo `_recover_regions_with_easyocr`;
+> el batch estructural ya aplicado (−2.38 s/pág) fue la optimización correcta
+> y la que más pesa. (2) **CTD es 5× más caro por bloque que YOLO**
+> (1.47 vs 0.29 s/bloque): 30.8 s por 21 bloques nuevos reales (todos
+> sobreviven al merge — texto SIN globo que ni YOLO ve, complementario, no
+> duplicado). Su gate en cascada ya lo limita a 16/42 págs, pero sigue siendo
+> el peor ROI del residual. (3) **El spellcheck del merge ya NO es cuello**
+> (0.16-1.38 s/pág, 2.5-8 % — la pág 4 con textos largos es el peor caso;
+> el fix de 2026-08-15 lo dejó en ms por bloque). (4) `prefilter` y `rapid`
+> son costes fijos por página (0.53 + 0.41 s) — el inpaint TELEA del prefilter
+> es la vía 4.4C documentada (detector de líneas más selectivo, NO bajar
+> resolución — A/B de 0.5× regresionó pág 11).
+>
+> **PRIORIDAD DE LA PRÓXIMA OPTIMIZACIÓN** (por ROI y riesgo):
+> 1. **Afinar el gate de CTD** (vía con datos ya medidos): cuesta 30.8 s por
+>    21 bloques. Opciones medibles con `benchmark_ab_utils.py`: exigir página
+>    aún más débil (p.ej. subir `COMIC_DETECTOR_GATE_MAX_CONF` de 0.35 a 0.30
+>    o bajar `MIN_BLOCKS` de 3 a 2) o dedup más agresivo de regiones ya
+>    cubiertas por YOLO. Riesgo: perder los 21 bloques de texto flotante —
+>    medir A/B antes de tocar, nunca con datos ambiguos.
+> 2. **prefilter 4.4C** (22.2 s fijos): detector de líneas horizontales más
+>    selectivo para reducir el área de la máscara del inpaint TELEA
+>    (0.53 s/pág → objetivo ~0.3 s). A/B con las 14 páginas canónicas y el
+>    control de la pág 11 (la que regresionó en el intento de 0.5×).
+> 3. **YOLO: NO tocar el gate** — supera el gate en 31/42 páginas pero
+>    recupera 155 bloques reales (0.29 s/bloque, el mejor ROI del residual);
+>    apretarlo perdería recuperación de diálogo en globos.
+> 4. **spellcheck del merge: NO tocar** — ya en ms/bloque; el peor caso
+>    (pág 4, 1.38 s) es un único bloque largo, no un patrón.
+> Artifacts: `production_nonvlm_fixed.json` + `.log`, `merge_stages.json`.
 
 ### 4.7. Re-medir el split detector/recognizer si cambia el corpus (disparador de 4.1)
 
@@ -1118,8 +1663,29 @@ Sobre el PDF de 53 págs (`Capítulo 43 …pdf`), modo `fusion`, misma máquina,
 | Re-corrida del mismo capítulo | tiempo completo | — | **< 10 % del original** (cache de página) | — |
 | Página VLM (p90) | **24–315 s/llamada** (mediana ~50 s; 9 llamadas en cap. 43; el "~2 s" previo era EOS temprano, no el costo real) | — | **< 30 s/llamada** (3.3: recortar max_length/tokens) | — |
 | Cobertura de detección | 47/53 págs | ≥ igual | ≥ igual | ≥ igual |
-| Calidad (`analisis_calidad.py`) | 75.8 % aceptable | ≥ igual | ≥ igual | ≥ igual |
-| **Pre-filter** (`benchmark_prefilter.py`, scale 1.2) | **0.4–0.5 s/pág** (a 300 dpi era 1.41 s — sesgo) | — | — | **< 0.3 s/pág** (4.4B/4.4C) |
+| Calidad (`analisis_calidad.py`) | **75.8 % aceptable** (corpus 128 págs de Julio, condiciones distintas — ver nota) | ≥ igual | ≥ igual | ≥ igual |
+
+> **RE-MEDICIÓN DE CALIDAD POST-FIX DEL STRIP (2026-08-16):** se regeneró el
+> corpus del cap. 53 con el pipeline ACTUAL (fix del strip activo, daemon
+> detenido, `process_all_pages.py` fusion → `resultados_progreso_calidad_fix.json`)
+> y se corrió `analisis_calidad.py`: **314 pares (vs 225 del checkpoint viejo)
+> con 32.2 % aceptable (vs 15.1 %)** — el delta de +89 pares y +17 pp viene
+> de que el corpus fresco incluye los **4 diálogos recuperados por el fix**
+> (verificados presentes y traducidos: pág 4 'YSIHUBIESE ACEPTADO.' →
+> 'AND IF I HAD BEEN ACCEPTED.', pág 40 'ESTOESTA IPADRINO!! MUYRICO!' →
+> 'THIS IS IPADRINO!!', pág 52 'QUIERESVOLVERA EENVERDAD COMERLASHOY?' →
+> 'YOU WANT TO COME BACK, EENVER?'; pág 1 en este run recuperó fragmentos
+> 'RIMER ARAY'/'#' — el diálogo completo 'ENVERDADES INCREIBLE' se confirmó
+> en el A/B mismo-proceso). **NO comparable con el 75.8 % de Julio**: ese
+> baseline es del corpus 128 págs con pipeline de traducción distinto (8.3 %
+> UNTRANSLATED); el cap. 53 actual tiene 96/314 UNTRANSLATED (30.6 %) y
+> 103 REVIEW_LANGUAGE (32.8 %) — bloques no traducibles (ruido/URLs/
+> fragmentos) que la tasa arrastra. El fix del strip no mueve la tasa de
+> aceptación (mide traducción, no recuperación OCR): su impacto es que esos
+> 4+ diálogos EXISTEN como pares traducidos en el corpus. Artifacts:
+> `resultados_progreso_calidad_fix.json`, `benchmark_results/calidad_fix_run.log`,
+> `benchmark_results/server_calidad.log`.
+| **Pre-filter** (`benchmark_prefilter.py`, scale 1.2) | **0.4–0.5 s/pág** (a 300 dpi era 1.41 s — sesgo) | — | — | **< 0.3 s/pág** (4.4B/4.4C — AMBAS MEDIDAS Y DESCARTADAS: el inpaint limpia ruido distribuido, sin líneas que aislar; el coste es estructural, ver §4.4) |
 | **RapidOCR en páginas normales** (scale 1.2) | **0.4–1.0 s** cuando corre | — | — | omitirlo en más páginas sin perder bloques (4.5) |
 | **Ruta C por crop** (upscale 2×, scale 1.2) | **0.2–0.9 s/crop**; gate intra-crop: NO procede (§4.6) | — | — | — |
 | **Trigger VLM (v4.2)** | **11/53 (21 %)** en cap. 43, todas por panel grande oscuro (`large_image_panel`, dark_ratio 0.181–0.218); VLM recupera 1–8 bloques en TODAS las páginas donde corre (32 total); costo **24–315 s/llamada** (mediana ~50 s, ~12 min/capítulo) | — | — | — |
@@ -1205,7 +1771,9 @@ validación con `analisis_calidad.py`).
 | `process_all_pages.py` | 2.4 binario (request); 2.7 re-corrida |
 | `app.js` / `js/utils.js` | 2.4 toBlob; 2.5 cap de escala; 3.4 prefetch |
 | `config.py` | 2.2 flags; 3.5 `YOLO_IMGSZ`; constantes nuevas de cache/JPEG; 4.5 umbrales de `RAPID_COND_*` |
-| `ocr_utils.py` | 2.2 batch_size/cudnn; 2.3 `_cv2_to_base64(fmt)`; 2.4 decode binario; **4.4B inpaint a resolución reducida**; **4.4C detector de líneas selectivo**; **4.5 `_rapid_cond_skip`** |
+| `ocr_utils.py` | 2.2 batch_size/cudnn; 2.3 `_cv2_to_base64(fmt)`; 2.4 decode binario; **4.4B inpaint a resolución reducida (descartada)**; **4.4C detector de líneas selectivo (descartada)**; **4.5 `_rapid_cond_skip`** |
+| `benchmark_prefilter_selective.py` (nuevo) + `benchmark_results/prefilter_selective.json` | **A/B de 4.4C (2026-08-16, 14 págs canónicas, scale 1.2)**: detector de líneas reales marca 0.006 % del área (no hay líneas en el corpus); quitar el inpaint de líneas = 0.48 → 0.02 s/pág pero +44 bloques de ruido basura y sin ganancia en la pág 11 de control — **descartada, coste estructural** — ver §4.4 |
+| `benchmark_prefilter_4_4a.py` (nuevo) + `benchmark_results/prefilter_4_4a.json` | **A/B de diseño de 4.4A (2026-08-16, capítulo completo, raw vs pref)**: 9/53 págs débiles (n<6 Y conf<0.6), 13/53 donde el prefilter gana de verdad; **0/53 páginas cambian su trigger v4.2** (riesgo central medido y cero); ahorro ~14-23 s/capítulo (< 2 %) — **NO procede** (doble pasada OCR en débiles, coste estructural queda) — ver §4.4 |
 | `ocr_engine.py` | 2.1 RapidOCR condicional; 2.7 cache de página (o en `cache.py`); **4.6 gate de la Ruta C en páginas normales** |
 | `tests/*` | tests para cada cambio (el repo exige cobertura por módulo ≥ umbral) |
 | `benchmark_prefilter.py` (nuevo) | A/B del prefilter por sub-etapa + calidad on/off (Fase 4) |
@@ -1231,16 +1799,29 @@ validación con `analisis_calidad.py`).
 | `benchmark_vlm_maxlen.py` (nuevo) | A/B del `max_length` del VLM (2048 vs 512/1024/1280) con parche por wrapper sobre `process_page` (el atributo de módulo NO surte efecto — default capturado en la firma) |
 | `benchmark_vlm_tokens.py` (nuevo) | **distribución de tokens del VLM (2026-08-15)**: envuelve `generate()` en proceso (daemon parado) para contar tokens nuevos por página — 8/9 páginas generan 32–376 tokens, SOLO la 21 llega a 1949 (97 % del cap) — ver §3.3 |
 | `benchmark_results/vlm_tokens_a/b/c.json`, `vlm_tokens_dist.json` | mediciones crudas y distribución consolidada de tokens por página del trigger |
+| `benchmark_results/vlm21_1024.json` + `vlm21_1280.json` | **aislamiento de pág 21 (2026-08-16, 1024 vs 1280, daemon real)**: 1024 → 167.0 s/7 rec (textos idénticos a 1280; la diferencia es otro `[Unreadable]`), 1280 → 177.1 s/8 rec; bajar el cap no ahorra nada útil — estructura del costo: prefill de la infer principal (16 tokens en ~23 s) + re-OCR del panel grande con el modelo divagando (1933 tokens a 2048, ~1280 truncados en producción) — ver §3.3 |
+| `benchmark_gate_p17_ab.py` (nuevo) + `benchmark_results/gate_p17_base.json` + `gate_p17_off.json` | **A/B del gate de la pág 17 (2026-08-16, capítulo completo 1-53, daemon ready)**: anular el trigger solo en pág 17 → 25.5 → 3.2 s (−22.3 s exactos), triggers 11→10, recuperación 31 = 31 sin pérdida; PERO el total del capítulo no baja (la varianza de generación VLM en otras páginas lo enmascara: ±20 s entre corridas) — **documentado y NO aplicado** (ahorro < ruido de medición) — ver §3.3. **ROI por página (2026-08-16, 5 corridas)**: recuperación determinista 5/5; 31/28/16/25 = 9.9-12.6 s/bloque (mejor), 15 = 84.6 s/bloque (peor con recuperación), 13 y 17 = siempre 0 (candidatos de gate; 13 ahorraría ~34-68 s/corrida, el doble que 17) — ver bloque ROI en §3.3 |
 | `benchmark_results/vlm_2048_a.json`, `vlm_512_a.json`, `vlm_1024.json`, `vlm_1024_b.json`, `vlm_1280.json`, `vlm_1280_2.json`, `vlm_sameproc.json`, `vlm_1280_sameproc.json` | A/B del max_length del VLM (escalera 512–2048 y verificación mismo-proceso) — ver §4.6 |
 | `config.py` | **2026-08-15: `UOCR_MAX_LENGTH` 2048 → 1280 APLICADO** (Fase 3.3) — cap calibrado por distribución de tokens; verificado en el capítulo completo (trigger 11/53 idéntico, recuperación 31 vs 32 bloques, pág 21 −35 %) — ver §3.3/§4.6 |
 | `benchmark_results/production_1280_1-12.json`, `_13-21.json`, `_22-34.json`, `_35-53.json` | **corrida del capítulo completo con max_length=1280 (2026-08-15, 4 chunks por timeout)**: 11 triggers VLM, 31 bloques recuperados, pág 21 a 196 s — ver §4.6 |
 | `benchmark_results/production_strip_full53.json` | **re-corrida del capítulo completo POST-STRIP (2026-08-15, daemon VLM detenido, mismo estado que el baseline)**: 53 págs, promedio **3.07 s/pág vs 3.99 s baseline (−23.2 %)**, etapa rapid 109.2→17.2 s (−92 s), pesadas de Ruta C −29.5 %, bloques 290→298 (+8, sin pérdida de recuperación) — ver §4.6 |
 | `benchmark_results/production_all3_full53.json` | **capítulo completo con las TRES optimizaciones juntas (2026-08-15, daemon VLM ACTIVO, corrida única de 53 págs)**: promedio 13.04 s/pág, total 691 s, **31 bloques recuperados por el VLM**, 329 bloques finales; vs chunks 1280_* −46 % con misma recuperación (parte por varianza de trigger/VLM); pág 21 a 173 s — ver §4.6 |
+| `benchmark_results/production_vlm_full53.json` + `production_vlm_full53_2.json` + `production_vlm_full53_3.json` | **re-medición del costo real del VLM (2026-08-16, daemon READY, corrida única de 53 págs)**: promedio 13.39 s/pág, total 709.8 s, 11/53 triggers → **10 llamadas VLM** (pág 13 saltada por cache de negativas), 31 bloques recuperados, **stages VLM = 573.1 s = 80.7 % del capítulo**; pág 21 = 191 s (27 %, 8 bloques recuperados); pág 17 = 0 recuperados (único candidato de gate, ~3 % máx) — ver §4.6. **VARIANZA (3 corridas mismas harness)**: stage VLM min 573.1 / max 761.4 / mediana 627.5 s (CV 15 %); **recuperación 31 = 31 = 31 (determinista)**; % del capítulo 47.6-80.7 % (mediana 74.2 %) — la varianza del % es del denominador (no-VLM 119→243→651 s por estado de máquina), no del VLM — ver bloque VARIANZA en §4.6 |
+| `benchmark_results/production_nonvlm_fixed.json` + `.log` | **análisis del tiempo residual sin VLM (2026-08-16, 42 págs, harness CORREGIDO)**: promedio 3.37 s/pág; ruta_c 34.8 % (anidada en yolo/ctd), yolo 31.6 % (31/42 págs, 155 bloques, 0.29 s/bloque), ctd 21.8 % (16/42, 21 bloques NUEVOS, 1.47 s/bloque — peor ROI), prefilter 15.6 % (fijo 0.53 s/pág, vía 4.4C), rapid 12.1 %; spellcheck del merge 2.5-8 % (ya optimizado) — ver §4.6 |
+| `benchmark_results/merge_stages.json` | **desglose fino del merge (2026-08-16, págs 4/43/29)**: spellcheck 0.16-1.38 s/pág (2.5-8 %) vs ruta_c 27-56 % — confirma que el spellcheck del merge no es cuello — ver §4.6 |
+| `benchmark_results/strip_blocks_check.json` + `strip_targeted.json` + `strip_visual/` | **revisión de los 6 bloques perdidos del strip (2026-08-16)**: 4 de 6 son CONTENIDO REAL perdido (págs 1/4/40/52, diálogo confirmado por VLM sobre los recortes), 2 segmentación (págs 30/34); mecanismo: el det del strip apilado detecta mal la línea (conf 0.46-0.6 ≥ umbral 0.45) y bloquea el fallback EasyOCR — ver bloque ⚠ en §4.6 |
+| `benchmark_results/production_fix_full53.json` + `.log` | **re-corrida del capítulo completo con el fix del strip APLICADO (2026-08-16, daemon ready, 1-53)**: total 175.7 s = 3.32 s/pág vs 162.5 s pre-fix (+8.1 %), delta dominado por estado de GPU (corrida única sin intercalado); las 4 páginas afectadas quedan dentro del ruido contra el baseline non-VLM corregido (pág 1 11.59 vs 11.07, pág 4 8.42 vs 8.32, pág 40 3.87 vs 4.31, pág 52 6.22 vs 5.75 s; Δ ≤ 0.5 s); trigger 11/53 y VLM en las mismas 11 páginas — ver bloque ⚠ en §4.6 |
+| `benchmark_strip_fix_ab.py` (nuevo) + `benchmark_results/strip_fix_ab.json` | **A/B del fix de la pérdida del strip + APLICADO (2026-08-16, 7 págs, mismo-proceso base/fix/ref)**: subir el umbral a 0.7 → fallback EasyOCR NO recupera (lee basura 'じ‥'/'鼻'); el fix que funciona es **retry por crop con `_run_rapidocr` individual** (regla conf+longitud: confiable = conf≥0.85 o conf≥0.7+≥6 chars); **4/4 diálogos recuperados** sin perder el ahorro del strip (fix 2.6-5.6 s vs per-crop 4.2-7.5 s; retry ~0.3-1.2 s solo en páginas con crops fallidos). Implementado: `_RUTA_C_STRIP_RETRY_INDIVIDUAL` + `_rapid_blocks_usable` en ocr_utils.py, 2 tests nuevos + 5 adaptados, CI verde 987/987 — ver bloque ⚠ en §4.6 |
 | `benchmark_results/production_foreign_preload.json` | **re-corrida post fast-path extranjero (2026-08-15, daemon detenido)**: sin regresión (bloques 298=298, 42/53 págs ±0.1 s), promedio 2.95 s/pág con deltas de signo mixto en páginas trigger = varianza de timeout VLM, no atribuible; el ahorro determinista es el one-time de ~0.08-0.35 s de carga en/pt movido a startup — ver §4.6 |
 | `benchmark_results/spellcheck_ab_records.json` + `spellcheck_ab_after.json` | **A/B del límite de edición dependiente de longitud (2026-08-15, 53 págs instrumentadas, daemon detenido)**: 3 correcciones reales (todas 3-5 chars, distancia 1); réplica 0.167→0.001 s (scan d2 de >14 eliminado); correcciones idénticas con hash seed fijo; 'chmar' es no-determinismo propio de pyspellchecker (empate 50/50/50) — ver §4.6 |
 | `benchmark_results/production_modocpu_12.json` + `production_modocpu_08.json` | **medición de MODO_CPU (2026-08-15, daemon detenido)**: 1.2 → 3.06 s/pág (neutro, recuperación 298=298); 0.8 → 2.95 s/pág con segmentación distinta (fragmentación, no comparable); YOLO CPU +0.34 s/pág, VLM off 0.00 s — ver §4.6 |
 | `benchmark_foreign_check.py` (nuevo) | **auditoría del costo de `_contains_foreign_latin_tokens` (2026-08-15)**: mide llamadas/tiempo/known() por checker (es/en/pt) sobre el capítulo — ver §4.6 |
 | `benchmark_results/foreign_check.json` | **medición de la detección extranjera (2026-08-15, 53 págs, daemon detenido)**: 112 llamadas, 0.0036 s totales (0.032 ms/llamada); en/pt known() 0.0005 s combinados; el es known() 0.306 s visible es la expansión de `sp.correction()` (camino corto), no esta función — VEREDICTO: sin costo evitable, no tocar — ver §4.6 |
+| `benchmark_results/foreign_check_short2.json` | **medición del camino corto de sp.correction() por rango (2026-08-16, 53 págs, daemon detenido, benchmark ampliado)**: 0.471 s/capítulo (8.9 ms/pág), 99.9% en 2 palabras patológicas ('clvdeg' 6c 116 ms, 'clvdegchmar' 11c 354 ms); réplica 3-8× más rápida en 8-12 con equivalencia 10/10; NO se cambia el umbral (ahorro ~0.2% marginal) — ver §4.6 |
+| `benchmark_foreign_gate.py` (nuevo) | **análisis de los 17 bloques mixtos (2026-08-16)**: captura los bloques que llegan al chequeo y mide para los foreign=True la evidencia extranjera, las correcciones forzadas con gate desactivado y la ambigüedad del detector — ver §4.6 |
+| `benchmark_results/foreign_gate.json` | **veredicto del call-site del check extranjero (2026-08-16, 53 págs, daemon detenido)**: gate INERTE en 15/17 bloques (0 correcciones forzadas; 13 todo-mayúsculas + 2 salvados por el filtro d1); la única protección real es pág 29 'ASi QUE SEGUi' (×2): preserva 'SEGUi'→'Seguir' a cambio de bloquear 'ASi'→'Así'; los 15 falsos triggers son huecos del diccionario es ('relacionado','bolsas','vemos','dia','separo','verte','has' — españolas válidas ausentes del dict, es=False pt/en=True); NO se afina el call-site (tiempo nulo + gate por ambigüedad sería neto-negativo); fix de precisión = cobertura del diccionario es, no gatear — ver §4.6 |
+| `benchmark_spell_touchpoints.py` (nuevo) | **mapa de todos los touchpoints de pyspellchecker (2026-08-16)**: instrumenta correction/known/candidates/índice/réplica/foreign check + langdetect y cargas, con atribución por pila de sitios — ver §4.6 |
+| `benchmark_results/spell_touchpoints.json` | **costo por página de los touchpoints (2026-08-16, 53 págs, daemon detenido)**: NO hay pyspellchecker fuera de `_ocr_spellcheck` (solo preload de server.py); API real ~9 ms/pág concentrada en pág 41 (0.476 s camino corto); foreign/replica/candidates <0.03 s; índice 0.17 s one-time (cae en el filtro d1, no la réplica); **HALLAZGO: langdetect = 2.95 s = 70 % de la maquinaria spellcheck (5.65 ms × 523 bloques), nuevo candidato de optimización por firma/página** — ver §4.6 |
 | `tools/analizar_vlm_1280.py` (nuevo) | fusiona los chunks del benchmark production y compara trigger/recuperación/bloques/tiempo contra el baseline 2048 |
 | `config.py`, `ocr_engine.py`, `ocr_utils.py`, `server.py`, `app.js`, `js/config.js`, `README.md` | **2026-08-15: preset `MODO_CPU` (soporte sin GPU dedicada)**: flag único que apaga el VLM (gate en `_reforzar_con_unlimited` junto a UOCR_ENABLED), fuerza YOLO a CPU (`_resolver_device_yolo`) y sirve `ocr_scale` reducido (0.8) al frontend vía `/api/config` (el frontend lo aplica a `state.scale`). 3 tests nuevos (gate MODO_CPU, resolver, /api/config) |
 | `ocr_utils.py`, `tests/test_ocr_utils.py` | **2026-08-15: `_ocr_spellcheck` corrección barata aplicada** (`_spellcheck_correction` réplica de `sp.correction()` con índice por longitud + Damerau acotado + pre-filtro de conteos + `_SPELL_CORRECTION_MIN_LEN=13` híbrido; langdetect con prefijo `_SPELL_LANG_MAX_CHARS=600`). **Diagnóstico corregido**: el langdetect NO era el cuello (profile de pág 4: 26.2 s en correction / 26.3 s en `__edit_distance_alt`, langdetect ni aparece); y el fast-path previo fue INERTE en producción (WeakKeyDictionary no soporta SpellChecker — slots sin `__weakref__`; los tests pasaban por MagicMock). pág 4: spellcheck 10.43 s → 3.7 ms (~2800×), pipeline 29.12 → 3.38 s, equivalencia 58/58 con pyspellchecker real (solo empate de frecuencia no determinista). 7 tests nuevos: `TestSpellcheckCorrectionFast` (equivalencia, delegación de cortas, diacríticos, índice por instancia) + `TestSpellcheckLangPrefix` (prefijo langdetect) — ver §4.6 |
