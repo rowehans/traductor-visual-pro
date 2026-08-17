@@ -2048,3 +2048,104 @@ Cada paso se cierra con: A/B mismo-proceso o intercalado (daemon detenido o
 ready según corresponda), `run_ci.py` completo verde y sin regresión de
 cobertura. Los pasos 1-2 dependen del daemon VLM ready; 3-6 son medibles con
 el daemon detenido.
+
+---
+
+## 11. Siguiente set — oportunidades nuevas (2026-08-17, plan actualizado)
+
+> **Contexto**: §10.2 quedó EJECUTADO (1→7 cerrados con datos en §10.7). Este
+> §11 define el siguiente set, surgido de las mediciones de la sesión y del
+> cierre de §10. Orden de mayor a menor prioridad según ROI medido.
+
+### 11.1. IMPLEMENTADO — Cache de RECUPERACIÓN POSITIVA del VLM por firma (P1)
+
+**Problema**: re-corridas del MISMO documento repagaban la inferencia VLM
+completa (573 s/capítulo = 80.7 % del tiempo) aunque la página ya estuviera
+resuelta. El cache §8.4.1 y el ledger de ceros solo manejan negativas; las
+páginas que SÍ recuperan (9 de 11 triggers) se re-inferían cada vez.
+
+**Solución implementada** (`ocr_engine.py` + `config.py`): `_uocr_pos_cache`
+por firma dHash estable — `(ts, n_blocks, avg_conf, ublocks, uimage_panels)`
+con TTL 7 días y LRU 256, persistido en la sección `"pos"` del archivo de
+decisiones. Consulta en `_reforzar_con_unlimited` (single) y Fase B del
+batch; registro solo cuando el VLM SÍ recuperó y vino del daemon (un hit no
+re-guarda). Salvaguarda mucho_mas_debil IDÉNTICA a los ceros (los stats se
+capturan ANTES de la fusión — fix de un bug detectado en la revisión); un
+hit no sobreescribe. `_DECISION_CACHE_VERSION` 7→8; `clear_decision_cache`
+también lo limpia. NO aplica con force_uocr/disable_uocr.
+
+**Validación real** (`benchmark_pos_cache_ab.py`, daemon UP, pág 31 — la de
+MEJOR ROI, 4 bloques en 5/5 corridas deterministas, `pos_cache_ab.json`):
+
+| Pasada | Tiempo | VLM | Bloques finales |
+|---|---|---|---|
+| 1 (daemon) | 40.26 s | SÍ | 8 |
+| 2 (cache positivo) | **1.52 s** | NO | **8 (idénticos)** |
+
+→ **re-corridas del mismo capítulo: 573 s de VLM → ~1.5 s/página trigger
+resuelta.** El determinismo 5/5 de la recuperación (medido en §4.6) hace el
+cache seguro: misma firma → mismo resultado. El daemon sigue siendo la
+fuente de verdad en el primer run; un re-run activo sobreescribe.
+
+**Tests** (+5 en `TestCacheRecuperacionPositiva`): guarda+reinyecta sin
+re-inferir; salvaguarda mucho_mas_debil libera (detección mucho más débil →
+re-dispara); TTL expirado → el VLM vuelve a correr; persistencia + recarga
+en proceso nuevo; clear_decision_cache limpia. Tests previos adaptados (la
+recuperación positiva ya no se trata como "no cachear" y el determinismo del
+trigger se verifica por la DECISIÓN, no por el conteo de llamadas al daemon).
+**327 tests verdes en ocr_engine+ocr_utils; mypy 0.**
+
+### 11.2. IMPLEMENTADO — Baseline de calidad estable del corpus (P2)
+
+**Problema** (§10.3 item 8): `analisis_calidad.py` mezcla en la tasa global
+pares que NO son fallos de traducción (SFX preservados, nombres, OCR basura,
+vacíos) → la cifra (32.2 % cap. 53) no es comparable entre corridas ni con
+el 75.8 % de Julio (otro corpus/pipeline).
+
+**Solución implementada** (`baseline_calidad.py`): tasa EFECTIVA sobre pares
+TRADUCIBLES — excluye del denominador `EMPTY`, `OCR_GARBAGE`,
+`SFX_PRESERVED`, `SFX_TRANSLATED`, `NAME_PRESERVED`; cuenta por separado
+`UNTRANSLATED`/`REVIEW_LANGUAGE`/`BAD_TRANSLATION` como fallos reales.
+Guarda el baseline en `calidad_baseline.json`; `--compare` muestra el delta
+(tasa efectiva, global y fallos por categoría) contra el baseline previo.
+
+**Baseline del corpus actual** (`resultados_progreso_calidad_fix.json`):
+314 pares → 295 traducibles (19 no-traducibles: 13 OCR_GARBAGE + 4
+SFX_PRESERVED + 2 SFX_TRANSLATED), tasa efectiva **32.2 %** (95 éxitos),
+fallos reales 200 (96 UNTRANSLATED + 103 REVIEW_LANGUAGE + 1
+BAD_TRANSLATION). El criterio de "aceptable" queda DEFINIDO como la tasa
+efectiva sobre traducibles; cualquier corrida futura compara contra este
+baseline con `--compare`.
+
+**Tests** (+3 en `test_baseline_calidad.py`): SFX/OCR-garbage no castigan la
+tasa efectiva; fallos reales se desglosan; guardar + comparar delta (0 y
+negativo). **3/3 pasan.**
+
+### 11.3. CERRADO CON DATOS — Gate de bajo ROI del VLM (P3)
+
+**Veredicto: NO gatear por defecto — decisión de producto, no optimización.**
+
+Los datos del ROI (§4.6 tabla, 5 corridas consolidadas): 32/36/37 recuperan
+1 bloque REAL cada una a 21-42 s (26-30 s/bloque); 15 recupera 1 bloque a
+71-97 s (84.6 s/bloque). Gatearlas ahorraría ~70-160 s/capítulo pero
+PERDERÍA diálogo artístico real (no ruido) — los bloques sobreviven al merge
+y son complementarios (texto sin globo que ni YOLO ve).
+
+Un gate por ROI "s/bloque" es además INViable como flag runtime: el ROI es
+histórico, no se conoce antes de la llamada (un flag `MAX_S_PER_BLOCK`
+quedaría muerto). El P1 (cache positivo) ya elimina el costo en re-corridas
+(573 s → ~0); el único costo residual del VLM es la PRIMERA corrida de cada
+capítulo, donde gatear 15/32/36/37 = perder 4 bloques de diálogo. La
+decisión de priorizar velocidad sobre esos 4 diálogos pertenece al usuario,
+no al pipeline. Si se decide gatear, la vía es un wrapper de
+`_trigger_con_cache` por número de página (patrón del A/B de pág 17, ya
+medido: −22.3 s sin pérdida para la única página con 0 recuperación).
+
+### 11.4. Pendiente de proceso (heredado de §10.3)
+
+- **Commit** de la sesión §11 (P1+P2+P3, benchmarks, tests, plan).
+- **Validación en GitHub Actions** del commit (gate persistente + ngram 15 +
+  cache positivo) — el workflow ya cubre cobertura por módulo y server-test.
+- **GPU con más VRAM**: única palanca estructural real (daemon 2.25 GB +
+  EasyOCR ~1 GB + YOLO ~1 GB no caben en 4 GB; batch VLM 2.2× más lento en
+  esta GPU). Con más VRAM se re-evalúan batch, prefill y prompt.
