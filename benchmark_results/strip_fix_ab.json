@@ -1,0 +1,351 @@
+{
+ "1": {
+  "base_dt": 5.936,
+  "fix_dt": 2.972,
+  "ref_dt": 5.658,
+  "base_n": 6,
+  "fix_n": 6,
+  "ref_n": 5,
+  "fragmentos": {
+   "enverdades": {
+    "base": false,
+    "fix": true,
+    "ref": true
+   }
+  },
+  "regresiones": [
+   "s e"
+  ],
+  "nuevas": [
+   "enverdades increible increible"
+  ],
+  "base_texts": [
+   "aahh...",
+   "luchuujinnangascom",
+   "rimer aray",
+   "s e",
+   "seollang oiien seollang ouien",
+   "け"
+  ],
+  "fix_texts": [
+   "aahh...",
+   "enverdades increible increible",
+   "luchuujinnangascom",
+   "rimer aray",
+   "seollang oiien seollang ouien",
+   "け"
+  ],
+  "ref_texts": [
+   "aahh...",
+   "enverdades increible increible",
+   "rimer aray",
+   "seollang o!ien seollang o!wen",
+   "け"
+  ]
+ },
+ "4": {
+  "base_dt": 4.931,
+  "fix_dt": 5.637,
+  "ref_dt": 7.314,
+  "base_n": 8,
+  "fix_n": 8,
+  "ref_n": 9,
+  "fragmentos": {
+   "ysihubiese": {
+    "base": false,
+    "fix": true,
+    "ref": true
+   }
+  },
+  "regresiones": [
+   "鼻"
+  ],
+  "nuevas": [
+   "ysihubiese aceptado."
+  ],
+  "base_texts": [
+   "babayaga.quesiempreha sido tanimpredecible y-por_supuestol.gu y.por_supuesto!.gu presfigjosareputacion presfigjosdreputacion seria uf buen agregado! seria un buen agregado",
+   "controlaralaprimera",
+   "esta relacionado con",
+   "la cardenaldelsanto reino, yutia bloodia...",
+   "podria usarlo para",
+   "wojyrgmiwimmml",
+   "ya quetambien",
+   "鼻"
+  ],
+  "fix_texts": [
+   "babayaga.quesiempreha sido tanimpredecible y-por_supuestol.gu y.por_supuesto!.gu presfigjosareputacion presfigjosdreputacion seria uf buen agregado! seria un buen agregado",
+   "controlaralaprimera",
+   "esta relacionado con",
+   "la cardenaldelsanto reino, yutia bloodia...",
+   "podria usarlo para",
+   "wojyrgmiwimmml",
+   "ya quetambien",
+   "ysihubiese aceptado."
+  ],
+  "ref_texts": [
+   "babayaga.quesiempre ha sido tanimpredecible prestigiosa reputación",
+   "controlaralaprimera",
+   "esta relacionado con",
+   "la cardenaldelsanto reino, yutia bloodia...",
+   "nsoisondns-od nsoisondns-iod osareputacion",
+   "podriausarlo para",
+   "wojyrgmiwimmml",
+   "ya quetambien",
+   "ysihubiese aceptado."
+  ]
+ },
+ "30": {
+  "base_dt": 2.393,
+  "fix_dt": 2.563,
+  "ref_dt": 5.064,
+  "base_n": 8,
+  "fix_n": 8,
+  "ref_n": 7,
+  "fragmentos": {},
+  "regresiones": [
+   "por"
+  ],
+  "nuevas": [
+   "por por"
+  ],
+  "base_texts": [
+   "a.a",
+   "algunarazon para queyo",
+   "erasetuccomolos ilamounavezunmaco erasituccomdlos llemounavezun maco",
+   "eseso todo?",
+   "jacrsohry",
+   "obtuvieseestr divinidad?",
+   "por",
+   "supuesto."
+  ],
+  "fix_texts": [
+   "a.a",
+   "algunarazon para queyo",
+   "erasetuccomolos ilamounavezunmaco erasituccomdlos llemounavezun maco",
+   "eseso todo?",
+   "jacrsohry",
+   "obtuvieseestr divinidad?",
+   "por por",
+   "supuesto."
+  ],
+  "ref_texts": [
+   "a.a",
+   "ahhosuou?",
+   "alguna razon para que yo obtuvieseestr",
+   "erasisuccomdlos llrmo unavezun maco ey.asiiuccomolcs ilrmounavezunmaco",
+   "por por",
+   "supuesto.",
+   "todo?"
+  ]
+ },
+ "34": {
+  "base_dt": 3.479,
+  "fix_dt": 3.236,
+  "ref_dt": 4.164,
+  "base_n": 9,
+  "fix_n": 9,
+  "ref_n": 9,
+  "fragmentos": {},
+  "regresiones": [
+   "cuno"
+  ],
+  "nuevas": [
+   "cling"
+  ],
+  "base_texts": [
+   "adarleun vistazo.",
+   "bien,ire",
+   "cuno",
+   "de todrs for-",
+   "ella ella",
+   "iraraksaspara",
+   "mrs,necesitaba",
+   "poderliberaral artefacto,asi qle meviene bien",
+   "teguiara a los masprofuindo. teguiara a los masprofuindo."
+  ],
+  "fix_texts": [
+   "adarleun vistazo.",
+   "bien,ire",
+   "cling",
+   "de todrs for-",
+   "ella ella",
+   "iraraksaspara",
+   "mrs,necesitaba",
+   "poderliberaral artefacto,asi qle meviene bien",
+   "teguiara a los masprofuindo. teguiara a los masprofuindo."
+  ],
+  "ref_texts": [
+   "adarleun vistazo.",
+   "artefacto,asiqle mevienebien.",
+   "bien,ire",
+   "cling",
+   "detodasfor-",
+   "ella ella",
+   "iraraksaspara poderliberaral",
+   "mrs,necesitaba",
+   "teguiara a los mas profundo. teguiara a los mas profundo."
+  ]
+ },
+ "40": {
+  "base_dt": 3.05,
+  "fix_dt": 3.47,
+  "ref_dt": 5.384,
+  "base_n": 8,
+  "fix_n": 8,
+  "ref_n": 8,
+  "fragmentos": {
+   "ipadrino": {
+    "base": false,
+    "fix": true,
+    "ref": true
+   }
+  },
+  "regresiones": [
+   "p!"
+  ],
+  "nuevas": [
+   "estoesta ipadrino!! muyrico!"
+  ],
+  "base_texts": [
+   "cadavezse",
+   "despues.regresamosal",
+   "esta",
+   "genial eno?",
+   "gremioparaprepararnospara hecoynasraipa aluoao",
+   "matandoeltiempo",
+   "p!",
+   "vielvenmejores"
+  ],
+  "fix_texts": [
+   "cadavezse",
+   "despues.regresamosal",
+   "esta",
+   "estoesta ipadrino!! muyrico!",
+   "genial eno?",
+   "gremioparaprepararnospara hecoynasraipa aluoao",
+   "matandoeltiempo",
+   "vielvenmejores"
+  ],
+  "ref_texts": [
+   "cadavezse",
+   "despues,regresamosal",
+   "esta",
+   "estoesta ipadrino!! muyrico!",
+   "genial, con?",
+   "gremioparaprepararnospara mherotnashabraaauoao",
+   "matandoeltiempo.",
+   "vielvenmejores"
+  ]
+ },
+ "43": {
+  "base_dt": 3.911,
+  "fix_dt": 3.299,
+  "ref_dt": 7.476,
+  "base_n": 12,
+  "fix_n": 12,
+  "ref_n": 11,
+  "fragmentos": {},
+  "regresiones": [],
+  "nuevas": [],
+  "base_texts": [
+   "acuerdobien",
+   "ah bueno,queria",
+   "aunasi... aun asi...",
+   "desearteenpersona unbuenviaje",
+   "envieun mensaje,pero gracirsporvenir.",
+   "estremecerse inclinarse inclinarse estremecerse",
+   "lonopsu majestad?",
+   "ocupada,asisolo",
+   "pareciasestar",
+   "que diablos hace elreydekolonien lrs puertas de la ciudrd?",
+   "sime",
+   "teniasunregalo queofrecerle"
+  ],
+  "fix_texts": [
+   "acuerdobien",
+   "ah bueno,queria",
+   "aunasi... aun asi...",
+   "desearteenpersona unbuenviaje",
+   "envieun mensaje,pero gracirsporvenir.",
+   "estremecerse inclinarse inclinarse estremecerse",
+   "lonopsu majestad?",
+   "ocupada,asisolo",
+   "pareciasestar",
+   "que diablos hace elreydekolonien lrs puertas de la ciudrd?",
+   "sime",
+   "teniasunregalo queofrecerle"
+  ],
+  "ref_texts": [
+   "acuerdo bien,",
+   "ah bueno,queria",
+   "aun asi.. aun asir",
+   "desearteenpersona un buenviaje.",
+   "elreydekolonien ciudrdp",
+   "envieunmensaje,pero gracirsporvenir.",
+   "estremecerse inclinarse estremecerse inclinarse",
+   "ns?eon o? majestad?",
+   "pareciasestar",
+   "sime",
+   "teniasunregalo queofrecerle,"
+  ]
+ },
+ "52": {
+  "base_dt": 4.07,
+  "fix_dt": 5.224,
+  "ref_dt": 5.921,
+  "base_n": 9,
+  "fix_n": 10,
+  "ref_n": 11,
+  "fragmentos": {
+   "comerlashoy": {
+    "base": false,
+    "fix": true,
+    "ref": true
+   }
+  },
+  "regresiones": [
+   "oe o"
+  ],
+  "nuevas": [
+   "quieresvolvera eenverdad comerlashoy?",
+   "uchuujinmangas.con"
+  ],
+  "base_texts": [
+   "digasque...?",
+   "eperdon?",
+   "evan,quiero",
+   "iifarra",
+   "noenome",
+   "oe o",
+   "patataspara lacena",
+   "porlo",
+   "queviayer tehasvueltoun profesionalde la patata"
+  ],
+  "fix_texts": [
+   "digasque...?",
+   "eperdon?",
+   "evan,quiero",
+   "iifarra",
+   "noenome",
+   "patataspara lacena",
+   "porlo",
+   "queviayer tehasvueltoun profesionalde la patata",
+   "quieresvolvera eenverdad comerlashoy?",
+   "uchuujinmangas.con"
+  ],
+  "ref_texts": [
+   "digasque..?",
+   "eperdon?",
+   "evan, quiero",
+   "no. enome",
+   "patatas para la cena.",
+   "porlo",
+   "profesionalde la patata",
+   "queviayer,",
+   "quieresvolvera eenverdad comerlashoy?",
+   "uchuujinmangas.con",
+   "じ‥"
+  ]
+ }
+}

@@ -118,8 +118,8 @@ _PROD_PY_FILES: tuple[str, ...] = _discover_prod_py_files()
 # (default seguro) y se reporta como [WARN] para que nadie agregue
 # producción al CI por accidente. Clasificar = decidir deliberadamente.
 _KNOWN_PROD_PY_FILES: frozenset[str] = frozenset({
-    "analisis_calidad.py", "cache.py", "config.py", "launcher.py",
-    "main.py", "models.py", "ocr_engine.py", "ocr_utils.py",
+    "analisis_calidad.py", "baseline_calidad.py", "cache.py", "config.py",
+    "launcher.py", "main.py", "models.py", "ocr_engine.py", "ocr_utils.py",
     "process_all_pages.py", "quality_analysis.py", "ratelimit.py",
     "runtime_diagnostics.py", "server.py", "translation_memory.py",
     "translator.py", "uocr_client.py", "uocr_daemon.py",
@@ -384,6 +384,7 @@ def _pytest_test_files() -> list[str]:
         "tests/test_manga_ocr.py",
         "tests/test_run_ci.py",
         "tests/test_quality_analysis.py",
+        "tests/test_baseline_calidad.py",
         "tests/test_server.py",
         "tests/test_main_routes.py",
         "tests/test_launcher.py",
@@ -456,6 +457,7 @@ def step_mypy() -> bool:
 # y `main.py` (88.0) se miden con tests de arranque que mockean argv/Popen.
 _COVERAGE_THRESHOLDS: dict[str, float] = {
     "analisis_calidad.py": 75.0,
+    "baseline_calidad.py": 80.0,
     "cache.py": 68.0,
     "config.py": 81.8,
     "launcher.py": 95.0,

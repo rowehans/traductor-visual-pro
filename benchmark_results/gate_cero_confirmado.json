@@ -1,0 +1,51 @@
+{
+ "pagina": 13,
+ "pasadas": [
+  {
+   "pasada": 1,
+   "tiempo_s": 99.96,
+   "llamo_vlm": true,
+   "bloques_finales": 6,
+   "motores": "fusion",
+   "ceros_doc": {
+    "gate_cero_p13_val:0.2:0000000000000000000000000000000000000000000000003838381838381818:0c0c0c0c0c14040c": [
+     1786939612.4823964,
+     1,
+     6,
+     0.5887550055980683
+    ]
+   }
+  },
+  {
+   "pasada": 2,
+   "tiempo_s": 45.61,
+   "llamo_vlm": true,
+   "bloques_finales": 6,
+   "motores": "fusion",
+   "ceros_doc": {
+    "gate_cero_p13_val:0.2:0000000000000000000000000000000000000000000000003838381838381818:0c0c0c0c0c14040c": [
+     1786939658.094399,
+     2,
+     6,
+     0.5887550055980683
+    ]
+   }
+  },
+  {
+   "pasada": 3,
+   "tiempo_s": 1.38,
+   "llamo_vlm": false,
+   "bloques_finales": 6,
+   "motores": "fusion",
+   "ceros_doc": {
+    "gate_cero_p13_val:0.2:0000000000000000000000000000000000000000000000003838381838381818:0c0c0c0c0c14040c": [
+     1786939658.094399,
+     2,
+     6,
+     0.5887550055980683
+    ]
+   }
+  }
+ ],
+ "veredicto": true
+}

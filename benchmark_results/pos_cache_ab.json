@@ -1,0 +1,39 @@
+{
+  "benchmark": "pos_cache_ab (plan §11 P1)",
+  "pagina": 31,
+  "pasadas": [
+    {
+      "pasada": 1,
+      "tiempo_s": 40.26,
+      "llamo_vlm": true,
+      "bloques_finales": 8,
+      "motores": "fusion",
+      "pos_cache_doc": {
+        "pos_cache_p31_val:0.2:0000000000000000000000000000000000000000000000001818181818181818:0c0c0c0c0c140c0c": [
+          1786977366.1138058,
+          4,
+          0.6515080262906849,
+          3,
+          1
+        ]
+      }
+    },
+    {
+      "pasada": 2,
+      "tiempo_s": 1.52,
+      "llamo_vlm": false,
+      "bloques_finales": 8,
+      "motores": "fusion",
+      "pos_cache_doc": {
+        "pos_cache_p31_val:0.2:0000000000000000000000000000000000000000000000001818181818181818:0c0c0c0c0c140c0c": [
+          1786977366.1138058,
+          4,
+          0.6515080262906849,
+          3,
+          1
+        ]
+      }
+    }
+  ],
+  "veredicto": "P1 OK: 2ª pasada reinyecta del cache positivo sin llamar al daemon"
+}

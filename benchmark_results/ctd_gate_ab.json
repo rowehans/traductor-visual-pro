@@ -1,0 +1,133 @@
+{
+ "por_pagina": {
+  "4": {
+   "len_post_yolo": 7,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 5.915,
+   "nuevos_ctd": -6
+  },
+  "7": {
+   "len_post_yolo": 7,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 0.743,
+   "nuevos_ctd": 0
+  },
+  "9": {
+   "len_post_yolo": 2,
+   "avg_conf": 0.924,
+   "gate_skip": false,
+   "ctd_s": 0.742,
+   "nuevos_ctd": 0
+  },
+  "10": {
+   "len_post_yolo": 1,
+   "avg_conf": 0.694,
+   "gate_skip": false,
+   "ctd_s": 2.583,
+   "nuevos_ctd": 0
+  },
+  "17": {
+   "len_post_yolo": 3,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 0.763,
+   "nuevos_ctd": 0
+  },
+  "25": {
+   "len_post_yolo": 2,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 1.116,
+   "nuevos_ctd": -1
+  },
+  "29": {
+   "len_post_yolo": 9,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 0.787,
+   "nuevos_ctd": 0
+  },
+  "34": {
+   "len_post_yolo": 8,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 1.199,
+   "nuevos_ctd": -7
+  },
+  "39": {
+   "len_post_yolo": 4,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 2.636,
+   "nuevos_ctd": 0
+  },
+  "40": {
+   "len_post_yolo": 8,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 0.778,
+   "nuevos_ctd": 0
+  },
+  "42": {
+   "len_post_yolo": 2,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 1.057,
+   "nuevos_ctd": 0
+  },
+  "43": {
+   "len_post_yolo": 10,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 1.246,
+   "nuevos_ctd": -8
+  },
+  "44": {
+   "len_post_yolo": 5,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 2.73,
+   "nuevos_ctd": -4
+  },
+  "46": {
+   "len_post_yolo": 6,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 1.072,
+   "nuevos_ctd": -4
+  },
+  "47": {
+   "len_post_yolo": 4,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 1.629,
+   "nuevos_ctd": -1
+  },
+  "50": {
+   "len_post_yolo": 4,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 1.626,
+   "nuevos_ctd": -2
+  },
+  "51": {
+   "len_post_yolo": 7,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 0.985,
+   "nuevos_ctd": -6
+  },
+  "52": {
+   "len_post_yolo": 9,
+   "avg_conf": 0.0,
+   "gate_skip": false,
+   "ctd_s": 1.704,
+   "nuevos_ctd": -8
+  }
+ },
+ "total_ctd_s": 29.31,
+ "total_ctd_bloques": 0,
+ "ctd_paginas": 18
+}

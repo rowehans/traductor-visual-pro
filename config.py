@@ -376,6 +376,47 @@ UOCR_CACHE_MAX_ENTRIES: Final[int] = 256         # eviction LRU: capítulos ~5-1
 #        comparable no re-dispara — el trade-off aceptado del determinismo.
 UOCR_NEG_CACHE_PERSIST: Final[bool] = True
 
+# ─── Cero confirmado del VLM (2026-08-16, plan §10.2 item 1) ──────
+# Las páginas 13 y 17 del cap. 43 disparan el VLM (large_image_panel) y
+# recuperan 0 bloques en TODAS las corridas (4-5, determinista). El cache
+# §8.4.1 ya las suprime dentro del TTL (30 min), pero entre corridas el
+# TTL expira y la firma antigua (digest exacto del thumbnail, demasiado
+# sensible) derivaba → volvían a pagar 31-68 s cada vez.
+#
+# Con la firma estable (dHash, ver _page_signature en ocr_utils.py) y este
+# registro de CEROS CONFIRMADOS, una página que falló >= UOCR_NEG_CERO_MIN
+# veces en ventanas TTL distintas queda suprimida con un TTL largo (7 días)
+# — misma página (dHash), mismo documento (scope doc_id de la sesión 126),
+# y con la salvaguarda mucho_mas_debil intacta: si una gemela se detecta
+# MUCHO más débil que la última vez, el VLM vuelve a correr (el diálogo
+# artístico que el híbrido ahora pierde es justo el que el VLM podría leer).
+#
+# El ledger de ceros vive en el MISMO archivo de decisiones (sección
+# "ceros") y viaja con la persistencia: 2 corridas en procesos separados
+# acumulan los fallos de la misma página. Un recovery (el VLM SÍ recuperó
+# algo) borra la entrada del ledger — la señal de cero se refuta. El TTL
+# largo es deliberadamente amplio (7 días): dentro del MISMO documento la
+# página es la misma y ya falló N veces; si el modelo VLM mejora, el
+# usuario puede limpiar con clear_decision_cache().
+UOCR_NEG_CERO_MIN: Final[int] = 2          # fallos >= N en ventanas TTL distintas → cero confirmado
+UOCR_NEG_CERO_TTL_S: Final[float] = 7 * 24 * 3600.0   # TTL del cero confirmado (7 días)
+
+# ─── Cache de RECUPERACIÓN POSITIVA del VLM por firma (2026-08-17, plan §11 P1) ──
+# Complemento simétrico del ledger de ceros: cuando el VLM SÍ recuperó bloques
+# para una firma (pág 31: 4 bloques en 5/5 corridas deterministas), se guarda
+# la recuperación (ublocks + uimage_panels) con TTL largo. En re-corridas del
+# MISMO documento, la firma dHash estable matchea → el VLM se salta y los
+# bloques recuperados se reinyectan: el costo de 573 s/capítulo (80.7 %)
+# vuelve a ~0 en re-procesados. El determinismo 5/5 de la recuperación por
+# página (plan §4.6, tabla ROI) hace seguro cachear: misma firma → mismo
+# resultado. La salvaguarda mucho_mas_debil aplica igual que en los ceros:
+# si la página actual se detecta MUCHO más débil que cuando se cacheó, el
+# VLM vuelve a correr (el diálogo que el híbrido pierde es lo que el VLM
+# leería). Un re-run con el VLM activo sobreescribe la entrada. El cache
+# NO aplica con force_uocr/disable_uocr (modos benchmark explícitos).
+UOCR_POS_CACHE_TTL_S: Final[float] = 7 * 24 * 3600.0   # TTL de la recuperación positiva (7 días)
+UOCR_POS_CACHE_SALVAGUARDA: Final[float] = 0.8  # factor de la salvaguarda mucho_mas_debil (mismo que ceros)
+
 # ─── Salvaguarda de detección débil en las negativas §8.4.1 (sesión 134) ──
 # El caso p5 (sesiones 128-129): el híbrido detecta una página artística con
 # MUY pocos bloques y confianza baja (p5 registró la negativa con 2-3 bloques

@@ -66,6 +66,8 @@ jobs:
             requests \
             waitress \
             pyspellchecker \
+            psutil \
+            pymupdf \
             bandit \
             mypy==2.3.0 types-requests types-psutil lxml
 
@@ -179,6 +181,8 @@ jobs:
             requests \
             waitress \
             pyspellchecker \
+            psutil \
+            pymupdf \
             bandit
 
       # mypy ya se corrió en lint-test (job anterior). Omitirlo aquí evita

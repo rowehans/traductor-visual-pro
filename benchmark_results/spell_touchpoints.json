@@ -1,0 +1,1646 @@
+{
+  "pages": [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13",
+    "14",
+    "15",
+    "16",
+    "17",
+    "18",
+    "19",
+    "20",
+    "21",
+    "22",
+    "23",
+    "24",
+    "25",
+    "26",
+    "27",
+    "28",
+    "29",
+    "30",
+    "31",
+    "32",
+    "33",
+    "34",
+    "35",
+    "36",
+    "37",
+    "38",
+    "39",
+    "40",
+    "41",
+    "42",
+    "43",
+    "44",
+    "45",
+    "46",
+    "47",
+    "48",
+    "49",
+    "50",
+    "51",
+    "52",
+    "53"
+  ],
+  "total_s": 154.95,
+  "sites": {
+    "spellcheck_total": {
+      "calls": 597.0,
+      "s": 4.202355699948384,
+      "words": 0.0
+    },
+    "langdetect": {
+      "calls": 523.0,
+      "s": 2.953618199979246,
+      "words": 0.0
+    },
+    "checker_load_es": {
+      "calls": 172.0,
+      "s": 0.211110899970663,
+      "words": 0.0
+    },
+    "known_foreign_check": {
+      "calls": 304.0,
+      "s": 0.0020078000125067774,
+      "words": 668.0
+    },
+    "checker_load_en": {
+      "calls": 98.0,
+      "s": 0.07852350002212916,
+      "words": 0.0
+    },
+    "foreign_check": {
+      "calls": 112.0,
+      "s": 0.36633440001969575,
+      "words": 0.0
+    },
+    "checker_load_pt": {
+      "calls": 94.0,
+      "s": 0.2840170000163198,
+      "words": 0.0
+    },
+    "known_internal_correction": {
+      "calls": 1212.0,
+      "s": 0.3126278999407077,
+      "words": 801196.0
+    },
+    "correction": {
+      "calls": 17.0,
+      "s": 0.4764270000086981,
+      "words": 0.0
+    },
+    "index": {
+      "calls": 11.0,
+      "s": 0.1701132999987749,
+      "words": 0.0
+    },
+    "candidates": {
+      "calls": 11.0,
+      "s": 0.18812290000278153,
+      "words": 0.0
+    },
+    "replica": {
+      "calls": 8.0,
+      "s": 0.0008231000065279659,
+      "words": 0.0
+    }
+  },
+  "per_page": {
+    "1": {
+      "spellcheck_total": {
+        "calls": 14.0,
+        "s": 0.3602292999967176,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 9.0,
+        "s": 0.36016070000550826,
+        "words": 0.0
+      }
+    },
+    "2": {
+      "spellcheck_total": {
+        "calls": 11.0,
+        "s": 0.38060529999711434,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 10.0,
+        "s": 0.09103180000602151,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 1.0,
+        "s": 0.21098060000076657,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 2.0,
+        "s": 5.1399998483248055e-05,
+        "words": 5.0
+      },
+      "checker_load_en": {
+        "calls": 1.0,
+        "s": 0.07837099999960628,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 1.0,
+        "s": 0.07847809999657329,
+        "words": 0.0
+      }
+    },
+    "3": {
+      "langdetect": {
+        "calls": 3.0,
+        "s": 0.011887699998624157,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 1.0,
+        "s": 2.2000021999701858e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 3.0,
+        "s": 4.780000017490238e-05,
+        "words": 10.0
+      },
+      "checker_load_en": {
+        "calls": 1.0,
+        "s": 6.300000677583739e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 1.0,
+        "s": 0.28395020000243676,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 1.0,
+        "s": 0.2840894000000844,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 3.0,
+        "s": 0.2960437000001548,
+        "words": 0.0
+      }
+    },
+    "4": {
+      "langdetect": {
+        "calls": 27.0,
+        "s": 0.1651854000047024,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 18.0,
+        "s": 1.179999890155159e-05,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 24.0,
+        "s": 0.00019230001271353103,
+        "words": 57.0
+      },
+      "checker_load_en": {
+        "calls": 7.0,
+        "s": 1.0200001270277426e-05,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 7.0,
+        "s": 4.199991963105276e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 10.0,
+        "s": 0.00033650000841589645,
+        "words": 0.0
+      },
+      "known_internal_correction": {
+        "calls": 14.0,
+        "s": 0.00026420000358484685,
+        "words": 244.0
+      },
+      "correction": {
+        "calls": 13.0,
+        "s": 0.000519200006237952,
+        "words": 0.0
+      },
+      "index": {
+        "calls": 9.0,
+        "s": 0.17010970000046655,
+        "words": 0.0
+      },
+      "candidates": {
+        "calls": 9.0,
+        "s": 0.17314210000040475,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 29.0,
+        "s": 0.339794500006974,
+        "words": 0.0
+      },
+      "replica": {
+        "calls": 8.0,
+        "s": 0.0008231000065279659,
+        "words": 0.0
+      }
+    },
+    "5": {
+      "spellcheck_total": {
+        "calls": 3.0,
+        "s": 0.0055967999978747685,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 1.0,
+        "s": 0.0055489000005763955,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 1.0,
+        "s": 1.0000003385357559e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 1.0,
+        "s": 1.590000101714395e-05,
+        "words": 3.0
+      },
+      "foreign_check": {
+        "calls": 1.0,
+        "s": 2.2000000171829015e-05,
+        "words": 0.0
+      }
+    },
+    "6": {
+      "spellcheck_total": {
+        "calls": 9.0,
+        "s": 0.04404119999890099,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 8.0,
+        "s": 0.043796499998279614,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 4.0,
+        "s": 3.899996954714879e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 10.0,
+        "s": 5.539999983739108e-05,
+        "words": 17.0
+      },
+      "foreign_check": {
+        "calls": 4.0,
+        "s": 0.0001145999995060265,
+        "words": 0.0
+      },
+      "checker_load_en": {
+        "calls": 3.0,
+        "s": 4.6000022848602384e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 3.0,
+        "s": 2.0000006770715117e-06,
+        "words": 0.0
+      }
+    },
+    "7": {
+      "langdetect": {
+        "calls": 15.0,
+        "s": 0.10150800000701565,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 20.0,
+        "s": 0.10171790000458714,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 2.0,
+        "s": 1.7000020307023078e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 6.0,
+        "s": 3.020000076503493e-05,
+        "words": 11.0
+      },
+      "checker_load_en": {
+        "calls": 2.0,
+        "s": 3.1000017770566046e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 2.0,
+        "s": 1.3999997463542968e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 2.0,
+        "s": 6.580000263056718e-05,
+        "words": 0.0
+      }
+    },
+    "8": {
+      "langdetect": {
+        "calls": 15.0,
+        "s": 0.03881110000656918,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 15.0,
+        "s": 0.03893219999372377,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 2.0,
+        "s": 2.2999993234407157e-06,
+        "words": 0.0
+      }
+    },
+    "10": {
+      "langdetect": {
+        "calls": 5.0,
+        "s": 0.033794299997680355,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 5.0,
+        "s": 0.0338506999942183,
+        "words": 0.0
+      }
+    },
+    "11": {
+      "spellcheck_total": {
+        "calls": 14.0,
+        "s": 0.036397200001374586,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 11.0,
+        "s": 0.036244000009901356,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 2.0,
+        "s": 1.8999999156221747e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 2.0,
+        "s": 2.9200000426499173e-05,
+        "words": 4.0
+      },
+      "foreign_check": {
+        "calls": 2.0,
+        "s": 4.140000237384811e-05,
+        "words": 0.0
+      }
+    },
+    "12": {
+      "langdetect": {
+        "calls": 12.0,
+        "s": 0.031721099996502744,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 12.0,
+        "s": 0.03181100000438164,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 2.0,
+        "s": 1.2999989849049598e-06,
+        "words": 0.0
+      }
+    },
+    "13": {
+      "spellcheck_total": {
+        "calls": 3.0,
+        "s": 0.005088200003228849,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 2.0,
+        "s": 0.005067299996881047,
+        "words": 0.0
+      }
+    },
+    "14": {
+      "langdetect": {
+        "calls": 1.0,
+        "s": 9.560000034980476e-05,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 5.0,
+        "s": 0.00010769999789772555,
+        "words": 0.0
+      }
+    },
+    "15": {
+      "langdetect": {
+        "calls": 4.0,
+        "s": 0.02241610000055516,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 4.0,
+        "s": 0.022477800001070136,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 1.0,
+        "s": 1.3000026228837669e-06,
+        "words": 0.0
+      }
+    },
+    "16": {
+      "spellcheck_total": {
+        "calls": 19.0,
+        "s": 0.0665973999966809,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 17.0,
+        "s": 0.06613000000652391,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 12.0,
+        "s": 7.299993740161881e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 23.0,
+        "s": 0.00010599998859106563,
+        "words": 37.0
+      },
+      "checker_load_en": {
+        "calls": 8.0,
+        "s": 9.400006092619151e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 7.0,
+        "s": 3.7000027077738196e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 8.0,
+        "s": 0.00022600000374950469,
+        "words": 0.0
+      }
+    },
+    "17": {
+      "spellcheck_total": {
+        "calls": 12.0,
+        "s": 0.07117799999105046,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 11.0,
+        "s": 0.07082069999160012,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 5.0,
+        "s": 3.6999954318162054e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 13.0,
+        "s": 9.279999721911736e-05,
+        "words": 32.0
+      },
+      "foreign_check": {
+        "calls": 5.0,
+        "s": 0.00016709999908925965,
+        "words": 0.0
+      },
+      "checker_load_en": {
+        "calls": 4.0,
+        "s": 6.199999916134402e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 4.0,
+        "s": 2.4999972083605826e-06,
+        "words": 0.0
+      }
+    },
+    "18": {
+      "langdetect": {
+        "calls": 14.0,
+        "s": 0.03308639999522711,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 1.0,
+        "s": 1.0000003385357559e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 3.0,
+        "s": 1.4299999747890979e-05,
+        "words": 4.0
+      },
+      "checker_load_en": {
+        "calls": 1.0,
+        "s": 1.6999983927235007e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 1.0,
+        "s": 7.999988156370819e-07,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 1.0,
+        "s": 3.2100000680657104e-05,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 14.0,
+        "s": 0.03325050000785268,
+        "words": 0.0
+      }
+    },
+    "19": {
+      "langdetect": {
+        "calls": 13.0,
+        "s": 0.038185499997780425,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 13.0,
+        "s": 0.038365399992471794,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 5.0,
+        "s": 3.5999983083456755e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 3.0,
+        "s": 1.4799999917158857e-05,
+        "words": 9.0
+      },
+      "checker_load_en": {
+        "calls": 1.0,
+        "s": 1.3999997463542968e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 1.0,
+        "s": 8.00002453615889e-07,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 1.0,
+        "s": 3.2899999496294186e-05,
+        "words": 0.0
+      }
+    },
+    "20": {
+      "langdetect": {
+        "calls": 11.0,
+        "s": 0.10548279999420629,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 11.0,
+        "s": 0.1056533999981184,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 2.0,
+        "s": 1.6999983927235007e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 4.0,
+        "s": 2.9099999665049836e-05,
+        "words": 6.0
+      },
+      "checker_load_en": {
+        "calls": 1.0,
+        "s": 1.8999999156221747e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 1.0,
+        "s": 7.999988156370819e-07,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 2.0,
+        "s": 5.2999999752501026e-05,
+        "words": 0.0
+      }
+    },
+    "21": {
+      "spellcheck_total": {
+        "calls": 6.0,
+        "s": 0.037830099994607735,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 5.0,
+        "s": 0.0377831999976479,
+        "words": 0.0
+      }
+    },
+    "22": {
+      "langdetect": {
+        "calls": 3.0,
+        "s": 0.010593200000585057,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 3.0,
+        "s": 0.01066010000067763,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 1.0,
+        "s": 9.00003215065226e-07,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 3.0,
+        "s": 1.5600002370774746e-05,
+        "words": 4.0
+      },
+      "checker_load_en": {
+        "calls": 1.0,
+        "s": 1.5000005078036338e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 1.0,
+        "s": 8.00002453615889e-07,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 1.0,
+        "s": 3.3399999665562063e-05,
+        "words": 0.0
+      }
+    },
+    "23": {
+      "langdetect": {
+        "calls": 9.0,
+        "s": 0.02908410000236472,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 9.0,
+        "s": 0.029308799992577406,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 3.0,
+        "s": 2.9000002541579306e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 6.0,
+        "s": 3.730000025825575e-05,
+        "words": 10.0
+      },
+      "checker_load_en": {
+        "calls": 2.0,
+        "s": 4.499997885432094e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 2.0,
+        "s": 1.7999991541728377e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 2.0,
+        "s": 8.08000004326459e-05,
+        "words": 0.0
+      }
+    },
+    "24": {
+      "langdetect": {
+        "calls": 4.0,
+        "s": 0.04343130000052042,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 2.0,
+        "s": 1.9999970390927047e-06,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 6.0,
+        "s": 0.04347759999654954,
+        "words": 0.0
+      }
+    },
+    "25": {
+      "langdetect": {
+        "calls": 8.0,
+        "s": 0.026366699992649956,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 5.0,
+        "s": 3.7999961932655424e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 12.0,
+        "s": 7.000000550760888e-05,
+        "words": 19.0
+      },
+      "checker_load_en": {
+        "calls": 4.0,
+        "s": 6.400001439033076e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 4.0,
+        "s": 2.8000031306874007e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 4.0,
+        "s": 0.00014540000483975746,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 8.0,
+        "s": 0.026664299999538343,
+        "words": 0.0
+      }
+    },
+    "26": {
+      "spellcheck_total": {
+        "calls": 4.0,
+        "s": 0.017544899998028995,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 2.0,
+        "s": 0.01750289999836241,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 1.0,
+        "s": 1.1000010999850929e-06,
+        "words": 0.0
+      }
+    },
+    "27": {
+      "spellcheck_total": {
+        "calls": 3.0,
+        "s": 1.7999991541728377e-06,
+        "words": 0.0
+      }
+    },
+    "28": {
+      "spellcheck_total": {
+        "calls": 8.0,
+        "s": 0.034802500002115266,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 6.0,
+        "s": 0.03200240000660415,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 1.0,
+        "s": 7.999988156370819e-07,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 3.0,
+        "s": 2.1299998479662463e-05,
+        "words": 7.0
+      },
+      "checker_load_en": {
+        "calls": 1.0,
+        "s": 1.5000005078036338e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 1.0,
+        "s": 7.00001692166552e-07,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 1.0,
+        "s": 4.099999932805076e-05,
+        "words": 0.0
+      },
+      "known_internal_correction": {
+        "calls": 2.0,
+        "s": 0.00013780000153928995,
+        "words": 232.0
+      },
+      "correction": {
+        "calls": 1.0,
+        "s": 0.00022399999943445437,
+        "words": 0.0
+      },
+      "index": {
+        "calls": 1.0,
+        "s": 1.5999976312741637e-06,
+        "words": 0.0
+      },
+      "candidates": {
+        "calls": 1.0,
+        "s": 0.002459400002408074,
+        "words": 0.0
+      }
+    },
+    "29": {
+      "langdetect": {
+        "calls": 36.0,
+        "s": 0.1589515999876312,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 38.0,
+        "s": 0.15958749998026178,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 7.0,
+        "s": 5.300000339047983e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 16.0,
+        "s": 0.00011299999459879473,
+        "words": 53.0
+      },
+      "checker_load_en": {
+        "calls": 6.0,
+        "s": 8.899998647393659e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 6.0,
+        "s": 0.00021289999494911171,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 4.0,
+        "s": 2.7000060072168708e-06,
+        "words": 0.0
+      }
+    },
+    "30": {
+      "langdetect": {
+        "calls": 18.0,
+        "s": 0.1257090000071912,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 19.0,
+        "s": 0.1260132999959751,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 8.0,
+        "s": 5.000001692678779e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 9.0,
+        "s": 4.5700006012339145e-05,
+        "words": 15.0
+      },
+      "checker_load_en": {
+        "calls": 3.0,
+        "s": 4.400000761961564e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 3.0,
+        "s": 2.1000014385208488e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 3.0,
+        "s": 9.860000136541203e-05,
+        "words": 0.0
+      }
+    },
+    "31": {
+      "spellcheck_total": {
+        "calls": 2.0,
+        "s": 2.1000014385208488e-06,
+        "words": 0.0
+      }
+    },
+    "32": {
+      "langdetect": {
+        "calls": 7.0,
+        "s": 0.03353860000061104,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 9.0,
+        "s": 0.033643700000538956,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 1.0,
+        "s": 8.999995770864189e-07,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 3.0,
+        "s": 1.7499998648418114e-05,
+        "words": 4.0
+      },
+      "checker_load_en": {
+        "calls": 1.0,
+        "s": 1.8999999156221747e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 1.0,
+        "s": 8.999995770864189e-07,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 1.0,
+        "s": 3.670000296551734e-05,
+        "words": 0.0
+      }
+    },
+    "33": {
+      "langdetect": {
+        "calls": 6.0,
+        "s": 0.05160759999489528,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 6.0,
+        "s": 0.051668700001755496,
+        "words": 0.0
+      }
+    },
+    "34": {
+      "langdetect": {
+        "calls": 23.0,
+        "s": 0.056346699999267,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 12.0,
+        "s": 7.300001016119495e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 24.0,
+        "s": 0.00010620000466587953,
+        "words": 50.0
+      },
+      "checker_load_en": {
+        "calls": 8.0,
+        "s": 9.600003977539018e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 8.0,
+        "s": 4.8000038077589124e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 8.0,
+        "s": 0.0002328000045963563,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 23.0,
+        "s": 0.05686920000516693,
+        "words": 0.0
+      }
+    },
+    "35": {
+      "langdetect": {
+        "calls": 3.0,
+        "s": 0.030164899995725136,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 1.0,
+        "s": 1.1999982234556228e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 3.0,
+        "s": 2.350000067963265e-05,
+        "words": 5.0
+      },
+      "checker_load_en": {
+        "calls": 1.0,
+        "s": 1.7999991541728377e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 1.0,
+        "s": 7.999988156370819e-07,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 1.0,
+        "s": 4.409999746712856e-05,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 3.0,
+        "s": 0.030254200002673315,
+        "words": 0.0
+      }
+    },
+    "36": {
+      "spellcheck_total": {
+        "calls": 6.0,
+        "s": 0.0033556000016687904,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 2.0,
+        "s": 0.0032348000022466294,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 2.0,
+        "s": 1.7000020307023078e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 6.0,
+        "s": 2.9999995604157448e-05,
+        "words": 8.0
+      },
+      "checker_load_en": {
+        "calls": 2.0,
+        "s": 3.2000025385059416e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 2.0,
+        "s": 1.7999991541728377e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 2.0,
+        "s": 6.719999873894267e-05,
+        "words": 0.0
+      }
+    },
+    "37": {
+      "langdetect": {
+        "calls": 2.0,
+        "s": 0.02465870000378345,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 2.0,
+        "s": 0.02468379999845638,
+        "words": 0.0
+      }
+    },
+    "38": {
+      "spellcheck_total": {
+        "calls": 11.0,
+        "s": 0.019143500001518987,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 8.0,
+        "s": 0.01885059999767691,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 4.0,
+        "s": 3.7999961932655424e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 12.0,
+        "s": 6.359999315463938e-05,
+        "words": 32.0
+      },
+      "checker_load_en": {
+        "calls": 4.0,
+        "s": 6.300000677583739e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 4.0,
+        "s": 3.6000019463244826e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 4.0,
+        "s": 0.00014489999739453197,
+        "words": 0.0
+      }
+    },
+    "39": {
+      "langdetect": {
+        "calls": 11.0,
+        "s": 0.05353570000079344,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 14.0,
+        "s": 0.05370349999793689,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 1.0,
+        "s": 1.0000003385357559e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 3.0,
+        "s": 1.4599994756281376e-05,
+        "words": 6.0
+      },
+      "checker_load_en": {
+        "calls": 1.0,
+        "s": 1.7000020307023078e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 1.0,
+        "s": 7.00001692166552e-07,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 1.0,
+        "s": 3.389999983482994e-05,
+        "words": 0.0
+      }
+    },
+    "40": {
+      "langdetect": {
+        "calls": 14.0,
+        "s": 0.06881169999905978,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 16.0,
+        "s": 0.0689376999871456,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 2.0,
+        "s": 2.0999978005420417e-06,
+        "words": 0.0
+      }
+    },
+    "41": {
+      "spellcheck_total": {
+        "calls": 27.0,
+        "s": 0.658380800006853,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 22.0,
+        "s": 0.1696664999872155,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 9.0,
+        "s": 5.600006261374801e-06,
+        "words": 0.0
+      },
+      "known_internal_correction": {
+        "calls": 1196.0,
+        "s": 0.3122258999355836,
+        "words": 800720.0
+      },
+      "correction": {
+        "calls": 3.0,
+        "s": 0.4756838000030257,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 18.0,
+        "s": 0.0001024999983201269,
+        "words": 47.0
+      },
+      "checker_load_en": {
+        "calls": 6.0,
+        "s": 8.099999831756577e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 6.0,
+        "s": 3.2000025385059416e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 6.0,
+        "s": 0.00019939999765483662,
+        "words": 0.0
+      },
+      "index": {
+        "calls": 1.0,
+        "s": 2.0000006770715117e-06,
+        "words": 0.0
+      },
+      "candidates": {
+        "calls": 1.0,
+        "s": 0.012521399999968708,
+        "words": 0.0
+      }
+    },
+    "42": {
+      "langdetect": {
+        "calls": 5.0,
+        "s": 0.031730400001833914,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 5.0,
+        "s": 0.03185250000024098,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 1.0,
+        "s": 8.999995770864189e-07,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 3.0,
+        "s": 2.5200002710334957e-05,
+        "words": 9.0
+      },
+      "checker_load_en": {
+        "calls": 1.0,
+        "s": 2.1000014385208488e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 1.0,
+        "s": 1.0000003385357559e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 1.0,
+        "s": 4.820000322069973e-05,
+        "words": 0.0
+      }
+    },
+    "43": {
+      "langdetect": {
+        "calls": 31.0,
+        "s": 0.13271649999296642,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 19.0,
+        "s": 1.0499996278667822e-05,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 21.0,
+        "s": 0.00011430000813561492,
+        "words": 56.0
+      },
+      "checker_load_en": {
+        "calls": 7.0,
+        "s": 9.49999230215326e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 7.0,
+        "s": 4.699995770351961e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 7.0,
+        "s": 0.00022959999841987155,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 31.0,
+        "s": 0.1333126000026823,
+        "words": 0.0
+      }
+    },
+    "44": {
+      "langdetect": {
+        "calls": 17.0,
+        "s": 0.09189350000815466,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 6.0,
+        "s": 4.39999348600395e-06,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 17.0,
+        "s": 0.09218859999600681,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 7.0,
+        "s": 5.500000042957254e-05,
+        "words": 17.0
+      },
+      "foreign_check": {
+        "calls": 3.0,
+        "s": 9.530000170343556e-05,
+        "words": 0.0
+      },
+      "checker_load_en": {
+        "calls": 2.0,
+        "s": 2.6000016077887267e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 2.0,
+        "s": 1.3000026228837669e-06,
+        "words": 0.0
+      }
+    },
+    "45": {
+      "spellcheck_total": {
+        "calls": 11.0,
+        "s": 0.038580199998250464,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 10.0,
+        "s": 0.03841550000288407,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 3.0,
+        "s": 2.7999994927085936e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 3.0,
+        "s": 1.97000008483883e-05,
+        "words": 4.0
+      },
+      "checker_load_en": {
+        "calls": 1.0,
+        "s": 1.6000012692529708e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 1.0,
+        "s": 6.999980541877449e-07,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 1.0,
+        "s": 3.859999924316071e-05,
+        "words": 0.0
+      }
+    },
+    "46": {
+      "langdetect": {
+        "calls": 10.0,
+        "s": 0.041833700004644925,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 12.0,
+        "s": 0.04192150000017136,
+        "words": 0.0
+      }
+    },
+    "47": {
+      "langdetect": {
+        "calls": 8.0,
+        "s": 0.027505499994731508,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 10.0,
+        "s": 0.027715100008208537,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 2.0,
+        "s": 2.2999993234407157e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 6.0,
+        "s": 4.5500000851461664e-05,
+        "words": 14.0
+      },
+      "checker_load_en": {
+        "calls": 2.0,
+        "s": 3.4000004234258085e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 2.0,
+        "s": 1.5999976312741637e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 2.0,
+        "s": 8.750000415602699e-05,
+        "words": 0.0
+      }
+    },
+    "48": {
+      "langdetect": {
+        "calls": 8.0,
+        "s": 0.07489069999428466,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 1.0,
+        "s": 1.0000003385357559e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 1.0,
+        "s": 1.5300000086426735e-05,
+        "words": 2.0
+      },
+      "foreign_check": {
+        "calls": 1.0,
+        "s": 2.269999822601676e-05,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 8.0,
+        "s": 0.07500470000013593,
+        "words": 0.0
+      }
+    },
+    "49": {
+      "spellcheck_total": {
+        "calls": 4.0,
+        "s": 0.04920459999993909,
+        "words": 0.0
+      },
+      "langdetect": {
+        "calls": 3.0,
+        "s": 0.04916919999595848,
+        "words": 0.0
+      }
+    },
+    "50": {
+      "langdetect": {
+        "calls": 23.0,
+        "s": 0.08384179999120533,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 24.0,
+        "s": 0.08485730000393232,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 11.0,
+        "s": 1.1299995094304904e-05,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 29.0,
+        "s": 0.0002610000046843197,
+        "words": 69.0
+      },
+      "checker_load_en": {
+        "calls": 9.0,
+        "s": 1.8700007785810158e-05,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 9.0,
+        "s": 9.900006261887029e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 11.0,
+        "s": 0.0005207000031077769,
+        "words": 0.0
+      }
+    },
+    "51": {
+      "langdetect": {
+        "calls": 13.0,
+        "s": 0.06750170000304934,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 15.0,
+        "s": 0.06790609999370645,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 6.0,
+        "s": 4.499997885432094e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 18.0,
+        "s": 9.620000491850078e-05,
+        "words": 32.0
+      },
+      "checker_load_en": {
+        "calls": 6.0,
+        "s": 8.39999847812578e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 6.0,
+        "s": 4.0000013541430235e-06,
+        "words": 0.0
+      },
+      "foreign_check": {
+        "calls": 6.0,
+        "s": 0.00020179999773972668,
+        "words": 0.0
+      }
+    },
+    "52": {
+      "langdetect": {
+        "calls": 11.0,
+        "s": 0.029035100000328384,
+        "words": 0.0
+      },
+      "checker_load_es": {
+        "calls": 4.0,
+        "s": 2.5000008463393897e-06,
+        "words": 0.0
+      },
+      "known_foreign_check": {
+        "calls": 4.0,
+        "s": 3.559999822755344e-05,
+        "words": 10.0
+      },
+      "foreign_check": {
+        "calls": 2.0,
+        "s": 6.000000212225132e-05,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 14.0,
+        "s": 0.02921000000060303,
+        "words": 0.0
+      },
+      "checker_load_en": {
+        "calls": 1.0,
+        "s": 1.6000012692529708e-06,
+        "words": 0.0
+      },
+      "checker_load_pt": {
+        "calls": 1.0,
+        "s": 6.999980541877449e-07,
+        "words": 0.0
+      }
+    },
+    "53": {
+      "langdetect": {
+        "calls": 6.0,
+        "s": 0.03227049999986775,
+        "words": 0.0
+      },
+      "spellcheck_total": {
+        "calls": 7.0,
+        "s": 0.032330599995475495,
+        "words": 0.0
+      }
+    }
+  }
+}

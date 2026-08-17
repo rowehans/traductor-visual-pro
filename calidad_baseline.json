@@ -1,0 +1,38 @@
+{
+  "corpus": {
+    "total_pares": 314,
+    "traducibles": 295,
+    "no_traducibles": 19,
+    "fuente": "es",
+    "destino": "en",
+    "paginas": 53
+  },
+  "tasa_global": 32.17,
+  "tasa_efectiva": 32.2,
+  "exitos": 95,
+  "fallos": 200,
+  "categorias": {
+    "REVIEW_LANGUAGE": 103,
+    "OCR_GARBAGE": 13,
+    "LITERAL_TRANSLATION": 45,
+    "UNTRANSLATED": 96,
+    "GOOD_TRANSLATION": 40,
+    "ALREADY_TARGET": 9,
+    "SFX_PRESERVED": 4,
+    "OCR_NOISY_RECOVERED": 1,
+    "BAD_TRANSLATION": 1,
+    "SFX_TRANSLATED": 2
+  },
+  "no_traducibles_detalle": {
+    "EMPTY": 0,
+    "NAME_PRESERVED": 0,
+    "OCR_GARBAGE": 13,
+    "SFX_PRESERVED": 4,
+    "SFX_TRANSLATED": 2
+  },
+  "fallos_detalle": {
+    "BAD_TRANSLATION": 1,
+    "REVIEW_LANGUAGE": 103,
+    "UNTRANSLATED": 96
+  }
+}
