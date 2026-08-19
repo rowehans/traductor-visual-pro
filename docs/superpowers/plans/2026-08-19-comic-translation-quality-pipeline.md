@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Convert the current OCR/translation pipeline into a publication-gated, visually auditable pipeline that preserves comic artwork, separates independent text containers, rejects incomplete translations, and works without manga-specific vocabulary.
+**Goal:** Convert the current OCR/translation pipeline into a publication-gated, visually auditable pipeline that preserves comic artwork, separates independent text containers, rejects incomplete translations, and automatically reruns the full chapter until an independent self-evaluation reaches at least 90/100 or safely stops with publication blocked.
 
-**Architecture:** Keep `ocr_engine.py` as the orchestration layer, `ocr_utils.py` as the image/OCR layer, `word_segmenter.py` as the generic Spanish segmentation layer, and `translator.py` as the translation/validation layer. Add a small `visual_quality.py` contract/gate module, then make the API, audit scripts, renderer, frontend, tests, and PyInstaller smoke checks consume explicit block statuses instead of silently treating rejected text as translated. The broad request is split into four independently testable workstreams: OCR coverage, translation quality, visual rendering, and audit/release gating; this parent plan sequences them so each workstream leaves a usable intermediate result.
+**Architecture:** Keep `ocr_engine.py` as the orchestration layer, `ocr_utils.py` as the image/OCR layer, `word_segmenter.py` as the generic Spanish segmentation layer, and `translator.py` as the translation/validation layer. Add a small `visual_quality.py` contract/gate module plus a `self_evaluation.py` controller that runs the complete chapter, audits the resulting artifacts independently, selects a generic corrective strategy, and starts a clean full rerun when the score is below 90. The API, audit scripts, renderer, frontend, tests, and PyInstaller smoke checks consume explicit block statuses instead of silently treating rejected text as translated. The broad request is split into four independently testable workstreams: OCR coverage, translation quality, visual rendering, and audit/release gating; this parent plan sequences them so each workstream leaves a usable intermediate result.
 
 **Tech Stack:** Python 3.12, Flask, OpenCV, NumPy, PIL/Pillow, EasyOCR, RapidOCR, Unlimited-OCR daemon, CTranslate2, pytest, existing JavaScript frontend, PyInstaller.
 
@@ -18,7 +18,10 @@
 - Never silently return original dialogue as a successful translation; use an explicit review status.
 - Do not use a global white fill on dark artwork; inpainting must operate on glyph masks and preserve borders, panel art, and dark backgrounds.
 - Every task ends with a focused test run and a narrow commit; never stage unrelated pre-existing working-tree changes.
-- The final `.exe` is rebuilt only after the unit, integration, visual-regression, and smoke checks pass.
+- The final `.exe` is rebuilt only after the unit, integration, visual-regression, self-evaluation, and smoke checks pass.
+- The self-evaluation target is `quality_score >= 90.0` with zero critical defects; a score below 90 triggers a clean full-chapter rerun, never a partial page-only success.
+- The self-evaluation loop has `max_attempts=5` and a wall-clock limit; exhausting either limit returns `NEEDS_CORRECTION`, writes the complete attempt history, and blocks export/EXE publication instead of looping forever.
+- Every attempt uses a unique run namespace and isolated output/cache/checkpoint paths so stale OCR, translation, or page results cannot make a failed attempt appear to pass.
 
 ---
 
@@ -29,15 +32,17 @@ The request contains independent subsystems. Keep these boundaries during implem
 1. **OCR coverage and segmentation:** recover text inside `image` regions, classify containers, preserve candidates, and improve generic segmentation.
 2. **Translation quality:** add context, semantic validation, explicit rejection states, and safe fallbacks.
 3. **Visual rendering:** implement dual-polarity glyph masks, protected artwork, independent containers, and layout validation.
-4. **Audit and release gating:** generate the required JSON, enforce critical-defect gates, test the full chapter, and rebuild the executable.
+4. **Audit and release gating:** generate the required JSON, enforce critical-defect gates, repeatedly self-evaluate the complete chapter, and rebuild the executable only after the threshold passes.
 
-Tasks 1–3 form workstream 1, Task 4 forms workstream 2, Tasks 5–6 form workstream 3, and Tasks 7–8 form workstream 4. Each task below includes its own test cycle and commit.
+Tasks 1–3 form workstream 1, Task 4 forms workstream 2, Tasks 5–6 form workstream 3, and Tasks 7–9 form workstream 4. Each task below includes its own test cycle and commit.
 
 ## File Map
 
 | File | Responsibility after this plan |
 |---|---|
 | `visual_quality.py` | New typed metadata contract, validation helpers, critical-defect gate, and page scoring used by the audit path and API metadata. |
+| `self_evaluation.py` | New bounded controller that runs the complete chapter, audits each attempt, chooses generic retry strategies, persists history, and blocks publication below 90/100. |
+| `process_all_pages.py` | Expose an attempt-scoped full-chapter runner so every self-evaluation iteration processes all pages from clean inputs. |
 | `ocr_engine.py` | Orchestrate multi-engine candidate recovery and pass structured OCR diagnostics without deciding that low-confidence text does not exist. |
 | `ocr_utils.py` | Generic block grouping, SFX/container classification, image-region re-OCR, segmentation metadata, polarity analysis, glyph masks, and mask diagnostics. |
 | `word_segmenter.py` | Return ranked generic segmentation candidates while protecting unknown entities and preserving the existing `segment_text()` compatibility wrapper. |
@@ -832,7 +837,272 @@ git commit -m "feat(qa): gate chapter publication on visual quality defects"
 
 ---
 
-### Task 8: Run the full regression, rebuild the EXE, and document the release gate
+### Task 8: Add automatic self-evaluation and clean full-chapter reruns until the score reaches 90
+
+**Files:**
+- Create: `self_evaluation.py`
+- Create: `tests/test_self_evaluation.py`
+- Modify: `process_all_pages.py` to expose a full-run function with attempt-scoped output/checkpoint/cache paths
+- Modify: `.agents/skills/comic-chapter-translator/scripts/evaluate_chapter.py` to return the structured report consumed by the controller
+- Modify: `.agents/skills/comic-chapter-translator/scripts/quality_scorer.py` only if it needs a machine-readable failure taxonomy
+- Test: `tests/test_self_evaluation.py`
+
+**Interfaces:**
+- Consumes: a full-chapter runner and the existing audit/report generator.
+- Produces:
+
+```python
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, TypedDict
+
+
+@dataclass(frozen=True)
+class SelfEvaluationConfig:
+    target_score: float = 90.0
+    max_attempts: int = 5
+    max_wall_seconds: int = 7200  # 2-hour safety bound for the production controller
+    rerun_full_chapter: bool = True
+
+
+class EvaluationAttempt(TypedDict):
+    attempt: int
+    output_dir: str
+    quality_score: float
+    status: str
+    critical_failures: list[str]
+    failure_categories: list[str]
+    strategy: str
+
+
+class SelfEvaluationResult(TypedDict):
+    passed: bool
+    target_score: float
+    final_score: float
+    attempts: list[EvaluationAttempt]
+    final_output_dir: str | None
+    failure_reasons: list[str]
+
+
+RunChapter = Callable[[int, Path], Path]
+AuditChapter = Callable[[Path], dict]
+
+
+def evaluate_until_threshold(
+    run_chapter: RunChapter,
+    audit_chapter: AuditChapter,
+    *,
+    output_root: Path,
+    config: SelfEvaluationConfig = SelfEvaluationConfig(),
+) -> SelfEvaluationResult: ...
+```
+
+The controller must use the following decision rule:
+
+```python
+passed = (
+    report["summary"]["quality_score"] >= config.target_score
+    and report["summary"]["status"] != "NEEDS_CORRECTION"
+    and not report["summary"].get("critical_failures")
+)
+```
+
+A score of `89.99` fails. A score of `90.0` passes only if there are no critical failures. A high average never overrides a critical page defect.
+
+- [ ] **Step 1: Write failing tests for the rerun loop, threshold, isolation, and exhaustion behavior.**
+
+```python
+from pathlib import Path
+
+from self_evaluation import SelfEvaluationConfig, evaluate_until_threshold
+
+
+def test_full_chapter_reruns_until_score_reaches_ninety(tmp_path: Path):
+    run_attempts: list[int] = []
+    scores = iter([74.0, 89.99, 90.0])
+
+    def run_chapter(attempt: int, output_dir: Path) -> Path:
+        run_attempts.append(attempt)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
+    def audit_chapter(output_dir: Path) -> dict:
+        score = next(scores)
+        return {
+            "summary": {
+                "quality_score": score,
+                "status": "EXCELLENT" if score >= 90 else "NEEDS_CORRECTION",
+                "critical_failures": [],
+            }
+        }
+
+    result = evaluate_until_threshold(
+        run_chapter,
+        audit_chapter,
+        output_root=tmp_path,
+        config=SelfEvaluationConfig(target_score=90.0, max_attempts=5),
+    )
+
+    assert result["passed"] is True
+    assert result["final_score"] == 90.0
+    assert run_attempts == [1, 2, 3]
+    assert len(result["attempts"]) == 3
+    assert len({a["output_dir"] for a in result["attempts"]}) == 3
+
+
+def test_score_below_ninety_never_passes_even_without_critical_failures(tmp_path: Path):
+    def run_chapter(attempt: int, output_dir: Path) -> Path:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
+    def audit_chapter(output_dir: Path) -> dict:
+        return {"summary": {"quality_score": 90.0 - 0.01, "status": "WARNING", "critical_failures": []}}
+
+    result = evaluate_until_threshold(
+        run_chapter,
+        audit_chapter,
+        output_root=tmp_path,
+        config=SelfEvaluationConfig(max_attempts=2),
+    )
+
+    assert result["passed"] is False
+    assert result["final_score"] == 89.99
+    assert len(result["attempts"]) == 2
+    assert "target_not_reached" in result["failure_reasons"]
+
+
+def test_critical_failure_blocks_pass_at_ninety_or_higher(tmp_path: Path):
+    def run_chapter(attempt: int, output_dir: Path) -> Path:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
+    def audit_chapter(output_dir: Path) -> dict:
+        return {"summary": {"quality_score": 96.0, "status": "NEEDS_CORRECTION", "critical_failures": ["dialogue_untranslated"]}}
+
+    result = evaluate_until_threshold(
+        run_chapter,
+        audit_chapter,
+        output_root=tmp_path,
+        config=SelfEvaluationConfig(max_attempts=1),
+    )
+
+    assert result["passed"] is False
+    assert "dialogue_untranslated" in result["failure_reasons"]
+
+
+def test_exhaustion_writes_history_and_never_requests_publication(tmp_path: Path):
+    def run_chapter(attempt: int, output_dir: Path) -> Path:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
+    def audit_chapter(output_dir: Path) -> dict:
+        return {"summary": {"quality_score": 70.0, "status": "NEEDS_CORRECTION", "critical_failures": ["mask_edge_touch"]}}
+
+    result = evaluate_until_threshold(
+        run_chapter,
+        audit_chapter,
+        output_root=tmp_path,
+        config=SelfEvaluationConfig(max_attempts=2),
+    )
+
+    assert result["passed"] is False
+    assert (tmp_path / "self_evaluation_history.json").is_file()
+    assert not (tmp_path / "publication_ready.json").exists()
+```
+
+- [ ] **Step 2: Run the focused tests and verify they fail before the controller exists.**
+
+Run:
+
+```bash
+env/Scripts/python.exe -m pytest tests/test_self_evaluation.py -q
+```
+
+Expected: collection failure because `self_evaluation.py` and its interfaces do not yet exist.
+
+- [ ] **Step 3: Implement the bounded controller with clean attempt isolation.**
+
+For each attempt `n`:
+
+1. Create `output_root / f"attempt_{n:02d}"`.
+2. Derive a unique `doc_id`/cache namespace from the source document plus attempt number.
+3. Clear or isolate page caches, translation memory, and checkpoints for that attempt.
+4. Run the complete chapter through `run_chapter(attempt, attempt_dir)`; do not process only failed pages.
+5. Run `audit_chapter(attempt_dir)` against original pages and final pages.
+6. Extract `quality_score`, page statuses, critical failures, and generic failure categories.
+7. If the score is at least 90 with no critical failures, write `publication_ready.json` and stop.
+8. Otherwise select a retry strategy and continue with a clean full rerun.
+
+Use generic strategy names based on observed failure categories:
+
+- `recover_image_regions` for coverage failures.
+- `retry_ocr_preprocessing` for OCR/segmentation failures.
+- `retry_translation_with_context` for residual/truncated/omitted translation.
+- `retry_conservative_inpainting` for polarity/mask/art failures.
+- `retry_container_layout` for overflow/overlap failures.
+- `full_quality_retry` when multiple categories fail.
+
+Do not add page-specific rules or hand-correct a page inside the controller. The strategy changes only generic pipeline flags/parameters for the next complete run.
+
+- [ ] **Step 4: Persist attempt history and fail closed on exhaustion.**
+
+Write `self_evaluation_history.json` after every attempt using an atomic temporary file replacement. Store:
+
+- Attempt number.
+- Run namespace.
+- Output directory.
+- Score and status.
+- Per-pillar scores.
+- Critical failures.
+- Failure categories.
+- Strategy selected for the next attempt.
+- Runtime.
+- Cache/checkpoint namespace.
+
+If `max_attempts` or `max_wall_seconds` is reached, return `passed=False`, keep the best attempt for review, write no `publication_ready.json`, and make the CLI exit nonzero. The caller must not export a translated PDF or rebuild the EXE from a failed result.
+
+- [ ] **Step 5: Add the full-chapter CLI entry point.**
+
+Expose a command that runs the controller and exits 0 only after passing:
+
+```bash
+env/Scripts/python.exe self_evaluation.py \
+  --pdf "Capítulo 43 de Cómo criar villanos correctamente.pdf" \
+  --target en \
+  --output-root audit_results/quality_gate_run \
+  --target-score 90 \
+  --max-attempts 5 \
+  --max-wall-seconds 7200
+```
+
+Print every attempt in a stable format:
+
+```text
+[AUTO-EVAL] attempt=1 score=74.0 status=NEEDS_CORRECTION next=recover_image_regions
+[AUTO-EVAL] attempt=2 score=89.99 status=WARNING next=retry_translation_with_context
+[AUTO-EVAL] attempt=3 score=90.0 status=EXCELLENT result=PUBLICATION_READY
+```
+
+- [ ] **Step 6: Run the focused controller, audit, and API tests.**
+
+Run:
+
+```bash
+env/Scripts/python.exe -m pytest tests/test_self_evaluation.py tests/test_quality_analysis.py tests/test_api.py -q
+```
+
+Expected: all tests pass; a mocked 89.99 score triggers another full run, a 90.0 score without critical failures passes, and any critical failure blocks publication.
+
+- [ ] **Step 7: Commit the self-evaluation work.**
+
+```bash
+git add self_evaluation.py process_all_pages.py .agents/skills/comic-chapter-translator/scripts/evaluate_chapter.py .agents/skills/comic-chapter-translator/scripts/quality_scorer.py tests/test_self_evaluation.py tests/test_quality_analysis.py tests/test_api.py
+ git commit -m "feat(qa): rerun full chapters until quality threshold passes"
+```
+
+---
+
+### Task 9: Run the full regression, rebuild the EXE, and document the release gate
 
 **Files:**
 - Modify: `README.md` with the new audit contract and release commands
@@ -841,7 +1111,7 @@ git commit -m "feat(qa): gate chapter publication on visual quality defects"
 - Test: full existing suite, audit fixture, PyInstaller bundle, and EXE smoke test
 
 **Interfaces:**
-- Consumes: all statuses and diagnostics from Tasks 1–7.
+- Consumes: all statuses and diagnostics from Tasks 1–8, including the self-evaluation result.
 - Produces: a verified frozen bundle and a release report; no API contract changes beyond additive fields.
 
 - [ ] **Step 1: Add the packaging regression assertion before building.**
@@ -874,21 +1144,23 @@ Expected: zero pytest failures, zero compile errors, zero mypy errors for the st
 Use a unique output directory for the new run:
 
 ```bash
-env/Scripts/python.exe .agents/skills/comic-chapter-translator/scripts/evaluate_chapter.py \
+env/Scripts/python.exe self_evaluation.py \
   --pdf "Capítulo 43 de Cómo criar villanos correctamente.pdf" \
-  --pages all \
   --target en \
-  --outdir audit_results/quality_gate_run
+  --output-root audit_results/quality_gate_run \
+  --target-score 90 \
+  --max-attempts 5 \
+  --max-wall-seconds 7200
 ```
 
-Expected: a JSON report with one record per page, comparison images, and no silent loss of candidates. The run must explicitly show which blocks are translated, preserved, ignored with reason, or pending review.
+Expected: the controller creates one isolated output directory and one report per attempt, reruns the complete 15-page chapter whenever the score is below 90 or a critical failure exists, and writes `publication_ready.json` only after the threshold passes. Every attempt must explicitly show which blocks are translated, preserved, ignored with reason, or pending review.
 
 - [ ] **Step 4: Validate publication criteria from the generated report.**
 
 Run:
 
 ```bash
-env/Scripts/python.exe -c "import json; from pathlib import Path; p=json.loads(Path('audit_results/quality_gate_run/audit_report.json').read_text(encoding='utf-8')); assert len(p['pages']) == 15; assert all('elements_detected' in page for page in p['pages']); assert not any(e.get('translation_status') == 'TRANSLATED' and e.get('translated_text','').strip().casefold() == e.get('original_text','').strip().casefold() and e.get('type') not in {'sfx','side_note'} for page in p['pages'] for e in page['elements_detected']); print('quality gate report validated')"
+env/Scripts/python.exe -c "import json; from pathlib import Path; root=Path('audit_results/quality_gate_run'); history=json.loads((root/'self_evaluation_history.json').read_text(encoding='utf-8')); assert history['passed'] is True; final_dir=Path(history['final_output_dir']); report=json.loads((final_dir/'audit_report.json').read_text(encoding='utf-8')); assert report['summary']['quality_score'] >= 90.0; assert not report['summary'].get('critical_failures'); assert len(report['pages']) == 15; assert all('elements_detected' in page for page in report['pages']); assert (root/'publication_ready.json').is_file(); assert not any(e.get('translation_status') == 'TRANSLATED' and e.get('translated_text','').strip().casefold() == e.get('original_text','').strip().casefold() and e.get('type') not in {'sfx','side_note'} for page in report['pages'] for e in page['elements_detected']); print('self-evaluation gate validated')"
 ```
 
 Expected: exit 0 only when the report has complete page records and no false-success identical dialogue translations.
@@ -960,14 +1232,16 @@ The implementation is ready for publication only when all of these are true:
 - No final text overflows, clips, or overlaps an independent container.
 - The JSON report follows the requested per-page structure for every page.
 - Any critical visual, OCR, coverage, translation, or layout failure forces `NEEDS_CORRECTION`.
-- The focused tests, full pytest suite, syntax checks, audit fixture, PyInstaller build, and EXE smoke test pass.
+- The focused tests, full pytest suite, syntax checks, audit fixture, self-evaluation loop, PyInstaller build, and EXE smoke test pass.
+- The self-evaluation history proves that the final accepted attempt has `quality_score >= 90.0`, zero critical failures, and no `NEEDS_CORRECTION` page.
+- If five attempts or the wall-clock limit are exhausted below 90, the system returns failure, keeps the best report for diagnosis, and does not export or rebuild the executable.
 - The executable is rebuilt only after the above evidence exists.
 
 ## Self-Review
 
-- **Spec coverage:** detection completeness is covered by Task 2; OCR/segmentation by Task 3; translation fidelity by Task 4; dual-polarity inpainting by Task 5; independent containers and typography by Task 6; required JSON/scoring by Task 7; packaging and release verification by Task 8.
+- **Spec coverage:** detection completeness is covered by Task 2; OCR/segmentation by Task 3; translation fidelity by Task 4; dual-polarity inpainting by Task 5; independent containers and typography by Task 6; required JSON/scoring by Task 7; automatic full-rerun self-evaluation by Task 8; packaging and release verification by Task 9.
 - **Scope:** the broad request is explicitly decomposed into four workstreams with independent test cycles and narrow commits.
 - **No placeholders:** every task names exact files, interfaces, test commands, expected outcomes, and commit commands; no step depends on an unspecified future decision.
 - **Type consistency:** `TranslationResult`, `TranslationContext`, `AuditElement`, `LayoutResult`, and all public helper signatures are defined before later tasks consume them.
 - **Universal behavior:** all examples use generic words or synthetic fixtures; no character, location, series, or site vocabulary is added to production logic.
-- **Release safety:** the plan preserves existing API fields and the EasyOCR/CT2 load order, and explicitly prevents broad staging of unrelated working-tree changes.
+- **Release safety:** the plan preserves existing API fields and the EasyOCR/CT2 load order, explicitly prevents broad staging of unrelated working-tree changes, and blocks publication when the self-evaluation threshold is not reached.
