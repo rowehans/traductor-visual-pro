@@ -46,9 +46,12 @@ export const GLOBAL_NOISE_PATTERNS = [
  * @param {Array} blocks - Bloques con x, y, w, h, text/source
  * @param {number} pageHeight - Altura de la página en px
  * @param {Function} [getTextFn] - Función para extraer texto del bloque
+ * @param {Array|null} [removedOut] - Si se pasa un array, se llenan con los bloques descartados
+ *   (watermarks/metadatos). El servidor ya devuelve el fondo inpainted; el caller
+ *   puede usar esta lista solo para diagnóstico o compatibilidad con datos antiguos.
  * @returns {Array}
  */
-export function filterPageBlocks(blocks, pageHeight = 0, getTextFn = getBlockText) {
+export function filterPageBlocks(blocks, pageHeight = 0, getTextFn = getBlockText, removedOut = null) {
   // pageHeight = 0 desactiva el filtro de márgenes (no se puede calcular sin el canvas)
   // El caller (detectPageBlocks en app.js) pasa pdfCanvas.height explícitamente
   if (!blocks || !blocks.length) return blocks || [];
@@ -63,6 +66,7 @@ export function filterPageBlocks(blocks, pageHeight = 0, getTextFn = getBlockTex
     // Filtrar marcas de agua globales
     if (GLOBAL_NOISE_PATTERNS.some(re => re.test(text))) {
       console.log(`[filtro] Marca de agua/URL descartada: "${text}"`);
+      if (removedOut) removedOut.push(b);
       return false;
     }
 
@@ -71,6 +75,7 @@ export function filterPageBlocks(blocks, pageHeight = 0, getTextFn = getBlockTex
     const inMargin = cy < marginTop || cy > marginBottom;
     if (inMargin && MARGIN_NOISE_PATTERNS.some(re => re.test(text))) {
       console.log(`[filtro] Metadato de margen descartado: "${text}" (y=${Math.round(cy)})`);
+      if (removedOut) removedOut.push(b);
       return false;
     }
 

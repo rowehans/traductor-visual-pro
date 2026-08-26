@@ -3194,20 +3194,69 @@ def _page_has_large_image_panel(img_bgr: _Img, min_ratio: float = 0.15) -> bool:
 
 
 # ─── Filtro de marcas de agua ──────────────────────────────────
-def _filter_watermarks_from_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _filter_watermarks_from_blocks(
+    blocks: list[dict[str, Any]],
+    removed_out: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Filtra watermarks/URLs y opcionalmente conserva sus cajas para inpainting."""
     if not blocks:
         return []
     result: list[dict[str, Any]] = []
     for b in blocks:
         text = str(b.get("text", "")).strip()
-        if any(p.search(text) for p in WATERMARK_PATTERNS):
+        is_url = bool(re.search(
+            r"https?://|www\.|\.(?:com|net|org|xyz|io)\b",
+            text,
+            re.IGNORECASE,
+        ))
+        if is_url or any(p.search(text) for p in WATERMARK_PATTERNS):
             print(f"[filter-watermark] Bloque filtrado: '{text}'")
+            if removed_out is not None:
+                removed_out.append({**b, "_noise": True})
             continue
         result.append(b)
     return result
 
 
 # ─── Agrupación y fusión de bloques ────────────────────────────
+# ─── Stash thread-local de bloques de ruido descartados ────────────
+# Los filtros pre-merge (watermark/margen/URL) descartan bloques como TEXTO,
+# pero sus píxeles siguen en la imagen: si no se añaden a la máscara de
+# inpainting, el watermark sigue visible en la página "limpia" (detectado
+# E2E 2026-08-26: UEHUIJINNMANGAS.COM permanecía tras traducir la página).
+# threading.local: cada request de /process-page corre en su propio hilo del
+# executor — run_ocr llena el stash y _finalize_page_blocks lo consume en el
+# MISMO hilo, sin carrera entre requests paralelos.
+_dropped_noise_local = threading.local()
+
+
+def _reset_dropped_noise() -> None:
+    """Inicia la captura de ruido para la página del hilo actual."""
+    _dropped_noise_local.dropped = []
+    _dropped_noise_local.capture = True
+
+
+def _stash_dropped_noise(block: dict[str, Any]) -> None:
+    # Las llamadas directas a _group_and_merge_blocks (crops, diagnósticos y
+    # tests) no deben dejar estado global: solo se captura dentro de una
+    # página administrada por OCRManager.
+    if not getattr(_dropped_noise_local, "capture", False):
+        return
+    stash = getattr(_dropped_noise_local, "dropped", None)
+    if stash is None:
+        stash = []
+        _dropped_noise_local.dropped = stash
+    stash.append({**block, "_noise": True})
+
+
+def _consume_dropped_noise() -> list[dict[str, Any]]:
+    """Devuelve y vacía el ruido capturado en el hilo actual."""
+    stash = getattr(_dropped_noise_local, "dropped", None) or []
+    _dropped_noise_local.dropped = []
+    _dropped_noise_local.capture = False
+    return list(stash)
+
+
 def _canonical_block_type(value: Any) -> str:
     """Normaliza etiquetas semanticas de OCR a un conjunto estable."""
     raw = str(value or "text").strip().lower().replace("-", "_")
@@ -3253,20 +3302,28 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
         # contra text_raw preserva estos caracteres.
         if any(p.search(text_raw) for p in WATERMARK_PATTERNS):
             print(f"[OCR] Filtrando marca de agua pre-merge: '{text_raw[:50]}'")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         in_margin = margin_top is not None and (cy < margin_top or cy > margin_bottom)
         if in_margin:
             if any(p.search(text_raw) for p in MARGIN_NOISE_PATTERNS):
                 print(f"[OCR] Filtrando metadato de margen pre-merge: '{text_raw[:50]}' en y={b['y']}")
+                if img_h is not None:
+                    _stash_dropped_noise(b)
                 continue
             digit_count = sum(1 for c in text_raw if c.isdigit())
             if len(text_raw) > 0 and (digit_count / len(text_raw) >= 0.35) and len(text_raw.split()) <= 4:
                 print(f"[OCR] Filtrando metadato numérico de margen pre-merge: '{text_raw[:50]}' en y={b['y']}")
+                if img_h is not None:
+                    _stash_dropped_noise(b)
                 continue
 
         if re.search(r'https?://|www\.|\.(com|net|org|xyz|io)\b', text_raw, re.IGNORECASE):
             print(f"[OCR] Filtrando URL pre-merge: '{text_raw}'")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         # Preservar marcadores de pensamiento/onomatopeya antes de limpiar
@@ -3428,6 +3485,8 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
         conf = float(b.get("confidence", 0))
 
         if text_len == 0:
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         has_cjk = any(
@@ -3442,39 +3501,57 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
                 f"[OCR] Filtrando basura OCR de baja confianza: "
                 f"'{text[:50]}' conf={conf:.2f}"
             )
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         if re.match(r'^\d+$', text):
             print(f"[OCR] Filtrando número puro post-merge: '{text}' en [{b['x']},{b['y']}]")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         if re.match(r'^[\d\s.,;:!?%\'\"\-–—/\\]+$', text):
             print(f"[OCR] Filtrando patrón numérico post-merge: '{text}'")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         if re.match(r'^["\']+\d', text) and text_len <= 6:
             print(f"[OCR] Filtrando comilla+número post-merge: '{text}'")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         if re.match(r'^[~\'\"\-–—:;,.!¡¿?=]+$', text) and text_len <= 2:
             print(f"[OCR] Filtrando puntuación suelta post-merge: '{text}'")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         aspect = w / max(h, 1)
         if aspect < 0.4 and text_len <= 3:
             print(f"[OCR] Filtrando ruido estrecho post-merge: '{text}' aspect={aspect:.2f}")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         if text_len == 1 and conf < 0.25:
             print(f"[OCR] Filtrando carácter suelto post-merge: '{text}'")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         if conf < 0.15 and text_len <= 3:
             print(f"[OCR] Filtrando texto corto baja confianza post-merge: '{text}' conf={conf:.2f}")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         if text_len <= 3 and re.match(r'^\d+[a-zA-Z]?$', text):
             print(f"[OCR] Filtrando combo digito+letra post-merge: '{text}'")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         final_blocks.append(b)
@@ -3589,6 +3666,16 @@ def _build_inpaint_mask(img_bgr: _Img, blocks: list[dict[str, Any]]) -> _Img:
     mask: _Img = np.zeros((h, w), dtype=np.uint8)
 
     for block in blocks:
+        # Un watermark/metadato no se va a redibujar después: cubrir la caja
+        # completa evita dejar restos de antialiasing o halos del texto OCR.
+        if block.get("_noise"):
+            x0 = max(0, int(block.get("x", 0)))
+            y0 = max(0, int(block.get("y", 0)))
+            x1 = min(w, x0 + max(0, int(block.get("w", 0))))
+            y1 = min(h, y0 + max(0, int(block.get("h", 0))))
+            if x1 > x0 and y1 > y0:
+                mask[y0:y1, x0:x1] = 255
+            continue
         if _is_inside_speech_bubble(img_bgr, block):
             # En globos uniformes preservamos el borde y el relleno; solo
             # marcamos los trazos para no destruir la forma de la burbuja.

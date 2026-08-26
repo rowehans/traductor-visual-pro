@@ -1317,6 +1317,26 @@ class TestBuildInpaintMask:
 
         assert int(mask[block["y"] + 5, block["x"] + 5]) == 255
 
+    def test_ruido_usa_caja_completa_sin_detectar_glifos(self, mocker):
+        """Los watermarks deben cubrir toda su caja para evitar halos."""
+        from ocr_utils import _build_inpaint_mask
+        img = np.full((100, 200, 3), 230, dtype=np.uint8)
+        block = {
+            "x": 40, "y": 35, "w": 80, "h": 20,
+            "text": "UEHUIJINNMANGAS.COM", "_noise": True,
+        }
+        glyph_mask = mocker.patch("ocr_utils._build_glyph_mask_for_bubble")
+
+        mask = _build_inpaint_mask(img, [block])
+
+        # La dilatación puede extender un píxel el borde, pero el interior
+        # completo debe estar marcado y nunca debe entrar por la ruta de glifos.
+        region = mask[block["y"]:block["y"] + block["h"],
+                      block["x"]:block["x"] + block["w"]]
+        assert region.shape == (block["h"], block["w"])
+        assert int(region.min()) == 255
+        glyph_mask.assert_not_called()
+
 
 # ═══════════════════════════════════════════════════════════════
 # _inpaint_image

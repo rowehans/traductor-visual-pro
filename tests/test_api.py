@@ -1694,6 +1694,55 @@ class TestProcessPage:
         data = resp.get_json()
         assert data["blocks"] == []
 
+    def test_watermark_only_page_returns_inpainted_pixels(self, client, mocker):
+        """Una página con solo un dominio de watermark debe devolver el fondo
+        limpiado, sin crear una caja traducible ni activar el watchdog zombie."""
+        import base64
+        import cv2
+        img = np.full((120, 280, 3), 240, dtype=np.uint8)
+        cv2.putText(
+            img, "UEHUIJINNMANGAS.COM", (8, 68),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.72, (20, 20, 20), 2,
+        )
+        ok, encoded = cv2.imencode(".png", img)
+        assert ok
+        b64 = "data:image/png;base64," + base64.b64encode(encoded).decode("ascii")
+        block = {
+            "x": 5, "y": 40, "w": 270, "h": 38,
+            "text": "UEHUIJINNMANGAS.COM", "confidence": 0.95,
+            "fontSize": 20, "textColor": "#000000",
+        }
+
+        mocker.patch("ocr_utils._base64_to_cv2", return_value=img.copy())
+        manager = mocker.patch("ocr_engine.OCRManager")
+        manager.return_value.run_ocr.return_value = (
+            [block], "easyocr", ["easyocr"],
+        )
+        manager.return_value.last_dropped_noise = []
+        manager.return_value.last_diagnostics = None
+
+        resp = client.post(
+            "/api/process-page",
+            data=json.dumps({"image": b64, "ocr_mode": "easyocr"}),
+            content_type="application/json",
+        )
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["blocks"] == []
+        assert data["noise_removed"] == 1
+        assert data["inpainted_image"].startswith("data:image/png;base64,")
+
+        output_bytes = base64.b64decode(data["inpainted_image"].split(",", 1)[1])
+        output = cv2.imdecode(np.frombuffer(output_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+        assert output is not None
+        region = (slice(block["y"], block["y"] + block["h"]),
+                  slice(block["x"], block["x"] + block["w"]))
+        original_dark = int(np.sum(cv2.cvtColor(img[region], cv2.COLOR_BGR2GRAY) < 100))
+        output_dark = int(np.sum(cv2.cvtColor(output[region], cv2.COLOR_BGR2GRAY) < 100))
+        assert original_dark > 0
+        assert output_dark < original_dark
+
     def test_default_ocr_mode_es_fusion(self, client, mocker):
         """Fase 4: POST sin ocr_mode usa fusion (página fácil → sin daemon,
         ocr_engine='fusion')."""

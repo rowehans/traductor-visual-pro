@@ -824,6 +824,8 @@ def _finalize_page_blocks(
     detected_lang: str,
     doc_id: str = "",
     response_format: str = "png",
+    dropped_noise: list[dict[str, Any]] | None = None,
+    noise_removed_out: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None, str, float]:
     """Pipeline post-OCR compartido por /process-page y /process-page-batch:
     filtro de watermarks → re-detección de idioma → inpainting → traducción →
@@ -850,8 +852,43 @@ def _finalize_page_blocks(
     )
     from server import _get_executor
 
+    removed_blocks: list[dict[str, Any]] = []
+    # El filtro final puede encontrar watermarks emitidos por U-OCR o por un
+    # mock/adapter que no pasó por _group_and_merge_blocks. Conservamos esas
+    # cajas solo para borrarlas del fondo. La llamada mantiene un argumento
+    # para respetar adapters y mocks existentes del endpoint.
+    original_blocks = list(blocks)
     blocks = _filter_watermarks_from_blocks(blocks)
-    if not blocks:
+    retained_ids = {id(block) for block in blocks}
+    removed_blocks.extend(
+        {**block, "_noise": True}
+        for block in original_blocks if id(block) not in retained_ids
+    )
+    if dropped_noise:
+        removed_blocks.extend(
+            {**noise, "_noise": True} for noise in dropped_noise
+        )
+
+    # Evitar que un mismo rectángulo se inpaintée dos veces si el filtro
+    # pre-merge y el filtro final vieron el mismo bloque.
+    unique_removed: list[dict[str, Any]] = []
+    seen_removed: set[tuple[int, int, int, int, str]] = set()
+    for noise in removed_blocks:
+        try:
+            key = (
+                int(noise.get("x", 0)), int(noise.get("y", 0)),
+                int(noise.get("w", 0)), int(noise.get("h", 0)),
+                str(noise.get("text", "")),
+            )
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if key not in seen_removed:
+            seen_removed.add(key)
+            unique_removed.append(noise)
+    removed_blocks = unique_removed
+    if noise_removed_out is not None:
+        noise_removed_out.extend(removed_blocks)
+    if not blocks and not removed_blocks:
         return [], _cv2_to_base64(img_bgr, fmt=_img_fmt), detected_lang, 0.0
 
     # ── Re-detección de idioma post-OCR ────────────────────────
@@ -914,8 +951,9 @@ def _finalize_page_blocks(
     def _run_inpaint_parallel() -> None:
         worker_started = _time.perf_counter()
         try:
-            mask = _build_inpaint_mask(img_bgr, blocks)
-            image_result = _inpaint_image(img_bgr, mask, blocks)
+            mask_blocks = blocks + removed_blocks
+            mask = _build_inpaint_mask(img_bgr, mask_blocks)
+            image_result = _inpaint_image(img_bgr, mask, mask_blocks)
             encoded_result = _cv2_to_base64(image_result, fmt=_img_fmt)
             inpaint_result.append((image_result, encoded_result))
         except Exception as inpaint_err:
@@ -1626,7 +1664,9 @@ def process_page() -> Any:
         # ── Watchdog: detección de zombie ──────────────────────
         # Si OCR devuelve 0 bloques en <2s, podría ser un proceso zombie
         # con estado corrupto (EasyOCR no cargado, modelo no funcional, etc.)
-        if len(blocks) == 0 and t_ocr < _ZOMBIE_FAST_TIME:
+        if (len(blocks) == 0
+                and not ocr_manager.last_dropped_noise
+                and t_ocr < _ZOMBIE_FAST_TIME):
             reached = _increment_zombie_counter()
             if reached:
                 inpainted_b64: str | None = _cv2_to_base64(img_bgr, fmt=_img_fmt)
@@ -1642,19 +1682,25 @@ def process_page() -> Any:
                     "inpainted_image": inpainted_b64,
                     "diagnostics": ocr_diagnostics,
                 }), 200
-        elif len(blocks) > 0 or t_ocr >= _ZOMBIE_FAST_TIME:
+        elif (len(blocks) > 0
+              or ocr_manager.last_dropped_noise
+              or t_ocr >= _ZOMBIE_FAST_TIME):
             # Respuesta normal: resetear contador
             _reset_zombie_counter()
 
         # ── Pipeline post-OCR compartido (single y batch): filtro de
         #    watermarks → re-detección de idioma → inpainting → traducción →
         #    armado de bloques de respuesta ────────────────────────────
+        removed_noise: list[dict[str, Any]] = []
         result_blocks, inpainted_b64, detected_lang, t_inpaint = _finalize_page_blocks(
             img_bgr, blocks, source, target, scale_x, scale_y, detected_lang, doc_id,
-            response_format)
+            response_format,
+            dropped_noise=ocr_manager.last_dropped_noise,
+            noise_removed_out=removed_noise)
         if not result_blocks:
             img_bgr = None
             return jsonify({"inpainted_image": inpainted_b64, "blocks": [],
+                            "noise_removed": len(removed_noise),
                             "ocr_engine": ocr_engine_used,
                             "engines_used": engines_used,
                             "diagnostics": ocr_diagnostics})
@@ -1671,6 +1717,7 @@ def process_page() -> Any:
         page_response = {
             "inpainted_image": inpainted_b64,
             "blocks": result_blocks,
+            "noise_removed": len(removed_noise),
             "ocr_engine": ocr_engine_used,
             "engines_used": engines_used,
             "diagnostics": ocr_diagnostics,
@@ -1853,12 +1900,19 @@ def process_page_batch() -> Any:
         results: list[dict[str, Any]] = []
         for idx, ((blocks, ocr_engine_used, engines_used),
                   (img_bgr, scale_x, scale_y)) in enumerate(zip(per_page, imgs)):
+            removed_noise: list[dict[str, Any]] = []
             result_blocks, inpainted_b64, _, t_inpaint = _finalize_page_blocks(
                 img_bgr, blocks, source, target, scale_x, scale_y, detected_lang, doc_id,
-                response_format)
+                response_format,
+                dropped_noise=(
+                    ocr_manager.last_batch_dropped_noise[idx]
+                    if idx < len(ocr_manager.last_batch_dropped_noise) else []
+                ),
+                noise_removed_out=removed_noise)
             results.append({
                 "inpainted_image": inpainted_b64,
                 "blocks": result_blocks,
+                "noise_removed": len(removed_noise),
                 "ocr_engine": ocr_engine_used,
                 "engines_used": engines_used,
                 "diagnostics": (
