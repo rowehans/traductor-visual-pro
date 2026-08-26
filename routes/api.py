@@ -1640,25 +1640,23 @@ def process_page() -> Any:
         )
 
         # ── OCR ────────────────────────────────────────────────
-        # Delega en OCRManager (ocr_engine.py): orquesta EasyOCR + RapidOCR +
-        # Unlimited-OCR con el trigger selectivo v4.2. Retorna
-        # (blocks, ocr_engine_used, engines_used) — el mismo contrato que el
-        # código inline anterior (modos: easyocr, auto, unlimited, fusion).
         from ocr_engine import OCRManager
+        from page_processing import PageProcessor
         t_ocr_before = _time.time()
         ocr_manager = OCRManager()
-        blocks, ocr_engine_used, engines_used = ocr_manager.run_ocr(
-            img_bgr,
-            ocr_lang,
-            ocr_mode=ocr_mode,
-            prefilter=prefilter,
-            force_uocr=force_uocr,
-            disable_uocr=disable_uocr,
-            pure_easyocr=pure_easyocr,
-            doc_id=doc_id,
+        page_result = PageProcessor(ocr_manager).process(
+            img_bgr, source=source, target=target, ocr_mode=ocr_mode,
+            doc_id=doc_id, prefilter=prefilter, force_uocr=force_uocr,
+            disable_uocr=disable_uocr, pure_easyocr=pure_easyocr,
+            scale_x=scale_x, scale_y=scale_y,
+            detected_lang=detected_lang, response_format=response_format,
         )
-        ocr_diagnostics = ocr_manager.last_diagnostics
+        blocks = page_result.blocks
+        ocr_engine_used = page_result.ocr_engine
+        engines_used = page_result.engines_used
+        ocr_diagnostics = page_result.diagnostics
         t_ocr = _time.time() - t_ocr_before
+
         print(f"[process-page] OCR ({ocr_engine_used}): {len(blocks)} bloques en {t_ocr:.1f}s")
 
         # ── Watchdog: detección de zombie ──────────────────────
@@ -1691,16 +1689,15 @@ def process_page() -> Any:
         # ── Pipeline post-OCR compartido (single y batch): filtro de
         #    watermarks → re-detección de idioma → inpainting → traducción →
         #    armado de bloques de respuesta ────────────────────────────
-        removed_noise: list[dict[str, Any]] = []
-        result_blocks, inpainted_b64, detected_lang, t_inpaint = _finalize_page_blocks(
-            img_bgr, blocks, source, target, scale_x, scale_y, detected_lang, doc_id,
-            response_format,
-            dropped_noise=ocr_manager.last_dropped_noise,
-            noise_removed_out=removed_noise)
+        removed_noise_count = page_result.noise_removed
+        result_blocks = page_result.blocks
+        inpainted_b64 = page_result.inpainted_image
+        detected_lang = page_result.detected_lang
+        t_inpaint = 0.0
         if not result_blocks:
             img_bgr = None
             return jsonify({"inpainted_image": inpainted_b64, "blocks": [],
-                            "noise_removed": len(removed_noise),
+                            "noise_removed": removed_noise_count,
                             "ocr_engine": ocr_engine_used,
                             "engines_used": engines_used,
                             "diagnostics": ocr_diagnostics})
@@ -1717,7 +1714,7 @@ def process_page() -> Any:
         page_response = {
             "inpainted_image": inpainted_b64,
             "blocks": result_blocks,
-            "noise_removed": len(removed_noise),
+            "noise_removed": removed_noise_count,
             "ocr_engine": ocr_engine_used,
             "engines_used": engines_used,
             "diagnostics": ocr_diagnostics,
@@ -1898,12 +1895,12 @@ def process_page_batch() -> Any:
         t_ocr = _time.time() - t0
 
         results: list[dict[str, Any]] = []
-        for idx, ((blocks, ocr_engine_used, engines_used),
-                  (img_bgr, scale_x, scale_y)) in enumerate(zip(per_page, imgs)):
+        for idx, (page_result, (img_bgr, scale_x, scale_y)) in enumerate(
+                zip(per_page, imgs)):
             removed_noise: list[dict[str, Any]] = []
-            result_blocks, inpainted_b64, _, t_inpaint = _finalize_page_blocks(
-                img_bgr, blocks, source, target, scale_x, scale_y, detected_lang, doc_id,
-                response_format,
+            result_blocks, inpainted_b64, _, _ = _finalize_page_blocks(
+                img_bgr, page_result.blocks, source, target,
+                scale_x, scale_y, detected_lang, doc_id, response_format,
                 dropped_noise=(
                     ocr_manager.last_batch_dropped_noise[idx]
                     if idx < len(ocr_manager.last_batch_dropped_noise) else []
@@ -1913,12 +1910,9 @@ def process_page_batch() -> Any:
                 "inpainted_image": inpainted_b64,
                 "blocks": result_blocks,
                 "noise_removed": len(removed_noise),
-                "ocr_engine": ocr_engine_used,
-                "engines_used": engines_used,
-                "diagnostics": (
-                    ocr_manager.last_batch_diagnostics[idx]
-                    if idx < len(ocr_manager.last_batch_diagnostics) else None
-                ),
+                "ocr_engine": page_result.engine,
+                "engines_used": page_result.engines,
+                "diagnostics": page_result.diagnostics,
             })
 
         total_t = _time.time() - t0

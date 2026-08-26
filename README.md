@@ -60,7 +60,9 @@ server.py         → Entry point Flask (puerto 5174)
 config.py         → Constantes, patrones de ruido, CSP
 translator.py     → Detección de idioma + traducción (Argos → Google → CT2)
 ocr_utils.py      → OCR EasyOCR + inpainting OpenCV + filtros
-routes/api.py     → Endpoints REST
+ocr_engine.py     → Orquestación EasyOCR/RapidOCR/Unlimited-OCR
+page_processing.py → Coordinación de página single y resultado estructurado
+routes/api.py     → Endpoints REST y adaptación JSON
 routes/main.py    → Rutas estáticas
 app.js            → Frontend canvas + UI (~2514 líneas)
 index.html        → Estructura HTML

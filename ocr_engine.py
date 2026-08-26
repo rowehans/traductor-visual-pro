@@ -34,6 +34,7 @@ from typing import Any
 import numpy as np
 
 import ocr_utils
+from dataclasses import dataclass
 from runtime_diagnostics import PageDiagnostics
 
 from config import (
@@ -109,6 +110,22 @@ _DECISION_CACHE_PATH = ROOT / "cache" / "ocr_decision_cache.json"
 # sin ledger) se descartan en la carga.
 _DECISION_CACHE_VERSION = 8
 _DISK_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class OCRResult:
+    blocks: list[dict[str, Any]]
+    engine: str
+    engines: list[str]
+    diagnostics: dict[str, Any]
+
+    def __iter__(self):
+        yield self.blocks
+        yield self.engine
+        yield self.engines
+
+    def __getitem__(self, index: int):
+        return (self.blocks, self.engine, self.engines)[index]
 
 
 class OCRManager:
@@ -425,7 +442,7 @@ class OCRManager:
         return resultado
 
     # ─── API pública ─────────────────────────────────────────────
-    def run_ocr(
+    def run_ocr_result(
         self,
         img_bgr: Any,
         ocr_lang: str,
@@ -435,14 +452,11 @@ class OCRManager:
         disable_uocr: bool = False,
         pure_easyocr: bool = False,
         doc_id: str = "",
-    ) -> tuple[list[dict[str, Any]], str, list[str]]:
-        """Ejecuta el OCR según el modo. Retorna (blocks, engine_used, engines).
+    ) -> OCRResult:
+        """Ejecuta el OCR según el modo y devuelve un resultado estructurado.
 
-        doc_id (sesión 126): identificador de documento/sesión que escopea la
-        clave de la firma en los caches de decisión (trigger + §8.4.1). La
-        sesión 124 midió 94% de colisión de firma entre capítulos de la MISMA
-        serie — sin scope, el capítulo 47 heredaría las decisiones del 43
-        (supresión cruzada de VLM). El caller deriva el doc_id del PDF/archivo.
+        doc_id es el identificador de documento que limita las decisiones
+        cacheadas del OCR.
         """
         diagnostics = PageDiagnostics(ocr_mode=ocr_mode, ocr_lang=ocr_lang, doc_id=doc_id)
         previous_diagnostics = self._active_diagnostics
@@ -470,7 +484,10 @@ class OCRManager:
                 diagnostics.set_counts(initial_blocks=len(blocks))
             diagnostics.set_counts(final_blocks=len(blocks))
             diagnostics.set_engines(engine_used, engines_used)
-            return result
+            return OCRResult(
+                blocks=blocks, engine=engine_used, engines=engines_used,
+                diagnostics=diagnostics.to_dict(),
+            )
         except Exception as exc:
             # No dejar ruido de una página fallida disponible para el request
             # siguiente si el worker reutiliza el mismo hilo.
@@ -481,6 +498,19 @@ class OCRManager:
             diagnostics.finish()
             self.last_diagnostics = diagnostics.to_dict()
             self._active_diagnostics = previous_diagnostics
+
+    def run_ocr(
+        self, img_bgr: Any, ocr_lang: str, ocr_mode: str,
+        prefilter: bool = True, force_uocr: bool = False,
+        disable_uocr: bool = False, pure_easyocr: bool = False,
+        doc_id: str = "",
+    ) -> tuple[list[dict[str, Any]], str, list[str]]:
+        result = self.run_ocr_result(
+            img_bgr, ocr_lang, ocr_mode, prefilter=prefilter,
+            force_uocr=force_uocr, disable_uocr=disable_uocr,
+            pure_easyocr=pure_easyocr, doc_id=doc_id,
+        )
+        return result.blocks, result.engine, result.engines
 
     # ─── API batch (Fase 1): N páginas, UN solo VLM si varias disparan ──
     def run_ocr_batch(
@@ -493,7 +523,7 @@ class OCRManager:
         disable_uocr: bool = False,
         pure_easyocr: bool = False,
         doc_id: str = "",
-    ) -> list[tuple[list[dict[str, Any]], str, list[str]]]:
+    ) -> list[OCRResult]:
         """OCR de VARIAS páginas agrupando los triggers U-OCR en UN batch.
 
         Procesa cada página con el pipeline de fusión individual (híbrido +
@@ -501,20 +531,19 @@ class OCRManager:
         las envía juntas al daemon con /ocr-batch (infer_multi) — las N
         imágenes comparten el prefill del modelo, amortizando ~60-110s/pág.
 
-        Retorna una lista (una por imagen, mismo orden) de
-        (blocks, engine_used, engines_used).
+        Retorna una lista de OCRResult, una por imagen y en el mismo orden.
 
         No aplica a modo unlimited (ya es VLM forzado por página) ni a
-        easyocr/auto (sin tier VLM): en esos casos delega en run_ocr
+        easyocr/auto (sin tier VLM): en esos casos ejecuta OCRResult
         individual por imagen.
         """
         n = len(images)
         if ocr_mode != "fusion":
-            results: list[tuple[list[dict[str, Any]], str, list[str]]] = []
+            results: list[OCRResult] = []
             self.last_batch_diagnostics = []
             self.last_batch_dropped_noise = []
             for img in images:
-                results.append(self.run_ocr(
+                results.append(self.run_ocr_result(
                     img, ocr_lang, ocr_mode,
                     prefilter=prefilter,
                     force_uocr=force_uocr,
@@ -768,7 +797,12 @@ class OCRManager:
             diagnostics.set_engines("fusion", engines)
             diagnostics.finish()
             self.last_batch_diagnostics.append(diagnostics.to_dict())
-            results.append((blocks, "fusion", engines))
+            results.append(OCRResult(
+                blocks=blocks,
+                engine="fusion",
+                engines=engines,
+                diagnostics=diagnostics.to_dict(),
+            ))
         return results
 
     # ─── Tier 3.5 (Fase 6): YOLO → Ruta C ────────────────────────

@@ -123,7 +123,7 @@ _KNOWN_PROD_PY_FILES: frozenset[str] = frozenset({
     "process_all_pages.py", "quality_analysis.py", "ratelimit.py",
     "runtime_diagnostics.py", "server.py", "translation_memory.py",
     "translator.py", "uocr_client.py", "uocr_daemon.py",
-    "routes/__init__.py", "routes/api.py", "routes/main.py",
+    "routes/__init__.py",        "routes/api.py", "routes/main.py", "page_processing.py",
 })
 
 
@@ -389,20 +389,16 @@ def _pytest_test_files() -> list[str]:
         "tests/test_main_routes.py",
         "tests/test_launcher.py",
         "tests/test_main.py",
+        "tests/test_page_processing.py",
     ]
     return list(dict.fromkeys(files))
 
 
 def _js_syntax_files() -> list[str]:
     """Archivos JS que deben pasar ``node --check`` en cada CI."""
-    return [
-        "app.js",
-        "js/config.js",
-        "js/filters.js",
-        "js/theme.js",
-        "js/toast.js",
-        "js/utils.js",
-    ]
+    js_root = PROJECT_ROOT / "js"
+    return ["app.js", *sorted(path.relative_to(PROJECT_ROOT).as_posix()
+                              for path in js_root.glob("*.js"))]
 
 
 def step_mypy() -> bool:
@@ -477,6 +473,7 @@ _COVERAGE_THRESHOLDS: dict[str, float] = {
     "routes/__init__.py": 100.0,
     "routes/api.py": 80.6,
     "routes/main.py": 70.0,
+    "page_processing.py": 80.0,
 }
 
 

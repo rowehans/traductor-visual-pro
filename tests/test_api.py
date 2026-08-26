@@ -1715,9 +1715,10 @@ class TestProcessPage:
 
         mocker.patch("ocr_utils._base64_to_cv2", return_value=img.copy())
         manager = mocker.patch("ocr_engine.OCRManager")
-        manager.return_value.run_ocr.return_value = (
-            [block], "easyocr", ["easyocr"],
-        )
+        manager.return_value.run_ocr_result.return_value = type("OCR", (), {
+            "blocks": [block], "engine": "easyocr", "engines": ["easyocr"],
+            "diagnostics": None,
+        })()
         manager.return_value.last_dropped_noise = []
         manager.return_value.last_diagnostics = None
 
@@ -1784,8 +1785,11 @@ class TestProcessPage:
         mock_img.shape = (100, 100, 3)
         mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
         run_ocr_mock = mocker.patch(
-            "ocr_engine.OCRManager.run_ocr",
-            return_value=([], "fusion", ["easyocr+rapid"]),
+            "ocr_engine.OCRManager.run_ocr_result",
+            return_value=type("OCR", (), {
+                "blocks": [], "engine": "fusion", "engines": ["easyocr+rapid"],
+                "diagnostics": None,
+            })(),
         )
         mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
 
@@ -1834,8 +1838,11 @@ class TestProcessPage:
         mock_img.shape = (100, 100, 3)
         mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
         run_ocr_mock = mocker.patch(
-            "ocr_engine.OCRManager.run_ocr",
-            return_value=([], "fusion", ["easyocr+rapid"]),
+            "ocr_engine.OCRManager.run_ocr_result",
+            return_value=type("OCR", (), {
+                "blocks": [], "engine": "fusion", "engines": ["easyocr+rapid"],
+                "diagnostics": None,
+            })(),
         )
         mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
 
@@ -1855,8 +1862,11 @@ class TestProcessPage:
         mock_img.shape = (100, 100, 3)
         mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
         run_ocr_mock = mocker.patch(
-            "ocr_engine.OCRManager.run_ocr",
-            return_value=([], "fusion", ["easyocr+rapid"]),
+            "ocr_engine.OCRManager.run_ocr_result",
+            return_value=type("OCR", (), {
+                "blocks": [], "engine": "fusion", "engines": ["easyocr+rapid"],
+                "diagnostics": None,
+            })(),
         )
         mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
 
@@ -2075,8 +2085,10 @@ class TestProcessPage:
         mock_img.shape = (200, 200, 3)
         mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
         ocr_mgr = mocker.patch("ocr_engine.OCRManager")
-        ocr_mgr.return_value.run_ocr.return_value = ([], "easyocr", ["easyocr"])
-        ocr_mgr.return_value.last_diagnostics = None
+        ocr_mgr.return_value.run_ocr_result.return_value = type("OCR", (), {
+            "blocks": [], "engine": "easyocr", "engines": ["easyocr"],
+            "diagnostics": None,
+        })()
         finalize = mocker.patch(
             "routes.api._finalize_page_blocks",
             return_value=([], "b64", "es", 0.0),
@@ -2099,10 +2111,10 @@ class TestProcessPage:
         bytes_decode = mocker.patch("ocr_utils._bytes_to_cv2", return_value=mock_img)
         base64_decode = mocker.patch("ocr_utils._base64_to_cv2")
         ocr_mgr = mocker.patch("ocr_engine.OCRManager")
-        ocr_mgr.return_value.run_ocr.return_value = (
-            [{"x": 0, "y": 0, "w": 10, "h": 10, "text": "Hola"}],
-            "easyocr", ["easyocr"])
-        ocr_mgr.return_value.last_diagnostics = None
+        ocr_mgr.return_value.run_ocr_result.return_value = type("OCR", (), {
+            "blocks": [{"x": 0, "y": 0, "w": 10, "h": 10, "text": "Hola"}],
+            "engine": "easyocr", "engines": ["easyocr"], "diagnostics": None,
+        })()
         finalize = mocker.patch(
             "routes.api._finalize_page_blocks",
             return_value=([], "b64", "es", 0.0),
@@ -2138,10 +2150,10 @@ class TestProcessPage:
         mock_img.shape = (200, 200, 3)
         mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
         ocr_mgr = mocker.patch("ocr_engine.OCRManager")
-        ocr_mgr.return_value.run_ocr.return_value = (
-            [{"x": 0, "y": 0, "w": 10, "h": 10, "text": "Hola"}],
-            "easyocr", ["easyocr"])
-        ocr_mgr.return_value.last_diagnostics = None
+        ocr_mgr.return_value.run_ocr_result.return_value = type("OCR", (), {
+            "blocks": [{"x": 0, "y": 0, "w": 10, "h": 10, "text": "Hola"}],
+            "engine": "easyocr", "engines": ["easyocr"], "diagnostics": None,
+        })()
         finalize = mocker.patch(
             "routes.api._finalize_page_blocks",
             return_value=([{"x": 0, "y": 0, "w": 10, "h": 10,
@@ -2158,7 +2170,7 @@ class TestProcessPage:
         assert resp2.status_code == 200
         # El pipeline (OCR + finalize) corrió UNA sola vez; la segunda
         # respuesta es el cache hit.
-        assert ocr_mgr.return_value.run_ocr.call_count == 1
+        assert ocr_mgr.return_value.run_ocr_result.call_count == 1
         assert finalize.call_count == 1
         assert resp2.get_json()["blocks"] == resp1.get_json()["blocks"]
 
@@ -2171,10 +2183,10 @@ class TestProcessPage:
         mock_img.shape = (200, 200, 3)
         mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
         ocr_mgr = mocker.patch("ocr_engine.OCRManager")
-        ocr_mgr.return_value.run_ocr.return_value = (
-            [{"x": 0, "y": 0, "w": 10, "h": 10, "text": "Hola"}],
-            "easyocr", ["easyocr"])
-        ocr_mgr.return_value.last_diagnostics = None
+        ocr_mgr.return_value.run_ocr_result.return_value = type("OCR", (), {
+            "blocks": [{"x": 0, "y": 0, "w": 10, "h": 10, "text": "Hola"}],
+            "engine": "easyocr", "engines": ["easyocr"], "diagnostics": None,
+        })()
         mocker.patch(
             "routes.api._finalize_page_blocks",
             return_value=([{"x": 0, "y": 0, "w": 10, "h": 10,
@@ -2191,7 +2203,7 @@ class TestProcessPage:
         client.post("/api/process-page", data=p2,
                     content_type="application/json")
         # cap_1 se cacheó (2ª llamada = hit); cap_2 es miss.
-        assert ocr_mgr.return_value.run_ocr.call_count == 2
+        assert ocr_mgr.return_value.run_ocr_result.call_count == 2
 
     def test_page_cache_no_guarda_respuesta_vacia(self, client, mocker):
         """Optimización 2.7: la respuesta sin bloques (0 tras filtrar
@@ -2202,8 +2214,10 @@ class TestProcessPage:
         mock_img.shape = (200, 200, 3)
         mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
         ocr_mgr = mocker.patch("ocr_engine.OCRManager")
-        ocr_mgr.return_value.run_ocr.return_value = ([], "easyocr", ["easyocr"])
-        ocr_mgr.return_value.last_diagnostics = None
+        ocr_mgr.return_value.run_ocr_result.return_value = type("OCR", (), {
+            "blocks": [], "engine": "easyocr", "engines": ["easyocr"],
+            "diagnostics": None,
+        })()
         mocker.patch(
             "routes.api._finalize_page_blocks",
             return_value=([], "b64", "es", 0.0),
@@ -2388,10 +2402,11 @@ class TestProcessPage:
         mock_img = MagicMock()
         mock_img.shape = (100, 100, 3)
         mocker.patch("ocr_utils._base64_to_cv2", return_value=mock_img)
+        from ocr_engine import OCRResult
         run_batch_mock = mocker.patch(
             "ocr_engine.OCRManager.run_ocr_batch",
-            return_value=[([], "fusion", ["easyocr+rapid"]),
-                          ([], "fusion", ["easyocr+rapid"])],
+            return_value=[OCRResult([], "fusion", ["easyocr+rapid"], {}),
+                          OCRResult([], "fusion", ["easyocr+rapid"], {})],
         )
         mocker.patch("ocr_utils._cv2_to_base64", return_value=b64)
 
