@@ -1164,7 +1164,13 @@ def _get_spellchecker(lang: str = "es") -> Any:
             return _OCR_SPELLCHECKER
         try:
             from spellchecker import SpellChecker
-            sp = SpellChecker(language=lang)
+            # pyspellchecker usa nombres de diccionario como "es"/"en"/"pt".
+            # Algunas instalaciones antiguas solo exponen los alias largos.
+            try:
+                sp = SpellChecker(language=lang)
+            except (AssertionError, ValueError):
+                fallback_lang = {"es": "spanish", "pt": "portuguese"}.get(lang, lang)
+                sp = SpellChecker(language=fallback_lang)
             wf = sp.word_frequency
             # Palabras del dominio manga que pyspellchecker podria no conocer
             # o tener baja frecuencia. Lista FIJA - no requiere mantenimiento.
