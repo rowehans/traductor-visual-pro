@@ -1164,8 +1164,7 @@ def _get_spellchecker(lang: str = "es") -> Any:
             return _OCR_SPELLCHECKER
         try:
             from spellchecker import SpellChecker
-            # pyspellchecker usa nombres de diccionario como "es"/"en"/"pt".
-            # Algunas instalaciones antiguas solo exponen los alias largos.
+            # Algunas instalaciones antiguas solo exponen alias largos.
             try:
                 sp = SpellChecker(language=lang)
             except (AssertionError, ValueError):
@@ -3230,9 +3229,7 @@ def _filter_watermarks_from_blocks(
 # pero sus píxeles siguen en la imagen: si no se añaden a la máscara de
 # inpainting, el watermark sigue visible en la página "limpia" (detectado
 # E2E 2026-08-26: UEHUIJINNMANGAS.COM permanecía tras traducir la página).
-# threading.local: cada request de /process-page corre en su propio hilo del
-# executor — run_ocr llena el stash y _finalize_page_blocks lo consume en el
-# MISMO hilo, sin carrera entre requests paralelos.
+# Cada request llena el stash y lo consume antes de finalizar.
 _dropped_noise_local = threading.local()
 
 

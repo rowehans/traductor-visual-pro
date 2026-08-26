@@ -101,10 +101,14 @@ def _load_model() -> None:
         )
         # MODEL_DIR es un directorio local del bundle; no se descarga desde la
         # petición HTTP ni desde una ruta controlada por el usuario.
-        _tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, trust_remote_code=True)  # nosec B615
+        model_dir = os.path.abspath(MODEL_DIR)
+        _tokenizer = AutoTokenizer.from_pretrained(
+            model_dir, trust_remote_code=True, local_files_only=True,
+            cache_dir=os.path.join(ROOT, "hf_cache", "hub"))  # nosec B615
         _model = AutoModel.from_pretrained(
-            MODEL_DIR,
+            model_dir,
             trust_remote_code=True,  # nosec B615
+            local_files_only=True,
             use_safetensors=True,
             torch_dtype=torch.float16,
             quantization_config=quant,

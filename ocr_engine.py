@@ -195,8 +195,7 @@ class OCRManager:
         self.ou = ocr_utils
         self.last_diagnostics: dict[str, Any] | None = None
         self.last_batch_diagnostics: list[dict[str, Any]] = []
-        # Bloques que el filtro OCR descartó pero que todavía deben borrarse
-        # del fondo. Se exponen aparte para que la API no los traduzca.
+        # Ruido descartado que aún debe eliminarse del fondo.
         self.last_dropped_noise: list[dict[str, Any]] = []
         self.last_batch_dropped_noise: list[list[dict[str, Any]]] = []
         self._active_diagnostics: PageDiagnostics | None = None
@@ -533,6 +532,7 @@ class OCRManager:
             for _ in images
         ]
         self.last_batch_diagnostics = []
+        self.last_dropped_noise = []
         self.last_batch_dropped_noise = []
 
         # Benchmark: disable_uocr también apaga el cls de rotación, el
@@ -547,11 +547,9 @@ class OCRManager:
         per_page_engines: list[list[str]] = [[] for _ in range(n)]
         per_page_firmas: list[str | None] = [None] * n  # para §8.4.1 en Fase B
         per_page_avg_conf: list[float] = [0.0] * n  # sesión 129: stats para la salvaguarda
-        per_page_dropped_noise: list[list[dict[str, Any]]] = [[] for _ in range(n)]
         vlm_pending: list[int] = []  # índices que requieren VLM
         for i, img in enumerate(images):
-            # Cada imagen tiene su propio stash: un lote no puede mezclar
-            # watermarks de páginas distintas ni de crops de Ruta C.
+            # Aislar el stash de cada página.
             self.ou._reset_dropped_noise()
             diagnostics = batch_diagnostics[i]
             with diagnostics.stage("hybrid"):
@@ -649,7 +647,10 @@ class OCRManager:
                     needs_vlm = True
             per_page_blocks[i] = blocks
             per_page_engines[i] = engines
-            per_page_dropped_noise[i] = self.ou._consume_dropped_noise()
+            dropped_noise = self.ou._consume_dropped_noise()
+            self.last_batch_dropped_noise.append(dropped_noise)
+            if dropped_noise:
+                self.last_dropped_noise.extend(dropped_noise)
             if needs_vlm:
                 vlm_pending.append(i)
 
@@ -768,7 +769,6 @@ class OCRManager:
             diagnostics.finish()
             self.last_batch_diagnostics.append(diagnostics.to_dict())
             results.append((blocks, "fusion", engines))
-        self.last_batch_dropped_noise = per_page_dropped_noise
         return results
 
     # ─── Tier 3.5 (Fase 6): YOLO → Ruta C ────────────────────────
