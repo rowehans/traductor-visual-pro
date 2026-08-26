@@ -102,6 +102,8 @@ def _load_model() -> None:
         # MODEL_DIR es un directorio local del bundle; no se descarga desde la
         # petición HTTP ni desde una ruta controlada por el usuario.
         model_dir = os.path.abspath(MODEL_DIR)
+        if not os.path.isdir(model_dir):
+            raise FileNotFoundError(f"modelo local no encontrado: {model_dir}")
         _tokenizer = AutoTokenizer.from_pretrained(
             model_dir, trust_remote_code=True, local_files_only=True,
             cache_dir=os.path.join(ROOT, "hf_cache", "hub"))  # nosec B615

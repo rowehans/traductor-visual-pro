@@ -381,7 +381,7 @@ class TestParseBlocks:
 
 class TestLoadModel:
     def test_carga_exitosa(
-            self, monkeypatch: pytest.MonkeyPatch) -> None:
+            self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         class _FakeCuda:
             @staticmethod
             def reset_peak_memory_stats() -> None:
@@ -423,11 +423,36 @@ class TestLoadModel:
         monkeypatch.setitem(sys.modules, "torch", _FakeTorch())
         monkeypatch.setitem(sys.modules, "transformers", _FakeTransformers())
 
+        monkeypatch.setattr(ud, "MODEL_DIR", str(tmp_path / "model"))
+        Path(ud.MODEL_DIR).mkdir()
         ud._load_model()
 
         assert ud._status["state"] == "ready"
         assert ud._tokenizer == "tok"
         assert ud._status["vram_gb"] == 1.0
+
+    def test_directorio_de_modelo_inexistente_marca_error(
+            self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        class _FakeTorch:
+            float16 = "float16"
+
+        class _FakeConfig:
+            def __init__(self, **kwargs: object) -> None:
+                pass
+
+        class _FakeTransformers:
+            AutoTokenizer = object()
+            AutoModel = object()
+            BitsAndBytesConfig = _FakeConfig
+
+        monkeypatch.setitem(sys.modules, "torch", _FakeTorch())
+        monkeypatch.setitem(sys.modules, "transformers", _FakeTransformers())
+        monkeypatch.setattr(ud, "MODEL_DIR", str(tmp_path / "missing"))
+
+        ud._load_model()
+
+        assert ud._status["state"] == "error"
+        assert "modelo local no encontrado" in ud._status["error"]
 
     def test_error_de_carga_marca_error(
             self, monkeypatch: pytest.MonkeyPatch) -> None:
