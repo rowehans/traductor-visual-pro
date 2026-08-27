@@ -52,12 +52,18 @@ def _launcher_aislado(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     opened: list[str] = []
     monkeypatch.setattr(os, "chdir", lambda p: None)
     monkeypatch.setattr(time, "sleep", lambda s: None)
+    # Los tests de arranque verifican el Popen del servidor, no el intérprete
+    # real: el launcher usa env/Scripts/python.exe en local y sys.executable
+    # en CI (sin env/). Mockear PYTHON a un ejecutable que SIEMPRE existe
+    # hace los tests independientes del entorno (importante en GitHub
+    # Actions, donde env/ no existe).
 
     def _open(url: str) -> bool:
         opened.append(url)
         return True
 
     monkeypatch.setattr(webbrowser, "open", _open)
+    monkeypatch.setattr(launcher, "PYTHON", Path(sys.executable))
     return opened
 
 
@@ -90,6 +96,7 @@ def test_main_sin_python_devuelve_1(monkeypatch: pytest.MonkeyPatch,
                                     capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setattr(launcher, "PYTHON",
                         Path("ruta/inexistente/python.exe"))
+    monkeypatch.setattr(launcher, "port_open", lambda host, port: False)
     monkeypatch.setattr("builtins.input", lambda prompt: "")
     rc = launcher.main([])
     assert rc == 1
@@ -144,7 +151,9 @@ def test_main_arranca_servidor_y_abre_navegador(
     assert rc == 0
     assert len(popen_calls) == 1
     cmd = popen_calls[0]
-    assert cmd[0].endswith("python.exe")
+    # Python del intérprete activo: "python.exe" en Windows, "python" en
+    # Linux (GitHub Actions usa ubuntu-latest sin env/).
+    assert os.path.basename(cmd[0]).startswith("python")
     assert cmd[2].endswith("server.py")
     assert "Servidor listo" in capsys.readouterr().out
     assert len(_launcher_aislado) == 1

@@ -1,0 +1,145 @@
+{
+  "pages": [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13",
+    "14",
+    "15",
+    "16",
+    "17",
+    "18",
+    "19",
+    "20",
+    "21",
+    "22",
+    "23",
+    "24",
+    "25",
+    "26",
+    "27",
+    "28",
+    "29",
+    "30",
+    "31",
+    "32",
+    "33",
+    "34",
+    "35",
+    "36",
+    "37",
+    "38",
+    "39",
+    "40",
+    "41",
+    "42",
+    "43",
+    "44",
+    "45",
+    "46",
+    "47",
+    "48",
+    "49",
+    "50",
+    "51",
+    "52",
+    "53"
+  ],
+  "total_s": 153.97,
+  "stats": {
+    "calls": 112,
+    "foreign_true": 17,
+    "early_es_all_known": 14,
+    "early_no_candidates": 81,
+    "total_s": 0.0034969999942404684,
+    "known_calls": {
+      "es": 1419,
+      "en": 98,
+      "pt": 94
+    },
+    "known_s": {
+      "es": 0.3042061000196554,
+      "en": 0.00026069997693412006,
+      "pt": 0.0002063999927486293
+    },
+    "known_words": {
+      "es": 801820,
+      "en": 169,
+      "pt": 157
+    },
+    "tokens_seen": 282
+  },
+  "short_stats": {
+    "3-5": {
+      "calls": 11,
+      "total_s": 0.0010035000123025384,
+      "known_calls": 14,
+      "known_words": 836,
+      "known_s": 0.0005651000064972322,
+      "corregidas": 3,
+      "replica_calls": 0,
+      "replica_s": 0.0,
+      "replica_same": 0,
+      "replica_diff": 0
+    },
+    "8-10": {
+      "calls": 4,
+      "total_s": 4.2199997551506385e-05,
+      "known_calls": 4,
+      "known_words": 4,
+      "known_s": 1.1200005246791989e-05,
+      "corregidas": 0,
+      "replica_calls": 4,
+      "replica_s": 5.000001692678779e-06,
+      "replica_same": 4,
+      "replica_diff": 0
+    },
+    "11-12": {
+      "calls": 1,
+      "total_s": 0.3538848999996844,
+      "known_calls": 762,
+      "known_words": 601463,
+      "known_s": 0.22816539995983476,
+      "corregidas": 0,
+      "replica_calls": 1,
+      "replica_s": 0.04138950000196928,
+      "replica_same": 0,
+      "replica_diff": 1,
+      "diffs": [
+        {
+          "word": "clvdegchmar",
+          "sp": null,
+          "replica": null
+        }
+      ]
+    },
+    "6-7": {
+      "calls": 1,
+      "total_s": 0.11571050000202376,
+      "known_calls": 432,
+      "known_words": 198893,
+      "known_s": 0.07388300005186466,
+      "corregidas": 0,
+      "replica_calls": 1,
+      "replica_s": 0.050142100000812206,
+      "replica_same": 0,
+      "replica_diff": 1,
+      "diffs": [
+        {
+          "word": "clvdeg",
+          "sp": null,
+          "replica": null
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,751 @@
+{
+  "audit_scope": {
+    "source_pdf": "Capítulo 43 de Cómo criar villanos correctamente.pdf",
+    "processed_comparisons": "audit_results/page_01_comparison.jpg ... page_15_comparison.jpg",
+    "pages_audited": 15,
+    "elements_detected": 60,
+    "source_language": "es",
+    "target_language": "en",
+    "scoring_note": "Puntuación manual corregida a partir de OCR, traducción, cobertura y polaridad por bloque. No reutiliza ciegamente la puntuación automática previa, que no penalizaba varios errores semánticos.",
+    "polarity_note": "dark_on_light y light_on_dark se infieren por la luminancia del perímetro del bloque; los casos cercanos al umbral requieren comprobación final en alta resolución.",
+    "visual_evidence_note": "Se utilizaron las comparativas renderizadas y las verificaciones OpenCV disponibles. La ausencia de un defecto en la lista significa que no hay evidencia en los artefactos disponibles, no que el defecto sea imposible."
+  },
+  "summary": {
+    "quality_score": 63.8,
+    "status": "NEEDS_CORRECTION",
+    "grade": "C",
+    "status_breakdown": {
+      "EXCELLENT": 1,
+      "WARNING": 4,
+      "NEEDS_CORRECTION": 10
+    },
+    "total_pages": 15,
+    "total_elements": 60,
+    "critical_findings": [
+      "Múltiples bloques conservan español, OCR corrupto o palabras pegadas.",
+      "Hay traducciones truncadas o con cambio de sentido, especialmente en páginas 2, 3, 6, 8, 11, 13, 14 y 15.",
+      "La página 11 mezcla diálogo, SFX y marca de sitio; no todos deben traducirse como diálogo.",
+      "El pipeline usa polaridad por bloque, pero hay páginas con fondos claros y oscuros simultáneos que requieren verificación visual final.",
+      "No debe publicarse el capítulo sin una segunda pasada de re-OCR contextual y revisión de composición."
+    ]
+  },
+  "pages": [
+    {
+      "page_number": 1,
+      "quality_score": 58.0,
+      "status": "NEEDS_CORRECTION",
+      "elements_detected": [
+        {
+          "id": 1,
+          "type": "sfx",
+          "original_text": "INCREIBLE, EN VERDADES INCREIBLE...",
+          "translated_text": "UNBELIEVABLE, IN THE REAL INCREDIBLE...",
+          "polarity": "dark_on_light",
+          "ocr_status": "ERROR",
+          "notes": "La segmentación y la lectura son incoherentes; 'EN VERDADES' parece una lectura corrupta. Propuesta de revisión contextual: 'Unbelievable... really unbelievable...' Si está pintado sobre el arte, debe conservarse como SFX independiente y no fusionarse con diálogo."
+        },
+        {
+          "id": 2,
+          "type": "dialogue_bubble",
+          "original_text": "PRIMERO SEOL LANG, Y AHORAYUTIA",
+          "translated_text": "FIRST SEOL LANG, AND NOWYYUTIA",
+          "polarity": "dark_on_light",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "'AHORAYUTIA' está pegado y la salida introduce 'NOWYYUTIA'. Separar palabras y preservar los nombres detectados sin concatenarlos. Propuesta: 'First Seol Lang, and now Yutia.'"
+        },
+        {
+          "id": 3,
+          "type": "sfx",
+          "original_text": "AAHH....",
+          "translated_text": "AHH...",
+          "polarity": "dark_on_light",
+          "ocr_status": "OK",
+          "notes": "Onomatopeya correctamente normalizada; verificar que el tamaño y el centrado no cambien su intención expresiva."
+        },
+        {
+          "id": 4,
+          "type": "dialogue_bubble",
+          "original_text": "SEOL LANG OIIEN",
+          "translated_text": "SEOL LANG OIIEN",
+          "polarity": "light_on_dark",
+          "ocr_status": "ERROR",
+          "notes": "Texto no traducido y con caracteres posiblemente confundidos. No asumir que la cadena completa es un nombre: repetir OCR rotado/contextual y revisar el globo."
+        }
+      ],
+      "visual_defects_found": [
+        "El bloque 4 queda en la rama light_on_dark por una luminancia perimetral cercana al umbral; existe riesgo de texto blanco con contraste incorrecto si el fondo real es gris claro.",
+        "No hay evidencia registrada de un marco borrado, pero el SFX sobre arte requiere comprobar que el inpainting no haya eliminado líneas del dibujo."
+      ],
+      "recommendations": "Re-OCR de los bloques 1, 2 y 4; separar SFX de diálogo; validar el contraste del bloque 4 y repetir la composición con el texto corregido."
+    },
+    {
+      "page_number": 2,
+      "quality_score": 45.0,
+      "status": "NEEDS_CORRECTION",
+      "elements_detected": [
+        {
+          "id": 1,
+          "type": "dialogue_bubble",
+          "original_text": "NORMALMENTE MANTENÍA SU DISTANCIA A MENOS QUE NECESITARA ALGO, SEHA VUELTO HOSTIL.",
+          "translated_text": "NORMALLY I KEPT HER DISTANCE UNLESS SHE NEEDED SOMETHING, SEHA VUELTO HOSTIL.",
+          "polarity": "light_on_dark",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "'SEHA' está pegado y la traducción deja el final en español además de cambiar el sujeto/tiempo verbal. Propuesta contextual: 'She normally kept her distance unless she needed something; now she has become hostile.'"
+        },
+        {
+          "id": 2,
+          "type": "dialogue_bubble",
+          "original_text": "AUNQUE HAYA SIDO UN FLAGRANTE ACTO DE TRAICION, NO PODRIA ARRESTARLA...",
+          "translated_text": "EVEN IF I HAVE BEEN AN INFLAGRANT ACT OF BETRAYAL, I COULD NOT ARREST HER...",
+          "polarity": "light_on_dark",
+          "ocr_status": "OK",
+          "notes": "El OCR es legible, pero la traducción es semánticamente incorrecta: 'I have been an act' no corresponde al original. Propuesta: 'Although it was a blatant act of betrayal, I couldn't arrest her...'"
+        },
+        {
+          "id": 3,
+          "type": "dialogue_bubble",
+          "original_text": "YAQUE ACTUALMENTE SOLO QUEDAN 2 BABAYAGASDELAS 5 ORIGINALES, Y NECESITO UNA FUERZA ABRUMADORA.",
+          "translated_text": "BECAUSE THERE ARE CURRENTLY ONLY 2 BABAYAGAS OF THE 5 ORIGINALS, AND I NEED AN ABRUZZLING FORCE.",
+          "polarity": "light_on_dark",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "'BABAYAGASDELAS' requiere separación. 'ABRUZZLING' es una invención/forma errónea. Propuesta: 'Because only two of the five original Baba Yagas remain, and I need overwhelming force.'"
+        }
+      ],
+      "visual_defects_found": [
+        "Los tres bloques están sobre regiones muy oscuras; la eliminación dual debe conservar completamente el panel negro y sus líneas.",
+        "No se debe usar un relleno blanco global para limpiar estos bloques: produciría parches opacos sobre el arte."
+      ],
+      "recommendations": "Activar re-OCR con segmentación contextual y corregir las tres traducciones antes de exportar; verificar visualmente que el inpainting solo afecte glifos claros."
+    },
+    {
+      "page_number": 3,
+      "quality_score": 50.0,
+      "status": "NEEDS_CORRECTION",
+      "elements_detected": [
+        {
+          "id": 1,
+          "type": "dialogue_bubble",
+          "original_text": "YES POR ESO QUE ESPERABA APROVECHARME DELPADRINODESEOLLLANG.",
+          "translated_text": "YES, THAT'S WHY I WAS HOPING TO TAKE ADVANTAGE OF THE GODFATHER OF ME.",
+          "polarity": "light_on_dark",
+          "ocr_status": "ERROR",
+          "notes": "Varias palabras están pegadas y la salida pierde la relación posesiva. Propuesta condicionada al re-OCR: 'Yes, that's why I was hoping to take advantage of Seol Lang's godfather.'"
+        },
+        {
+          "id": 2,
+          "type": "dialogue_bubble",
+          "original_text": "CUANDO LE OFRECIA ELLA MANO DEMIHUAEN MATRIMONIO FUE PURAMENTE UN CALCULO POLITICO SISE HUBIESE REHUSADO SE HUBIESE SENTIDO ENDEUDA CONMIGO...",
+          "translated_text": "WHEN SHE OFFERED HER HAND DEMIHUA IN MARRIAGE IT WAS PURELY A POLITICAL CALCULUS SISE HUNGRY HE HAD SUFFERED IN DEBT WITH ME...",
+          "polarity": "dark_on_light",
+          "ocr_status": "ERROR",
+          "notes": "El bloque contiene múltiples fusiones y palabras espurias ('SISE HUNGRY'). La traducción no es publicable. Re-OCR por líneas y reconstrucción contextual obligatoria; no inventar la frase faltante."
+        },
+        {
+          "id": 3,
+          "type": "dialogue_bubble",
+          "original_text": "MMM, ESTABA PENSANDO EN DARTE UN REGAL ORDI CIONAL.",
+          "translated_text": "MMM, I WAS THINKING ABOUT GIVING YOU A REGAL ORDI CIONAL.",
+          "polarity": "dark_on_light",
+          "ocr_status": "ERROR",
+          "notes": "'REGAL ORDI CIONAL' evidencia segmentación defectuosa, probablemente relacionada con 'regalo adicional'. La traducción repite el OCR en vez de corregirlo."
+        },
+        {
+          "id": 4,
+          "type": "dialogue_bubble",
+          "original_text": "TENGO UNA HIJA...",
+          "translated_text": "I HAVE A DAUGHTER...",
+          "polarity": "dark_on_light",
+          "ocr_status": "OK",
+          "notes": "Correspondencia semántica correcta y tono conservado."
+        }
+      ],
+      "visual_defects_found": [
+        "El bloque 1 está sobre arte oscuro; la máscara de letras claras puede confundir reflejos o trazos del dibujo con glifos y dejar un parche visible.",
+        "La verificación artística disponible confirma que el texto pintado directamente sobre ilustración puede quedar clasificado como imagen; la cobertura no debe depender solo de detectar globos."
+      ],
+      "recommendations": "Aplicar re-OCR por regiones y separar texto pintado sobre arte de los globos; revisar la máscara visual con comparación ampliada antes de aceptar el inpainting."
+    },
+    {
+      "page_number": 4,
+      "quality_score": 60.0,
+      "status": "NEEDS_CORRECTION",
+      "elements_detected": [
+        {
+          "id": 1,
+          "type": "dialogue_bubble",
+          "original_text": "SI HUBIESE ACEPTAD...",
+          "translated_text": "IF I HAD ACCEPTED...",
+          "polarity": "dark_on_light",
+          "ocr_status": "ERROR",
+          "notes": "OCR truncado en 'ACEPTAD...'; la traducción completa no puede validarse sin recuperar el resto del glifo/línea."
+        },
+        {
+          "id": 2,
+          "type": "dialogue_bubble",
+          "original_text": "PODRIA USARLO PARA CONTROLARA LA PRIMERA BABA YAGA QUE SIEMPRE HA SIDO TAN IMPREDECIBLE -por_supuesto! osareputacion",
+          "translated_text": "I COULD USE IT TO CONTROL THE FIRST BABA YAGA THAT ALWAYS HAS BEEN SO UNPRECABLE - OF COURSE!",
+          "polarity": "dark_on_light",
+          "ocr_status": "ERROR",
+          "notes": "Hay ruido de interfaz/puntuación y texto residual ('osareputacion') que desaparece sin auditoría. 'UNPRECABLE' es incorrecto; revisar también si el texto posterior pertenece a una nota independiente."
+        },
+        {
+          "id": 3,
+          "type": "dialogue_bubble",
+          "original_text": "YAQUE TAMBIEN ESTÁ RELACIONADO CON LA CARDENAL DEL SANTO REINO, YUTIA BLOODIA...",
+          "translated_text": "YAQUE IS ALSO RELATED TO CARDINAL DEL SANTO REINO, YUTIA BLOODIA...",
+          "polarity": "dark_on_light",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "La salida deja 'YAQUE' y parte de la frase en español. Separar 'YA QUE' y traducir los nombres/títulos solo después de confirmar el OCR."
+        }
+      ],
+      "visual_defects_found": [
+        "Fondo claro detectado en los tres bloques; conservar contornos y líneas del globo, sin pintar rectángulos sólidos sobre ellos.",
+        "El ruido incluido en el bloque 2 aumenta el riesgo de una máscara demasiado grande sobre el dibujo cercano."
+      ],
+      "recommendations": "Separar ruido y notas laterales, repetir OCR del bloque 1, corregir la traducción completa y validar que el inpainting respete los bordes del globo."
+    },
+    {
+      "page_number": 5,
+      "quality_score": 80.0,
+      "status": "WARNING",
+      "elements_detected": [
+        {
+          "id": 1,
+          "type": "dialogue_bubble",
+          "original_text": "ERA UNA PROPUESTA QUE SOLO PODRÍA BENEFICIARME, PERO",
+          "translated_text": "IT WAS A PROPOSAL THAT COULD ONLY BENEFIT ME, BUT",
+          "polarity": "dark_on_light",
+          "ocr_status": "OK",
+          "notes": "Texto y traducción coherentes; mantener el bloque independiente y el salto antes de 'but'."
+        },
+        {
+          "id": 2,
+          "type": "dialogue_bubble",
+          "original_text": "HOY, LUEGO DE VERLAS A AMBAS...",
+          "translated_text": "TODAY, AFTER SEEING THEM BOTH...",
+          "polarity": "light_on_dark",
+          "ocr_status": "OK",
+          "notes": "Traducción natural y elipsis conservada. Verificar contraste blanco sobre fondo oscuro."
+        },
+        {
+          "id": 3,
+          "type": "dialogue_bubble",
+          "original_text": "ME GUSTARIA HACERTE UNA PREGUNTA, SIME LO PERMITES.",
+          "translated_text": "I'D LIKE TO ASK YOU A QUESTION, SIME.",
+          "polarity": "light_on_dark",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "'SIME' parece la fusión de 'si me'; la salida pierde 'lo permites'. Propuesta: 'I'd like to ask you a question, if you don't mind.'"
+        }
+      ],
+      "visual_defects_found": [
+        "Los bloques 2 y 3 están en fondo oscuro y requieren texto claro; la caja del bloque 3 es relativamente estrecha para la frase completa y puede quedar visualmente subutilizada tras la truncación."
+      ],
+      "recommendations": "Corregir 'si me lo permites', volver a ajustar el texto dentro del globo y revisar centrado/espaciado después de recuperar la frase completa."
+    },
+    {
+      "page_number": 6,
+      "quality_score": 72.0,
+      "status": "WARNING",
+      "elements_detected": [
+        {
+          "id": 1,
+          "type": "dialogue_bubble",
+          "original_text": "CLARO, ADELANTE.",
+          "translated_text": "SURE, GO AHEAD.",
+          "polarity": "dark_on_light",
+          "ocr_status": "OK",
+          "notes": "Traducción correcta y registro adecuado."
+        },
+        {
+          "id": 2,
+          "type": "dialogue_bubble",
+          "original_text": "NO PUDE RECHAZARLA SOLICITUD DELA CARDENAL.",
+          "translated_text": "I COULDN'T REFUSE HER.",
+          "polarity": "light_on_dark",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "'DELA' está pegado. La traducción omite 'the cardinal's request' y cambia el objeto de rechazar. Propuesta: 'I couldn't refuse the cardinal's request.'"
+        },
+        {
+          "id": 3,
+          "type": "dialogue_bubble",
+          "original_text": "DESDE EL PRINCIPIO, NECESITABA LA AYUDA DE ROSARIO, ASIQUE INCLUSO ACEPTE OFRECERLE UNO DE MIS TESOROS.",
+          "translated_text": "FROM THE BEGINNING, I NEEDED ROSARIO'S HELP, SO I EVEN ACCEPTED TO OFFER HIM ONE OF MY TREASURES.",
+          "polarity": "light_on_dark",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "Corregir 'ASIQUE'→'ASÍ QUE' y 'ACEPTE'→'ACEPTÉ'. La construcción inglesa es antinatural y el género de 'him' no está justificado. Propuesta: 'From the beginning, I needed Rosario's help, so I even offered one of my treasures.'"
+        }
+      ],
+      "visual_defects_found": [
+        "Los bloques 2 y 3 comparten fondo oscuro; comprobar que el inpainting no convierta zonas artísticas en manchas uniformes.",
+        "No hay evidencia de marcos borrados en los comparativos disponibles."
+      ],
+      "recommendations": "Corregir la omisión del bloque 2 y simplificar la construcción del bloque 3; después revisar altura de línea y contraste."
+    },
+    {
+      "page_number": 7,
+      "quality_score": 63.0,
+      "status": "NEEDS_CORRECTION",
+      "elements_detected": [
+        {
+          "id": 1,
+          "type": "dialogue_bubble",
+          "original_text": "LAS TRADICIONES SON IMPORTANTES, PERO ASEGURAR SU APOYO ES PRIORIDAD.",
+          "translated_text": "TRADITIONS ARE IMPORTANT, BUT SECURING YOUR SUPPORT IS A PRIORITY.",
+          "polarity": "dark_on_light",
+          "ocr_status": "OK",
+          "notes": "Traducción correcta."
+        },
+        {
+          "id": 2,
+          "type": "dialogue_bubble",
+          "original_text": "PENSE QUE NUESTRA RELACION IBA ENLA DIRECCION CORRECTA...",
+          "translated_text": "I THOUGHT OUR RELATIONSHIP WAS IN THE RIGHT DIRECTION...",
+          "polarity": "dark_on_light",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "'ENLA' requiere separación. Propuesta más natural: 'I thought our relationship was heading in the right direction...'"
+        },
+        {
+          "id": 3,
+          "type": "dialogue_bubble",
+          "original_text": "QUEESLO QUE HABRA SUCEDIDO?",
+          "translated_text": "WHAT'S THE MATTER?",
+          "polarity": "dark_on_light",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "Texto pegado y matiz temporal perdido. Propuesta: 'What could have happened?'"
+        },
+        {
+          "id": 4,
+          "type": "dialogue_bubble",
+          "original_text": "HHONSINOSS DESAPARECIDO DESU ROSTRO DESDE QUE LLEGÓ.",
+          "translated_text": "HHONSINOS DISAPPEARED FROM HIS FACE SINCE HE CAME.",
+          "polarity": "dark_on_light",
+          "ocr_status": "ERROR",
+          "notes": "El sujeto está corrupto ('HHONSINOSS') y la traducción conserva el error. Re-OCR de la región completa; no sustituir el sujeto por una suposición."
+        },
+        {
+          "id": 5,
+          "type": "dialogue_bubble",
+          "original_text": "ns MAJESTAD.",
+          "translated_text": "Ns MAJESTY.",
+          "polarity": "dark_on_light",
+          "ocr_status": "ERROR",
+          "notes": "Probable confusión de glifos iniciales; la salida 'Ns MAJESTY' no es válida. Revisar si el original dice 'His Majesty' u otra fórmula antes de publicar."
+        }
+      ],
+      "visual_defects_found": [
+        "Los cinco bloques presentan fondo claro y la polaridad es consistente; el defecto principal es lingüístico/OCR, no un cambio de fondo detectado.",
+        "Debe comprobarse que el texto no se haya fusionado con burbujas adyacentes, especialmente en los bloques 4 y 5 de menor confianza."
+      ],
+      "recommendations": "Re-OCR selectivo de bloques 3–5 y revisión de contexto; no aceptar la página como excelente solo por la confianza media del detector."
+    },
+    {
+      "page_number": 8,
+      "quality_score": 57.0,
+      "status": "NEEDS_CORRECTION",
+      "elements_detected": [
+        {
+          "id": 1,
+          "type": "sfx",
+          "original_text": "TAP",
+          "translated_text": "TAP",
+          "polarity": "light_on_dark",
+          "ocr_status": "OK",
+          "notes": "SFX preservado; no traducir automáticamente si la intención gráfica es sonora."
+        },
+        {
+          "id": 2,
+          "type": "dialogue_bubble",
+          "original_text": "SVERDADQUELE OFRECIÓ AL CONDE PALA TIO....",
+          "translated_text": "HE DID OFFER COUNT PALA TIO...",
+          "polarity": "dark_on_light",
+          "ocr_status": "ERROR",
+          "notes": "Múltiples fusiones ('SVERDADQUELE', nombre final ambiguo). La salida no conserva la estructura interrogativa. Re-OCR y validación del nombre propio antes de traducir."
+        },
+        {
+          "id": 3,
+          "type": "dialogue_bubble",
+          "original_text": "DIGO, A MI PROFESOR UN REGALO TAN PROBLEMATICO'?,",
+          "translated_text": "I MEAN, MY PROFESSOR A GIFT SO PROBLEMATIC'?,",
+          "polarity": "dark_on_light",
+          "ocr_status": "ERROR",
+          "notes": "La frase inglesa está incompleta y la puntuación está dañada. Re-OCR por línea y reconstrucción sintáctica; no fusionar la interrogación con el bloque siguiente."
+        },
+        {
+          "id": 4,
+          "type": "dialogue_bubble",
+          "original_text": "LME PODRiAS..",
+          "translated_text": "LME COULD..",
+          "polarity": "light_on_dark",
+          "ocr_status": "ERROR",
+          "notes": "Lectura corrupta y salida no traducida. Probable patrón de cortesía, pero debe confirmarse con la imagen: no inventar el verbo."
+        }
+      ],
+      "visual_defects_found": [
+        "La página mezcla fondos oscuros y claros; la detección por bloque es obligatoria.",
+        "El bloque 4 tiene fondo muy oscuro y una caja estrecha; cualquier texto claro debe mantenerse dentro del contenedor sin tapar el dibujo."
+      ],
+      "recommendations": "Re-OCR de los bloques 2–4, corregir puntuación y comprobar ajuste tipográfico del bloque 4 en alta resolución."
+    },
+    {
+      "page_number": 9,
+      "quality_score": 62.0,
+      "status": "NEEDS_CORRECTION",
+      "elements_detected": [
+        {
+          "id": 1,
+          "type": "dialogue_bubble",
+          "original_text": "RESPONDER?",
+          "translated_text": "RESPONDER?",
+          "polarity": "light_on_dark",
+          "ocr_status": "ERROR",
+          "notes": "Texto español dejado sin traducir. Propuesta directa: 'Will you answer?' si el contexto confirma una pregunta dirigida al interlocutor."
+        },
+        {
+          "id": 2,
+          "type": "dialogue_bubble",
+          "original_text": "IELCONDE PALA TIO..!!",
+          "translated_text": "COUNT PALA TIO!",
+          "polarity": "dark_on_light",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "Se eliminó el artículo mal leído, pero el nombre permanece separado de forma incierta. Validar la grafía contra el globo original y conservar la exclamación completa."
+        }
+      ],
+      "visual_defects_found": [
+        "La página contiene polaridades opuestas en sus dos elementos; no aplicar una única configuración de color.",
+        "No hay defecto de inpainting registrado, pero el primer bloque no es publicable por quedar en español."
+      ],
+      "recommendations": "Traducir el primer bloque y resolver la segmentación del nombre del segundo; revisar centrado y tamaño tras el cambio de longitud."
+    },
+    {
+      "page_number": 10,
+      "quality_score": 91.0,
+      "status": "EXCELLENT",
+      "elements_detected": [
+        {
+          "id": 1,
+          "type": "dialogue_bubble",
+          "original_text": "POR DIOS, E QUIEN ERES EN VERDAD...?",
+          "translated_text": "BY GOD, AND WHO ARE YOU REALLY...?",
+          "polarity": "dark_on_light",
+          "ocr_status": "OK",
+          "notes": "Traducción fiel y comprensible. Variante estilística posible: 'My God, who are you really...?' pero no es una corrección obligatoria."
+        }
+      ],
+      "visual_defects_found": [],
+      "recommendations": "Aprobable; solo hacer comprobación final de centrado, márgenes y ausencia de halo de inpainting."
+    },
+    {
+      "page_number": 11,
+      "quality_score": 55.0,
+      "status": "NEEDS_CORRECTION",
+      "elements_detected": [
+        {
+          "id": 1,
+          "type": "dialogue_bubble",
+          "original_text": "iAAAHIINO! IMEOPONGO!!",
+          "translated_text": "I'm sorry!",
+          "polarity": "light_on_dark",
+          "ocr_status": "ERROR",
+          "notes": "La traducción no corresponde al texto aparente; el patrón sugiere una protesta/negación, no una disculpa. Re-OCR y revisión visual obligatoria."
+        },
+        {
+          "id": 2,
+          "type": "sfx",
+          "original_text": "SERRE",
+          "translated_text": "SERRE",
+          "polarity": "dark_on_light",
+          "ocr_status": "OK",
+          "notes": "Posible SFX preservado; confirmar que no sea diálogo o palabra truncada antes de dejarlo sin traducir."
+        },
+        {
+          "id": 3,
+          "type": "sfx",
+          "original_text": "FWISH",
+          "translated_text": "FWISH",
+          "polarity": "light_on_dark",
+          "ocr_status": "OK",
+          "notes": "Onomatopeya preservada; mantenerla separada del diálogo."
+        },
+        {
+          "id": 4,
+          "type": "dialogue_bubble",
+          "original_text": "JINOQUJERO IRAHI!",
+          "translated_text": "JINOCHIJERO IRAHI!",
+          "polarity": "light_on_dark",
+          "ocr_status": "ERROR",
+          "notes": "OCR muy degradado y la traducción solo muta la cadena. Re-OCR rotado/contextual; no publicar hasta recuperar la frase."
+        },
+        {
+          "id": 5,
+          "type": "sfx",
+          "original_text": "FWISH",
+          "translated_text": "FWISH",
+          "polarity": "light_on_dark",
+          "ocr_status": "OK",
+          "notes": "Onomatopeya preservada correctamente como elemento independiente."
+        },
+        {
+          "id": 6,
+          "type": "dialogue_bubble",
+          "original_text": "NODEESTA FORMA....",
+          "translated_text": "NOT IN THIS WAY...",
+          "polarity": "light_on_dark",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "La segmentación original está pegada, pero la traducción es razonable. Propuesta estilística: 'Not like this...' según el contexto."
+        },
+        {
+          "id": 7,
+          "type": "dialogue_bubble",
+          "original_text": "iPOR.. PORFAVOR!!",
+          "translated_text": "POR.. PORFAVOR!!",
+          "polarity": "light_on_dark",
+          "ocr_status": "ERROR",
+          "notes": "Texto dejado en español y con segmentación/puntuación defectuosas. Propuesta probable: 'Please... please!!' tras confirmar el OCR."
+        },
+        {
+          "id": 8,
+          "type": "side_note",
+          "original_text": "UCHU U JIM MANGAS. COM",
+          "translated_text": "UCHU U JIM MANGAS. COM",
+          "polarity": "dark_on_light",
+          "ocr_status": "OK",
+          "notes": "Parece marca de sitio/URL, no diálogo. Debe clasificarse como nota lateral y excluirse del conteo de texto traducible o eliminarse según la política de publicación."
+        },
+        {
+          "id": 9,
+          "type": "dialogue_bubble",
+          "original_text": "IISUELTAMEEEE!!!",
+          "translated_text": "IISUELTAMEEEE!!!",
+          "polarity": "light_on_dark",
+          "ocr_status": "ERROR",
+          "notes": "Lectura corrupta y salida sin traducir. Re-OCR; si confirma '¡Suéltame!', la propuesta es 'Let me go!!!'."
+        },
+        {
+          "id": 10,
+          "type": "sfx",
+          "original_text": "TAP",
+          "translated_text": "TAP",
+          "polarity": "light_on_dark",
+          "ocr_status": "OK",
+          "notes": "SFX preservado."
+        },
+        {
+          "id": 11,
+          "type": "sfx",
+          "original_text": "TAP",
+          "translated_text": "TAP",
+          "polarity": "light_on_dark",
+          "ocr_status": "OK",
+          "notes": "SFX preservado; revisar que los dos golpes permanezcan independientes."
+        }
+      ],
+      "visual_defects_found": [
+        "La página mezcla fondos claros y oscuros en bloques consecutivos; se requiere polaridad individual y no una configuración global.",
+        "El watermark debe quedar fuera de la máscara de diálogo para evitar borrar partes del arte o volverlo texto traducible.",
+        "La densidad de SFX aumenta el riesgo de sobreborrado; revisar bordes y trazos alrededor de FWISH/TAP."
+      ],
+      "recommendations": "Separar SFX, diálogo y watermark; re-OCR de 1, 4, 7 y 9; no traducir automáticamente los elementos clasificados como SFX."
+    },
+    {
+      "page_number": 12,
+      "quality_score": 76.0,
+      "status": "WARNING",
+      "elements_detected": [
+        {
+          "id": 1,
+          "type": "dialogue_bubble",
+          "original_text": "ESPERO QUE HOY ELLA PUEDA HABLAR MUCHO MAS CONMIGO.",
+          "translated_text": "I HOPE TODAY SHE CAN TALK A LOT MORE TO ME.",
+          "polarity": "dark_on_light",
+          "ocr_status": "OK",
+          "notes": "Traducción correcta; una variante más natural sería 'I hope she'll be able to talk to me much more today.'"
+        },
+        {
+          "id": 2,
+          "type": "dialogue_bubble",
+          "original_text": "llam os Correctamente",
+          "translated_text": "Call you correctly.",
+          "polarity": "dark_on_light",
+          "ocr_status": "ERROR",
+          "notes": "Texto mixto y fragmentado; la traducción no permite identificar el sentido original. Re-OCR de la línea completa y del globo, sin reconstruir por diccionario específico."
+        },
+        {
+          "id": 3,
+          "type": "dialogue_bubble",
+          "original_text": "HE ESTADO ESPERANDOTE, SR. MAGO.",
+          "translated_text": "I'VE BEEN WAITING FOR YOU, MR. WIZARD.",
+          "polarity": "light_on_dark",
+          "ocr_status": "OK",
+          "notes": "Traducción fiel; mantener tratamiento y contraste claro sobre fondo oscuro."
+        }
+      ],
+      "visual_defects_found": [
+        "Hay polaridad mixta: los dos primeros bloques son claros y el tercero es oscuro; la máscara no puede compartir parámetros sin riesgo.",
+        "El bloque 2 tiene OCR insuficiente para validar centrado, salto de línea o contenedor."
+      ],
+      "recommendations": "Re-OCR del bloque 2 y repetir composición; verificar que la eliminación de letras claras del bloque 3 no altere el fondo oscuro."
+    },
+    {
+      "page_number": 13,
+      "quality_score": 61.0,
+      "status": "NEEDS_CORRECTION",
+      "elements_detected": [
+        {
+          "id": 1,
+          "type": "sfx",
+          "original_text": "MMM.",
+          "translated_text": "MMM.",
+          "polarity": "dark_on_light",
+          "ocr_status": "OK",
+          "notes": "Interjección/SFX preservado de forma razonable."
+        },
+        {
+          "id": 2,
+          "type": "dialogue_bubble",
+          "original_text": "LOQLE PROMETISTE",
+          "translated_text": "LOCKLE YOU PROMISED",
+          "polarity": "dark_on_light",
+          "ocr_status": "ERROR",
+          "notes": "Lectura pegada y traducción corrupta. Separar por análisis contextual; no tratar 'LOCKLE' como nombre sin evidencia."
+        },
+        {
+          "id": 3,
+          "type": "dialogue_bubble",
+          "original_text": "JUMPH. EN VERDAD TIENES UNA BUENA MEMORIA.",
+          "translated_text": "YOU REALLY HAVE A GOOD MEMORY.",
+          "polarity": "light_on_dark",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "El bloque fusiona un SFX ('JUMPH') con diálogo y la salida omite el SFX. Deben ser dos elementos independientes; el diálogo traducido es correcto."
+        },
+        {
+          "id": 4,
+          "type": "dialogue_bubble",
+          "original_text": "IMAESTROOO! E FELIZ?",
+          "translated_text": "IMAESTROOO!",
+          "polarity": "light_on_dark",
+          "ocr_status": "ERROR",
+          "notes": "La traducción está truncada y conserva español. Recuperar la pregunta completa antes del ajuste tipográfico."
+        }
+      ],
+      "visual_defects_found": [
+        "El SFX y el diálogo están fusionados en un único bloque, lo que viola la independencia de contenedores y puede producir borrado/centrado incorrectos.",
+        "La página mezcla fondo claro y oscuro; el bloque 4 necesita revisión de texto claro y margen interno."
+      ],
+      "recommendations": "Separar 'JUMPH' del diálogo, re-OCR de los bloques 2 y 4, y rehacer el ajuste de líneas después de recuperar la pregunta completa."
+    },
+    {
+      "page_number": 14,
+      "quality_score": 70.0,
+      "status": "WARNING",
+      "elements_detected": [
+        {
+          "id": 1,
+          "type": "dialogue_bubble",
+          "original_text": "POR ESTA VEZ SERE MAGNANIMO.",
+          "translated_text": "FOR THIS TIME, SERE MAGNANIMO.",
+          "polarity": "dark_on_light",
+          "ocr_status": "OK",
+          "notes": "El OCR es legible, pero 'SERE MAGNANIMO' quedó sin traducir. Propuesta: 'I will be magnanimous this time.'"
+        },
+        {
+          "id": 2,
+          "type": "dialogue_bubble",
+          "original_text": "VAYA.. VEOQUENO PIERDES EL TIEMPO CUANDO TE PONES EN ACCION. VERDAD?",
+          "translated_text": "WOW, YOU... YOU'RE LOSING TIME WHEN YOU GET IN ACTION, RIGHT?",
+          "polarity": "light_on_dark",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "'VEOQUENO' requiere separación y la traducción invierte el sentido de 'no pierdes el tiempo'. Propuesta: 'Wow... you don't waste any time once you get moving, do you?'"
+        },
+        {
+          "id": 3,
+          "type": "dialogue_bubble",
+          "original_text": "YAHAS CONSEGUIDO LA VARITA. YQUEHAY CONSU MAGIA?",
+          "translated_text": "YOU'VE ALREADY GOT THE WAND, AND WHAT'S WITH YOUR MAGIC?",
+          "polarity": "light_on_dark",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "Separar 'YA HAS', 'Y QUÉ HAY' y 'CON SU'. La traducción es aceptable, aunque puede pulirse a 'You already have the wand. What about your magic?'"
+        },
+        {
+          "id": 4,
+          "type": "sfx",
+          "original_text": "SEFIGE",
+          "translated_text": "SEFIGE",
+          "polarity": "dark_on_light",
+          "ocr_status": "ERROR",
+          "notes": "Cadena ambigua: podría ser SFX o OCR corrupto. No conservarla automáticamente como sonido; repetir OCR y clasificar por contexto visual."
+        },
+        {
+          "id": 5,
+          "type": "dialogue_bubble",
+          "original_text": "LOGRE MANIFESTAR LA ESENCIA, PERO FUE MAS PELIGROSO DE LO NECESARIO.",
+          "translated_text": "HE MANAGED TO MANIFEST THE ESSENCE, BUT IT WAS MORE DANGEROUS THAN NECESSARY.",
+          "polarity": "dark_on_light",
+          "ocr_status": "OK",
+          "notes": "Traducción semánticamente correcta; conservar el tono reflexivo."
+        },
+        {
+          "id": 6,
+          "type": "dialogue_bubble",
+          "original_text": "EHH.. NO PUEDO CREER QUEEN VERDAD FUNCIONARA.",
+          "translated_text": "I CAN'T BELIEVE THAT TRUTH WILL WORK.",
+          "polarity": "light_on_dark",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "'QUEEN VERDAD' debe segmentarse como 'que en verdad'. La traducción confunde 'truth' con el adverbio 'actually'. Propuesta: 'I can't believe it actually worked.'"
+        }
+      ],
+      "visual_defects_found": [
+        "El bloque 4 tiene luminancia perimetral cercana al umbral de polaridad; debe verificarse manualmente si es SFX claro sobre fondo oscuro o texto oscuro sobre fondo claro.",
+        "La página mezcla fondos claros y oscuros, por lo que un ajuste global produciría contraste incorrecto en al menos un grupo."
+      ],
+      "recommendations": "Corregir bloques 1, 2 y 6; clasificar de nuevo el bloque 4; validar contraste y ajuste de línea de todos los bloques tras la traducción."
+    },
+    {
+      "page_number": 15,
+      "quality_score": 57.0,
+      "status": "NEEDS_CORRECTION",
+      "elements_detected": [
+        {
+          "id": 1,
+          "type": "dialogue_bubble",
+          "original_text": "ESONO TIENE SENTIDO.",
+          "translated_text": "THAT DOESN'T HAVE MEANING.",
+          "polarity": "light_on_dark",
+          "ocr_status": "REPAIRED_SEGMENTATION",
+          "notes": "Separar 'ESO NO'. La traducción es literal y antinatural; corrección: 'That makes no sense.'"
+        },
+        {
+          "id": 2,
+          "type": "dialogue_bubble",
+          "original_text": "SPARROW. E ACASO ESTADI CIENO OLA VERDAD?",
+          "translated_text": "SPARROW.",
+          "polarity": "light_on_dark",
+          "ocr_status": "ERROR",
+          "notes": "La salida elimina casi toda la frase, por lo que la cobertura es incompleta. Re-OCR de la línea y del nombre separado; no publicar el bloque truncado."
+        },
+        {
+          "id": 3,
+          "type": "dialogue_bubble",
+          "original_text": "ISiSi IEL DICE LA VERDAD!",
+          "translated_text": "Yes, he does.",
+          "polarity": "light_on_dark",
+          "ocr_status": "ERROR",
+          "notes": "La traducción puede ser compatible con el sentido, pero el OCR contiene errores de caracteres y no permite confirmar sujeto/interjección. Re-OCR para evitar una corrección por intuición."
+        },
+        {
+          "id": 4,
+          "type": "dialogue_bubble",
+          "original_text": "PORQUE ESTA TEMBLANDO TANTO?",
+          "translated_text": "WHY IS HE SHAKING SO MUCH?",
+          "polarity": "dark_on_light",
+          "ocr_status": "OK",
+          "notes": "Traducción correcta; añadir signos de apertura solo corresponde al original español, no a la salida inglesa."
+        }
+      ],
+      "visual_defects_found": [
+        "Los tres primeros bloques están sobre fondo oscuro y el último sobre fondo claro; la polaridad dual funciona solo si se mantiene por bloque.",
+        "El bloque 2 está truncado en contenido, y cualquier centrado visual de 'SPARROW.' ocultará la pérdida semántica."
+      ],
+      "recommendations": "Corregir 'That makes no sense', recuperar completamente el bloque 2 y verificar el OCR del bloque 3 antes de la exportación final."
+    }
+  ]
+}

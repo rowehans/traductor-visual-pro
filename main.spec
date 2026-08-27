@@ -12,7 +12,11 @@ import sys
 from pathlib import Path
 
 # ─── Raíz del proyecto ─────────────────────────────────
-PROJECT_ROOT = Path(r"D:\crear traductor")
+# El spec se ejecuta desde la copia que se está construyendo; no apuntar a
+# otra instalación local porque eso produciría un ejecutable desactualizado.
+# PyInstaller ejecuta el spec con `exec()` y no siempre define __file__.
+# SPECPATH es su ruta de ejecución; el CWD cubre invocaciones manuales.
+PROJECT_ROOT = Path(globals().get("SPECPATH") or os.getcwd()).resolve()
 DIST = PROJECT_ROOT / "dist"
 
 # ─── Datos a incluir en el bundle ──────────────────────
@@ -34,6 +38,7 @@ DATAS = [
     (str(PROJECT_ROOT / "translator.py"), "."),
     (str(PROJECT_ROOT / "ocr_utils.py"), "."),
     (str(PROJECT_ROOT / "ocr_engine.py"), "."),
+    (str(PROJECT_ROOT / "page_processing.py"), "."),
     (str(PROJECT_ROOT / "runtime_diagnostics.py"), "."),
     (str(PROJECT_ROOT / "translation_memory.py"), "."),
     (str(PROJECT_ROOT / "cache.py"), "."),

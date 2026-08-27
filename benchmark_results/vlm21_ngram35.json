@@ -1,0 +1,45 @@
+{
+ "benchmark": "benchmark_vlm_maxlen.py",
+ "max_length": 1280,
+ "ngram": 35,
+ "prompt": null,
+ "pages": [
+  21
+ ],
+ "total_s": 219.198,
+ "vlm_total_s": 210.553,
+ "vlm_recovered_total": 8,
+ "per_page": {
+  "21": {
+   "total_s": 219.198,
+   "vlm_s": 210.553,
+   "vlm_recovered": 8,
+   "n_blocks": 11,
+   "avg_conf": 0.854,
+   "trigger": true,
+   "trigger_reason": "large_image_panel",
+   "texts": [
+    "CUFNE DENENE RELPVNTEPARA CEAREARLA.",
+    "EL",
+    "ENTONCES ENTONCES",
+    "ENTONNEES",
+    "EPORQUEYO PUEDO...? EPORQUEYO PUEDO...?",
+    "NE PORIA JBFLMR BiAD7",
+    "NO...",
+    "[Unreadable]",
+    "[Unreadable]",
+    "[Unreadable]",
+    "oTa"
+   ],
+   "stages": {
+    "prefilter": 0.458,
+    "rapid": 1.842,
+    "yolo": 0.0,
+    "ctd": 0.0,
+    "rapid_aggr": 0.0,
+    "ruta_c": 1.78,
+    "vlm": 210.553
+   }
+  }
+ }
+}

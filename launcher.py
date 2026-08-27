@@ -55,11 +55,9 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["SKIP_MIT_INIT"] = "1"
     os.chdir(str(ROOT))
 
-    if not PYTHON.exists():
-        print(f"[ERROR] No se encuentra Python en {PYTHON}")
-        input("Presiona Enter para salir...")
-        return 1
-
+    # Reutilizar la sesión activa NO requiere Python local (el servidor ya
+    # corre): se verifica primero para que el launcher funcione en entornos
+    # sin env/ (p. ej. el CI de GitHub, donde no existe el venv local).
     if port_open(HOST, PORT):
         print(f"Servidor ya activo en http://{HOST}:{PORT}; reutilizando sesión.")
         if args.cpu:
@@ -67,6 +65,11 @@ def main(argv: list[str] | None = None) -> int:
                   "a la sesión en curso (reinícialo con --cpu para el preset).")
         webbrowser.open(f"http://{HOST}:{PORT}")
         return 0
+
+    if not PYTHON.exists():
+        print(f"[ERROR] No se encuentra Python en {PYTHON}")
+        input("Presiona Enter para salir...")
+        return 1
 
     print("=== Traductor Visual Pro ===")
     if args.cpu:

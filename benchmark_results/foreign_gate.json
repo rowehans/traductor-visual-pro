@@ -1,0 +1,339 @@
+{
+  "pages": [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13",
+    "14",
+    "15",
+    "16",
+    "17",
+    "18",
+    "19",
+    "20",
+    "21",
+    "22",
+    "23",
+    "24",
+    "25",
+    "26",
+    "27",
+    "28",
+    "29",
+    "30",
+    "31",
+    "32",
+    "33",
+    "34",
+    "35",
+    "36",
+    "37",
+    "38",
+    "39",
+    "40",
+    "41",
+    "42",
+    "43",
+    "44",
+    "45",
+    "46",
+    "47",
+    "48",
+    "49",
+    "50",
+    "51",
+    "52",
+    "53"
+  ],
+  "total_s": 160.79,
+  "calls": 112,
+  "foreign_true": 17,
+  "trues": [
+    {
+      "page": "2",
+      "text": "SUI DISTANCAAMENOS QUE",
+      "n_words": 3,
+      "n_chars": 22,
+      "foreign": true,
+      "foreign_tokens": [
+        "sui"
+      ],
+      "min_foreign_len": 3,
+      "n_forced": 0,
+      "n_forced_foreign": 0,
+      "changes": [],
+      "lang_simple": "es"
+    },
+    {
+      "page": "4",
+      "text": "ESTA RELACIONADO CON",
+      "n_words": 3,
+      "n_chars": 20,
+      "foreign": true,
+      "foreign_tokens": [
+        "relacionado"
+      ],
+      "min_foreign_len": 11,
+      "n_forced": 0,
+      "n_forced_foreign": 0,
+      "changes": [],
+      "lang_simple": "es"
+    },
+    {
+      "page": "4",
+      "text": "ESTA RELACIONADO CON",
+      "n_words": 3,
+      "n_chars": 20,
+      "foreign": true,
+      "foreign_tokens": [
+        "relacionado"
+      ],
+      "min_foreign_len": 11,
+      "n_forced": 0,
+      "n_forced_foreign": 0,
+      "changes": [],
+      "lang_simple": "es"
+    },
+    {
+      "page": "16",
+      "text": "TODO, HAS VENI-",
+      "n_words": 3,
+      "n_chars": 15,
+      "foreign": true,
+      "foreign_tokens": [
+        "has"
+      ],
+      "min_foreign_len": 3,
+      "n_forced": 0,
+      "n_forced_foreign": 0,
+      "changes": [],
+      "lang_simple": "es"
+    },
+    {
+      "page": "29",
+      "text": "IO CUC PUEDO DOCIR.",
+      "n_words": 4,
+      "n_chars": 19,
+      "foreign": true,
+      "foreign_tokens": [
+        "io"
+      ],
+      "min_foreign_len": 2,
+      "n_forced": 0,
+      "n_forced_foreign": 0,
+      "changes": [],
+      "lang_simple": "es"
+    },
+    {
+      "page": "29",
+      "text": "ASi QUE SEGUi",
+      "n_words": 3,
+      "n_chars": 13,
+      "foreign": true,
+      "foreign_tokens": [
+        "segui"
+      ],
+      "min_foreign_len": 5,
+      "n_forced": 2,
+      "n_forced_foreign": 1,
+      "changes": [
+        {
+          "word": "ASi",
+          "correction": "Así",
+          "foreign": false
+        },
+        {
+          "word": "SEGUi",
+          "correction": "Seguir",
+          "foreign": true
+        }
+      ],
+      "lang_simple": "es"
+    },
+    {
+      "page": "29",
+      "text": "ASi QUE SEGUi",
+      "n_words": 3,
+      "n_chars": 13,
+      "foreign": true,
+      "foreign_tokens": [
+        "segui"
+      ],
+      "min_foreign_len": 5,
+      "n_forced": 2,
+      "n_forced_foreign": 1,
+      "changes": [
+        {
+          "word": "ASi",
+          "correction": "Así",
+          "foreign": false
+        },
+        {
+          "word": "SEGUi",
+          "correction": "Seguir",
+          "foreign": true
+        }
+      ],
+      "lang_simple": "es"
+    },
+    {
+      "page": "29",
+      "text": "IO CUC PUEDO DOCIR.",
+      "n_words": 4,
+      "n_chars": 19,
+      "foreign": true,
+      "foreign_tokens": [
+        "io"
+      ],
+      "min_foreign_len": 2,
+      "n_forced": 0,
+      "n_forced_foreign": 0,
+      "changes": [],
+      "lang_simple": "es"
+    },
+    {
+      "page": "41",
+      "text": "vemos uegol No",
+      "n_words": 3,
+      "n_chars": 14,
+      "foreign": true,
+      "foreign_tokens": [
+        "vemos"
+      ],
+      "min_foreign_len": 5,
+      "n_forced": 0,
+      "n_forced_foreign": 0,
+      "changes": [],
+      "lang_simple": "en"
+    },
+    {
+      "page": "41",
+      "text": "AL DIA SIGUIENTE,",
+      "n_words": 3,
+      "n_chars": 17,
+      "foreign": true,
+      "foreign_tokens": [
+        "dia"
+      ],
+      "min_foreign_len": 3,
+      "n_forced": 0,
+      "n_forced_foreign": 0,
+      "changes": [],
+      "lang_simple": "es"
+    },
+    {
+      "page": "41",
+      "text": "AL DIA SIGUIENTE, EN LA PUERTADE KOLONI.",
+      "n_words": 7,
+      "n_chars": 40,
+      "foreign": true,
+      "foreign_tokens": [
+        "dia"
+      ],
+      "min_foreign_len": 3,
+      "n_forced": 0,
+      "n_forced_foreign": 0,
+      "changes": [],
+      "lang_simple": "es"
+    },
+    {
+      "page": "41",
+      "text": "vemos uegol No clvdegChmar Popel",
+      "n_words": 5,
+      "n_chars": 32,
+      "foreign": true,
+      "foreign_tokens": [
+        "vemos"
+      ],
+      "min_foreign_len": 5,
+      "n_forced": 0,
+      "n_forced_foreign": 0,
+      "changes": [],
+      "lang_simple": "es"
+    },
+    {
+      "page": "42",
+      "text": "ALEGRIAQUE PUEDA VERTE",
+      "n_words": 3,
+      "n_chars": 22,
+      "foreign": true,
+      "foreign_tokens": [
+        "verte"
+      ],
+      "min_foreign_len": 5,
+      "n_forced": 0,
+      "n_forced_foreign": 0,
+      "changes": [],
+      "lang_simple": "es"
+    },
+    {
+      "page": "50",
+      "text": "SEPARO SUS",
+      "n_words": 2,
+      "n_chars": 10,
+      "foreign": true,
+      "foreign_tokens": [
+        "separo"
+      ],
+      "min_foreign_len": 6,
+      "n_forced": 0,
+      "n_forced_foreign": 0,
+      "changes": [],
+      "lang_simple": "es"
+    },
+    {
+      "page": "50",
+      "text": "MONEOASDEORO EN PEOUENAS BOLSAS PARACALNAR SUS",
+      "n_words": 6,
+      "n_chars": 46,
+      "foreign": true,
+      "foreign_tokens": [
+        "bolsas"
+      ],
+      "min_foreign_len": 6,
+      "n_forced": 0,
+      "n_forced_foreign": 0,
+      "changes": [],
+      "lang_simple": "es"
+    },
+    {
+      "page": "50",
+      "text": "SEPARO SUS",
+      "n_words": 2,
+      "n_chars": 10,
+      "foreign": true,
+      "foreign_tokens": [
+        "separo"
+      ],
+      "min_foreign_len": 6,
+      "n_forced": 0,
+      "n_forced_foreign": 0,
+      "changes": [],
+      "lang_simple": "es"
+    },
+    {
+      "page": "51",
+      "text": "CUANTOS ANOS MAS!",
+      "n_words": 3,
+      "n_chars": 17,
+      "foreign": true,
+      "foreign_tokens": [
+        "anos"
+      ],
+      "min_foreign_len": 4,
+      "n_forced": 0,
+      "n_forced_foreign": 0,
+      "changes": [],
+      "lang_simple": "es"
+    }
+  ]
+}

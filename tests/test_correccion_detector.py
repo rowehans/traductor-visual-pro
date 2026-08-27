@@ -375,6 +375,13 @@ class TestEtiquetarConVlm:
 # ─── Entrenador (data.yaml + swap reversible) ────────────────────
 
 class TestEntrenarDetector:
+    # Requiere ultralytics (y su dependencia torch) — el CI de GitHub no las
+    # instala deliberadamente (deps pesadas; ver pyproject.toml). La clase se
+    # salta en CI (fixture autouse) y corre donde ultralytics existe.
+
+    @pytest.fixture(autouse=True)
+    def _requires_ultralytics(self):
+        pytest.importorskip("ultralytics")
 
     def test_build_data_yaml_valida_y_escribe(self, tmp_path):
         mod = _load_tool("entrenar")
@@ -730,6 +737,13 @@ class TestEntrenarDetector:
 # ─── Calificar detector: la NOTA del bucle corregir→calificar→reentrenar ─
 
 class TestCalificarDetector:
+    # Requiere ultralytics (y su dependencia torch) — el CI de GitHub no las
+    # instala deliberadamente (deps pesadas; ver pyproject.toml). La clase se
+    # salta en CI (fixture autouse) y corre donde ultralytics existe.
+
+    @pytest.fixture(autouse=True)
+    def _requires_ultralytics(self):
+        pytest.importorskip("ultralytics")
 
     def _workspace_con_marcado(self, tmp_path):
         """Workspace corregir/ con 2 páginas y 2 GT c/u (marcado manual).

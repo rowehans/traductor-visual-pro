@@ -1,0 +1,46 @@
+{
+ "1": {
+  "reps": 3,
+  "fragmentos": {
+   "enverdades": {
+    "en_strip": false,
+    "en_per_crop": true,
+    "mejor_match": "rimer aray",
+    "ratio": 0.3
+   }
+  }
+ },
+ "4": {
+  "reps": 3,
+  "fragmentos": {
+   "ysihubiese": {
+    "en_strip": false,
+    "en_per_crop": true,
+    "mejor_match": "ya quetambien",
+    "ratio": 0.435
+   }
+  }
+ },
+ "40": {
+  "reps": 3,
+  "fragmentos": {
+   "ipadrino": {
+    "en_strip": false,
+    "en_per_crop": true,
+    "mejor_match": "genial eno?",
+    "ratio": 0.421
+   }
+  }
+ },
+ "52": {
+  "reps": 3,
+  "fragmentos": {
+   "comerlashoy": {
+    "en_strip": false,
+    "en_per_crop": true,
+    "mejor_match": "porlo",
+    "ratio": 0.5
+   }
+  }
+ }
+}

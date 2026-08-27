@@ -34,6 +34,7 @@ from typing import Any
 import numpy as np
 
 import ocr_utils
+from dataclasses import dataclass
 from runtime_diagnostics import PageDiagnostics
 
 from config import (
@@ -54,6 +55,10 @@ from config import (
     UOCR_NEG_WEAK_MAX_BLOCKS,
     UOCR_NEG_WEAK_MIN_CONF,
     UOCR_NEG_MAX_REINTENTOS,
+    UOCR_NEG_CERO_MIN,
+    UOCR_NEG_CERO_TTL_S,
+    UOCR_POS_CACHE_TTL_S,
+    UOCR_POS_CACHE_SALVAGUARDA,
 )
 
 
@@ -99,8 +104,28 @@ _DECISION_CACHE_PATH = ROOT / "cache" / "ocr_decision_cache.json"
 # 4 campos) se descartan en la carga.
 # v6: _page_signature incorpora un digest del contenido del thumbnail; las
 # entradas v5 basadas solo en layout deben invalidarse para evitar colisiones.
-_DECISION_CACHE_VERSION = 6
+# v7: _page_signature cambia el digest exacto por un dHash (robusto a ruido
+# leve — plan §10.2 item 1) y el archivo añade la sección "ceros" (ledger de
+# ceros confirmados del VLM con TTL largo). Los archivos v6 (digest exacto +
+# sin ledger) se descartan en la carga.
+_DECISION_CACHE_VERSION = 8
 _DISK_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class OCRResult:
+    blocks: list[dict[str, Any]]
+    engine: str
+    engines: list[str]
+    diagnostics: dict[str, Any]
+
+    def __iter__(self):
+        yield self.blocks
+        yield self.engine
+        yield self.engines
+
+    def __getitem__(self, index: int):
+        return (self.blocks, self.engine, self.engines)[index]
 
 
 class OCRManager:
@@ -127,6 +152,30 @@ class OCRManager:
     # Sesión 134: el 4º campo es el contador de re-disparos permitidos por la
     # salvaguarda de detección débil (caso p5) — ver config.py.
     _uocr_neg_cache: dict[str, tuple[float, int, float, int]] = {}
+    # ── Ledger de CEROS CONFIRMADOS (2026-08-16, plan §10.2 item 1) ──
+    # firma → (ts, count, n_blocks, avg_conf): cuántas veces una firma ha
+    # sido un cero del VLM en ventanas TTL distintas. Cuando count >=
+    # UOCR_NEG_CERO_MIN y la última confirmación está dentro de
+    # UOCR_NEG_CERO_TTL_S (7 días), _is_decision_negativa_vigente suprime
+    # el VLM incluso sin entrada vigente en _uocr_neg_cache (el TTL corto
+    # de 30 min expiró entre corridas). El 3º/4º campo guardan los stats de
+    # la ÚLTIMA confirmación para la salvaguarda mucho_mas_debil (si una
+    # gemela se detecta MUCHO más débil, el VLM vuelve a correr). Se
+    # persiste en la sección "ceros" del archivo de decisiones; un recovery
+    # (_limpiar_decision_negativa) borra la entrada — la señal se refuta.
+    _uocr_neg_ceros: dict[str, tuple[float, int, int, float]] = {}
+    # ── Cache de RECUPERACIÓN POSITIVA (2026-08-17, plan §11 P1) ──
+    # firma → (ts, n_blocks, avg_conf, ublocks, uimage_panels): cuando el VLM
+    # SÍ recuperó bloques, se guardan para reinyectar en re-corridas del mismo
+    # documento sin re-pagar la inferencia (573 s/capítulo → ~0). Los stats
+    # (n_blocks, avg_conf) son del híbrido en el momento de la recuperación —
+    # la salvaguarda mucho_mas_debil los usa para que una gemela detectada
+    # MUCHO más débil no herede la recuperación de otra página (el diálogo
+    # que el híbrido pierde ahora es justo el que el VLM leería). Persiste en
+    # la sección "pos" del archivo de decisiones; TTL largo (7 días) como el
+    # ledger de ceros; clear_decision_cache lo limpia; un re-run del VLM
+    # sobreescribe la entrada.
+    _uocr_pos_cache: dict[str, tuple[float, int, float, list[Any], list[Any]]] = {}
     _uocr_cache_lock: threading.Lock = threading.Lock()
 
     # ── Cache de decisión del TRIGGER por firma (sesión 116) ──
@@ -163,6 +212,9 @@ class OCRManager:
         self.ou = ocr_utils
         self.last_diagnostics: dict[str, Any] | None = None
         self.last_batch_diagnostics: list[dict[str, Any]] = []
+        # Ruido descartado que aún debe eliminarse del fondo.
+        self.last_dropped_noise: list[dict[str, Any]] = []
+        self.last_batch_dropped_noise: list[list[dict[str, Any]]] = []
         self._active_diagnostics: PageDiagnostics | None = None
         # Carga las decisiones persistidas de una corrida anterior (una vez
         # por proceso, ver _cache_cargado).
@@ -390,7 +442,7 @@ class OCRManager:
         return resultado
 
     # ─── API pública ─────────────────────────────────────────────
-    def run_ocr(
+    def run_ocr_result(
         self,
         img_bgr: Any,
         ocr_lang: str,
@@ -400,18 +452,16 @@ class OCRManager:
         disable_uocr: bool = False,
         pure_easyocr: bool = False,
         doc_id: str = "",
-    ) -> tuple[list[dict[str, Any]], str, list[str]]:
-        """Ejecuta el OCR según el modo. Retorna (blocks, engine_used, engines).
+    ) -> OCRResult:
+        """Ejecuta el OCR según el modo y devuelve un resultado estructurado.
 
-        doc_id (sesión 126): identificador de documento/sesión que escopea la
-        clave de la firma en los caches de decisión (trigger + §8.4.1). La
-        sesión 124 midió 94% de colisión de firma entre capítulos de la MISMA
-        serie — sin scope, el capítulo 47 heredaría las decisiones del 43
-        (supresión cruzada de VLM). El caller deriva el doc_id del PDF/archivo.
+        doc_id es el identificador de documento que limita las decisiones
+        cacheadas del OCR.
         """
         diagnostics = PageDiagnostics(ocr_mode=ocr_mode, ocr_lang=ocr_lang, doc_id=doc_id)
         previous_diagnostics = self._active_diagnostics
         self._active_diagnostics = diagnostics
+        self.ou._reset_dropped_noise()
         try:
             with diagnostics.stage("total"):
                 if ocr_mode == "unlimited":
@@ -429,18 +479,38 @@ class OCRManager:
                         ocr_mode=ocr_mode, pure_easyocr=pure_easyocr,
                     )
             blocks, engine_used, engines_used = result
+            self.last_dropped_noise = self.ou._consume_dropped_noise()
             if not diagnostics.has_initial_counts():
                 diagnostics.set_counts(initial_blocks=len(blocks))
             diagnostics.set_counts(final_blocks=len(blocks))
             diagnostics.set_engines(engine_used, engines_used)
-            return result
+            return OCRResult(
+                blocks=blocks, engine=engine_used, engines=engines_used,
+                diagnostics=diagnostics.to_dict(),
+            )
         except Exception as exc:
+            # No dejar ruido de una página fallida disponible para el request
+            # siguiente si el worker reutiliza el mismo hilo.
+            self.last_dropped_noise = self.ou._consume_dropped_noise()
             diagnostics.add_error(f"run_ocr: {type(exc).__name__}: {exc}")
             raise
         finally:
             diagnostics.finish()
             self.last_diagnostics = diagnostics.to_dict()
             self._active_diagnostics = previous_diagnostics
+
+    def run_ocr(
+        self, img_bgr: Any, ocr_lang: str, ocr_mode: str,
+        prefilter: bool = True, force_uocr: bool = False,
+        disable_uocr: bool = False, pure_easyocr: bool = False,
+        doc_id: str = "",
+    ) -> tuple[list[dict[str, Any]], str, list[str]]:
+        result = self.run_ocr_result(
+            img_bgr, ocr_lang, ocr_mode, prefilter=prefilter,
+            force_uocr=force_uocr, disable_uocr=disable_uocr,
+            pure_easyocr=pure_easyocr, doc_id=doc_id,
+        )
+        return result.blocks, result.engine, result.engines
 
     # ─── API batch (Fase 1): N páginas, UN solo VLM si varias disparan ──
     def run_ocr_batch(
@@ -453,7 +523,7 @@ class OCRManager:
         disable_uocr: bool = False,
         pure_easyocr: bool = False,
         doc_id: str = "",
-    ) -> list[tuple[list[dict[str, Any]], str, list[str]]]:
+    ) -> list[OCRResult]:
         """OCR de VARIAS páginas agrupando los triggers U-OCR en UN batch.
 
         Procesa cada página con el pipeline de fusión individual (híbrido +
@@ -461,19 +531,19 @@ class OCRManager:
         las envía juntas al daemon con /ocr-batch (infer_multi) — las N
         imágenes comparten el prefill del modelo, amortizando ~60-110s/pág.
 
-        Retorna una lista (una por imagen, mismo orden) de
-        (blocks, engine_used, engines_used).
+        Retorna una lista de OCRResult, una por imagen y en el mismo orden.
 
         No aplica a modo unlimited (ya es VLM forzado por página) ni a
-        easyocr/auto (sin tier VLM): en esos casos delega en run_ocr
+        easyocr/auto (sin tier VLM): en esos casos ejecuta OCRResult
         individual por imagen.
         """
         n = len(images)
         if ocr_mode != "fusion":
-            results: list[tuple[list[dict[str, Any]], str, list[str]]] = []
+            results: list[OCRResult] = []
             self.last_batch_diagnostics = []
+            self.last_batch_dropped_noise = []
             for img in images:
-                results.append(self.run_ocr(
+                results.append(self.run_ocr_result(
                     img, ocr_lang, ocr_mode,
                     prefilter=prefilter,
                     force_uocr=force_uocr,
@@ -483,6 +553,7 @@ class OCRManager:
                 ))
                 if self.last_diagnostics is not None:
                     self.last_batch_diagnostics.append(self.last_diagnostics)
+                self.last_batch_dropped_noise.append(list(self.last_dropped_noise))
             return results
 
         batch_diagnostics = [
@@ -490,6 +561,8 @@ class OCRManager:
             for _ in images
         ]
         self.last_batch_diagnostics = []
+        self.last_dropped_noise = []
+        self.last_batch_dropped_noise = []
 
         # Benchmark: disable_uocr también apaga el cls de rotación, el
         # detector YOLO y el detector comic-text-detector de regiones (mismo
@@ -505,6 +578,8 @@ class OCRManager:
         per_page_avg_conf: list[float] = [0.0] * n  # sesión 129: stats para la salvaguarda
         vlm_pending: list[int] = []  # índices que requieren VLM
         for i, img in enumerate(images):
+            # Aislar el stash de cada página.
+            self.ou._reset_dropped_noise()
             diagnostics = batch_diagnostics[i]
             with diagnostics.stage("hybrid"):
                 blocks = self.ou._detect_and_ocr(
@@ -601,6 +676,10 @@ class OCRManager:
                     needs_vlm = True
             per_page_blocks[i] = blocks
             per_page_engines[i] = engines
+            dropped_noise = self.ou._consume_dropped_noise()
+            self.last_batch_dropped_noise.append(dropped_noise)
+            if dropped_noise:
+                self.last_dropped_noise.extend(dropped_noise)
             if needs_vlm:
                 vlm_pending.append(i)
 
@@ -614,47 +693,100 @@ class OCRManager:
             # páginas 5+ cuando el caller entrega un lote mayor.
             for batch_start in range(0, len(vlm_pending), 4):
                 batch_indices = vlm_pending[batch_start:batch_start + 4]
-                batch_imgs = [images[i] for i in batch_indices]
-                try:
-                    with batch_diagnostics[batch_indices[0]].stage("uocr_batch"):
-                        u_pages, _infer_s = self._unlimited_ocr_batch(batch_imgs)
-                    for k, idx in enumerate(batch_indices):
-                        blocks = per_page_blocks[idx]
-                        ublocks, uimage_panels = u_pages[k]
-                        # Ruta C: re-OCR a nivel de globo por página
-                        bubble_blocks = self._ruta_c_globos(
-                            images[idx], ocr_lang, blocks, uimage_panels)
-                        combined_u = ublocks + bubble_blocks
-                        if combined_u:
-                            merged = self.ou._fusionar_blocks_multi(
-                                [blocks, combined_u],
-                                weights=[OCR_ENGINE_WEIGHTS["easyocr"],
-                                         OCR_ENGINE_WEIGHTS["unlimited"]],
-                            )
-                            print(f"[fusion-batch] Página {idx}: {len(blocks)} híbrido + "
-                                  f"{len(combined_u)} U-OCR (batch) → {len(merged)}")
-                            blocks[:] = merged
-                            per_page_engines[idx].append("unlimited-batch")
-                            # Sesión 134: recuperación exitosa → la negativa
-                            # anterior de esta firma (si existía) queda refutada.
-                            firma_idx = per_page_firmas[idx]
-                            if firma_idx:
-                                self._limpiar_decision_negativa(firma_idx)
-                        else:
-                            # §8.4.1: el batch no recuperó nada para esta página
-                            # (la firma ya se calculó en Fase A — no recomputar).
-                            # Sesión 129: registrar con los stats del híbrido de
-                            # Fase A para la salvaguarda mucho_mas_debil.
-                            firma_idx = per_page_firmas[idx]
-                            if firma_idx:
-                                self._registrar_decision_negativa(
+                # Cache de recuperación positiva (plan §11 P1): separar las
+                # páginas con recuperación cacheada (reinyectar sin daemon)
+                # de las que necesitan inferencia nueva. La firma dHash es
+                # estable; la salvaguarda mucho_mas_debil (misma que los
+                # ceros) evita reinyectar a gemelas detectadas MUCHO más
+                # débiles (el diálogo que el híbrido pierde es lo que el VLM
+                # leería). Un re-run con el VLM activo sobreescribe.
+                cached: dict[int, tuple[list[Any], list[Any]]] = {}
+                need_infer: list[int] = []
+                for idx in batch_indices:
+                    firma_idx = per_page_firmas[idx]
+                    if firma_idx:
+                        hit = self._get_pos_cache(
+                            firma_idx,
+                            len(per_page_blocks[idx]),
+                            per_page_avg_conf[idx],
+                        )
+                        if hit is not None:
+                            cached[idx] = hit
+                            continue
+                    need_infer.append(idx)
+                u_pages: dict[int, tuple[list[Any], list[Any]]] = {}
+                _infer_s = 0.0
+                if need_infer:
+                    batch_imgs = [images[i] for i in need_infer]
+                    try:
+                        with batch_diagnostics[need_infer[0]].stage("uocr_batch"):
+                            u_pages_res, _infer_s = self._unlimited_ocr_batch(
+                                batch_imgs)
+                        for k, idx in enumerate(need_infer):
+                            u_pages[idx] = u_pages_res[k]
+                    except RuntimeError as uerr:
+                        print(f"[fusion-batch] U-OCR batch no disponible "
+                              f"({uerr}); páginas de la ventana con solo "
+                              f"híbrido")
+                for idx in batch_indices:
+                    if idx in cached:
+                        ublocks, uimage_panels = cached[idx]
+                        came_from_cache = True
+                    elif idx in u_pages:
+                        ublocks, uimage_panels = u_pages[idx]
+                        came_from_cache = False
+                    else:
+                        continue  # el batch falló para esta página
+                    blocks = per_page_blocks[idx]
+                    # Stats del híbrido ANTES de la fusión: la salvaguarda del
+                    # cache positivo compara la detección híbrida, no el
+                    # resultado ya fusionado (blocks se muta abajo con
+                    # blocks[:] = merged — capturar antes).
+                    n_hybrid = len(blocks)
+                    # Ruta C: re-OCR a nivel de globo por página
+                    bubble_blocks = self._ruta_c_globos(
+                        images[idx], ocr_lang, blocks, uimage_panels)
+                    combined_u = ublocks + bubble_blocks
+                    if combined_u:
+                        merged = self.ou._fusionar_blocks_multi(
+                            [blocks, combined_u],
+                            weights=[OCR_ENGINE_WEIGHTS["easyocr"],
+                                     OCR_ENGINE_WEIGHTS["unlimited"]],
+                        )
+                        print(f"[fusion-batch] Página {idx}: {len(blocks)} híbrido + "
+                              f"{len(combined_u)} U-OCR "
+                              f"({'cache' if came_from_cache else 'batch'}) "
+                              f"→ {len(merged)}")
+                        blocks[:] = merged
+                        per_page_engines[idx].append(
+                            "unlimited-cache" if came_from_cache
+                            else "unlimited-batch")
+                        # Sesión 134: recuperación exitosa → la negativa
+                        # anterior de esta firma (si existía) queda refutada.
+                        firma_idx = per_page_firmas[idx]
+                        if firma_idx:
+                            self._limpiar_decision_negativa(firma_idx)
+                            # Plan §11 P1: cachear la recuperación nueva solo
+                            # si vino del daemon (un hit no necesita re-guardar).
+                            if not came_from_cache:
+                                self._put_pos_cache(
                                     firma_idx,
-                                    len(per_page_blocks[idx]),
+                                    n_hybrid,
                                     per_page_avg_conf[idx],
+                                    ublocks, uimage_panels,
                                 )
-                except RuntimeError as uerr:
-                    print(f"[fusion-batch] U-OCR batch no disponible ({uerr}); "
-                          f"páginas de la ventana con solo híbrido")
+                    else:
+                        # §8.4.1: el batch no recuperó nada para esta página
+                        # (la firma ya se calculó en Fase A — no recomputar).
+                        # Sesión 129: registrar con los stats del híbrido de
+                        # Fase A para la salvaguarda mucho_mas_debil.
+                        firma_idx = per_page_firmas[idx]
+                        if firma_idx:
+                            self._registrar_decision_negativa(
+                                firma_idx,
+                                len(per_page_blocks[idx]),
+                                per_page_avg_conf[idx],
+                            )
 
         results = []
         for i in range(n):
@@ -665,7 +797,12 @@ class OCRManager:
             diagnostics.set_engines("fusion", engines)
             diagnostics.finish()
             self.last_batch_diagnostics.append(diagnostics.to_dict())
-            results.append((blocks, "fusion", engines))
+            results.append(OCRResult(
+                blocks=blocks,
+                engine="fusion",
+                engines=engines,
+                diagnostics=diagnostics.to_dict(),
+            ))
         return results
 
     # ─── Tier 3.5 (Fase 6): YOLO → Ruta C ────────────────────────
@@ -732,7 +869,8 @@ class OCRManager:
             regiones_utilizadas = list(regions)
             if regions:
                 yolo_blocks = self.ou._recover_regions_with_easyocr(
-                    img_bgr, regions, ocr_lang, upscale=3.5)
+                    img_bgr, regions, ocr_lang, upscale=3.5,
+                    hybrid_blocks=blocks)
                 print(f"[process-page] Fase 6 (YOLO): {len(regions)} regiones "
                       f"(globos/cartelas/títulos) → {len(yolo_blocks)} bloques "
                       f"recuperados")
@@ -802,7 +940,8 @@ class OCRManager:
                 ]
             if regions:
                 ctd_blocks = self.ou._recover_regions_with_easyocr(
-                    img_bgr, regions, ocr_lang, upscale=3.5)
+                    img_bgr, regions, ocr_lang, upscale=3.5,
+                    hybrid_blocks=blocks)
                 print(f"[process-page] Fase 6.5 (CTD): {len(regions)} regiones "
                       f"(texto sin globo) → {len(ctd_blocks)} bloques recuperados")
         except Exception as cerr:
@@ -1098,8 +1237,30 @@ class OCRManager:
         from config import MODO_CPU, UOCR_ENABLED
         if not UOCR_ENABLED or MODO_CPU:
             return []
+        # Cache de recuperación positiva (plan §11 P1): si esta firma ya
+        # recuperó bloques en una corrida anterior (TTL 7 días) y la página
+        # actual se detecta de forma comparable, reinyectar la recuperación
+        # SIN llamar al daemon — la inferencia VLM (30-190 s/pág) no se paga
+        # de nuevo en re-corridas del mismo documento. El daemon sigue siendo
+        # la fuente de verdad en el primer run; este cache solo evita
+        # re-pagar lo ya resuelto. Un re-run con el VLM activo sobreescribe.
+        cached: tuple[list[Any], list[Any]] | None = None
+        # Stats del híbrido ANTES de la fusión: la salvaguarda mucho_mas_debil
+        # del cache positivo compara la DETECCIÓN híbrida (lo que el VLM
+        # podría leer de nuevo), no el resultado ya fusionado.
+        n_hybrid = len(blocks)
+        if firma:
+            cached = self._get_pos_cache(firma, n_hybrid, avg_conf)
+        if cached is not None:
+            ublocks, uimage_panels = cached
+        else:
+            try:
+                ublocks, uimage_panels, _ = self._unlimited_ocr(img_bgr)
+            except RuntimeError as uerr:
+                print(f"[process-page] Fusión: U-OCR no disponible ({uerr}); "
+                      f"solo híbrido")
+                return []
         try:
-            ublocks, uimage_panels, _ = self._unlimited_ocr(img_bgr)
             # ── Ruta C: re-OCR a nivel de GLOBO (OpenCV blobs + EasyOCR 3.5x) ──
             bubble_blocks = self._ruta_c_globos(img_bgr, ocr_lang, blocks, uimage_panels)
             combined_u = ublocks + bubble_blocks
@@ -1122,6 +1283,13 @@ class OCRManager:
                 # la había) — las gemelas deben volver a intentar el VLM.
                 if firma:
                     self._limpiar_decision_negativa(firma)
+                    # Plan §11 P1: solo guardar la recuperación cacheable si
+                    # vino del daemon (un hit del cache no necesita re-guardar).
+                    if cached is None:
+                        self._put_pos_cache(
+                            firma, n_hybrid, avg_conf,
+                            ublocks, uimage_panels,
+                        )
                 return ["unlimited"]
             # §8.4.1: el refuerzo NO recuperó nada → cachear decisión negativa
             # (sesión 129: con los stats del híbrido para la salvaguarda).
@@ -1242,6 +1410,27 @@ class OCRManager:
         vigente = False
         mutado = False
         with self._uocr_cache_lock:
+            # 0) Cero confirmado (plan §10.2 item 1): la firma falló >= MIN
+            # veces en ventanas TTL distintas dentro del TTL largo (7 días) →
+            # suprimir el VLM AUNQUE el TTL corto de 30 min ya expiró (el
+            # caso de las págs 13/17 del cap. 43: 0 recuperaciones en todas
+            # las corridas, 31-68 s/llamada). Salvaguarda mucho_mas_debil
+            # contra los stats de la ÚLTIMA confirmación: si la página actual
+            # se detecta MUCHO más débil, el VLM vuelve a correr (el diálogo
+            # artístico que el híbrido ahora pierde es justo el que el VLM
+            # podría leer). El gate es FIRME frente a la salvaguarda débil
+            # (sesión 134): un cero confirmado no re-dispara más.
+            cero = self._uocr_neg_ceros.get(firma)
+            if cero is not None:
+                ts_c, count_c, n_c_c, conf_c_c = cero
+                if (count_c >= UOCR_NEG_CERO_MIN
+                        and (time.time() - ts_c) < UOCR_NEG_CERO_TTL_S
+                        and not (n_blocks < n_c_c
+                                 and avg_conf < conf_c_c * 0.8)):
+                    print(f"[process-page] VLM: cero confirmado por firma "
+                          f"{firma[:16]}… ({count_c} fallos) — saltando "
+                          f"inferencia")
+                    return True
             entrada = self._uocr_neg_cache.get(firma)
             if entrada is None:
                 return False
@@ -1294,6 +1483,25 @@ class OCRManager:
         re-registra→re-dispara infinito)."""
         now = time.time()
         with self._uocr_cache_lock:
+            # Ledger de ceros confirmados (plan §10.2 item 1): cada registro
+            # de negativa (el VLM corrió y no recuperó nada) incrementa el
+            # contador de la firma — la señal de "este layout no aporta"
+            # que, al alcanzar UOCR_NEG_CERO_MIN en ventanas TTL distintas,
+            # extiende la supresión con TTL largo (7 días) vía
+            # _is_decision_negativa_vigente. Los stats se actualizan a los de
+            # ESTA confirmación (el par más reciente para la salvaguarda
+            # mucho_mas_debil). Podado por TTL largo + LRU (mismo patrón que
+            # el cache de negativas) para no crecer sin límite.
+            prev_cero = self._uocr_neg_ceros.get(firma)
+            count_cero = (prev_cero[1] + 1) if prev_cero else 1
+            self._uocr_neg_ceros[firma] = (now, count_cero, n_blocks, avg_conf)
+            if len(self._uocr_neg_ceros) > UOCR_CACHE_MAX_ENTRIES:
+                while len(self._uocr_neg_ceros) > UOCR_CACHE_MAX_ENTRIES:
+                    oldest = min(
+                        self._uocr_neg_ceros,
+                        key=lambda k: self._uocr_neg_ceros[k][0],
+                    )
+                    del self._uocr_neg_ceros[oldest]
             prev = self._uocr_neg_cache.get(firma)
             re_disparos = prev[3] if prev else 0
             self._uocr_neg_cache[firma] = (now, n_blocks, avg_conf, re_disparos)
@@ -1326,8 +1534,81 @@ class OCRManager:
             existe = firma in self._uocr_neg_cache
             if existe:
                 del self._uocr_neg_cache[firma]
-        if existe and UOCR_NEG_CACHE_PERSIST:
+            # Sesión 2026-08-16 (plan §10.2 item 1): la recuperación también
+            # refuta el CERO CONFIRMADO — si el VLM SÍ recuperó algo en esta
+            # página, el ledger no debe seguir suprimiendo a las gemelas.
+            en_ceros = firma in self._uocr_neg_ceros
+            if en_ceros:
+                del self._uocr_neg_ceros[firma]
+        if (existe or en_ceros) and UOCR_NEG_CACHE_PERSIST:
             self._persistir_cache()
+
+    # ── Cache de RECUPERACIÓN POSITIVA (plan §11 P1, 2026-08-17) ──
+
+    def _get_pos_cache(
+        self, firma: str, n_blocks: int = 0, avg_conf: float = 0.0,
+    ) -> tuple[list[Any], list[Any]] | None:
+        """Devuelve la recuperación VLM cacheada (ublocks, uimage_panels)
+        para esta firma, o None si no hay entrada vigente.
+
+        Complemento simétrico de _is_decision_negativa_vigente: el ledger de
+        ceros suprime páginas que SIEMPRE fallan; este cache reinyecta
+        páginas que SIEMPRE recuperan. El determinismo 5/5 de la
+        recuperación por página (plan §4.6 tabla ROI) hace que cachear sea
+        seguro: misma firma dHash → mismo resultado VLM. Aplica la MISMA
+        salvaguarda mucho_mas_debil que los ceros: si la página actual se
+        detecta MUCHO más débil (menos bloques Y confianza <<) que cuando se
+        cacheó, la entrada NO aplica — el diálogo artístico que el híbrido
+        ahora pierde es justo el que el VLM podría leer, así que se re-corre.
+        No aplica con force_uocr/disable_uocr (lo decide el caller pasando
+        n_blocks/avg_conf reales; los modos benchmark pasan sin consultar)."""
+        with self._uocr_cache_lock:
+            entrada = self._uocr_pos_cache.get(firma)
+            if entrada is None:
+                return None
+            ts, n_c, conf_c, ublocks, uimage_panels = entrada
+            if (time.time() - ts) >= UOCR_POS_CACHE_TTL_S:
+                del self._uocr_pos_cache[firma]
+                return None
+            mucho_mas_debil = (
+                n_blocks < n_c
+                and avg_conf < conf_c * UOCR_POS_CACHE_SALVAGUARDA
+            )
+            if mucho_mas_debil:
+                return None
+            print(f"[process-page] VLM: recuperación cacheada por firma "
+                  f"{firma[:16]}… — reinyectando {len(ublocks)} bloques")
+            return ublocks, uimage_panels
+
+    def _put_pos_cache(
+        self,
+        firma: str,
+        n_blocks: int,
+        avg_conf: float,
+        ublocks: list[Any],
+        uimage_panels: list[Any],
+    ) -> None:
+        """Guarda la recuperación VLM positiva de esta firma (ublocks +
+        uimage_panels) con TTL largo (7 días) y eviction LRU.
+
+        Solo se llama cuando el VLM SÍ recuperó bloques (combined_u no vacío).
+        Un re-run con el daemon activo sobreescribe la entrada (los bloques
+        nuevos de esta corrida son la verdad más reciente). El cache vive en
+        la sección "pos" del archivo de decisiones y viaja con la
+        persistencia: un proceso nuevo (servidor reiniciado) reinyecta las
+        recuperaciones sin volver a pagar la inferencia."""
+        now = time.time()
+        with self._uocr_cache_lock:
+            self._uocr_pos_cache[firma] = (
+                now, n_blocks, avg_conf, ublocks, uimage_panels)
+            if len(self._uocr_pos_cache) > UOCR_CACHE_MAX_ENTRIES:
+                while len(self._uocr_pos_cache) > UOCR_CACHE_MAX_ENTRIES:
+                    oldest = min(
+                        self._uocr_pos_cache,
+                        key=lambda k: self._uocr_pos_cache[k][0],
+                    )
+                    del self._uocr_pos_cache[oldest]
+        self._persistir_cache()
 
     @classmethod
     def _cargar_cache_disco(cls, force: bool = False) -> None:
@@ -1412,6 +1693,49 @@ class OCRManager:
                                 key=lambda k: cls._uocr_neg_cache[k][0],
                             )[:len(cls._uocr_neg_cache) - UOCR_CACHE_MAX_ENTRIES]:
                                 del cls._uocr_neg_cache[firma]
+                        # Ledger de ceros confirmados (plan §10.2 item 1):
+                        # [ts, count, n_blocks, avg_conf], podado por el TTL
+                        # LARGO (7 días) + cap LRU. Se carga solo con el flag
+                        # de persistencia activo (misma política que "neg").
+                        ceros = data.get("ceros", {}) or {}
+                        for firma, entry in ceros.items():
+                            try:
+                                ts, count, n_blocks, conf = entry
+                                if ahora - float(ts) < UOCR_NEG_CERO_TTL_S:
+                                    cls._uocr_neg_ceros[firma] = (
+                                        float(ts), int(count),
+                                        int(n_blocks), float(conf))
+                            except (TypeError, ValueError):
+                                continue
+                        if len(cls._uocr_neg_ceros) > UOCR_CACHE_MAX_ENTRIES:
+                            for firma in sorted(
+                                cls._uocr_neg_ceros,
+                                key=lambda k: cls._uocr_neg_ceros[k][0],
+                            )[:len(cls._uocr_neg_ceros) - UOCR_CACHE_MAX_ENTRIES]:
+                                del cls._uocr_neg_ceros[firma]
+                        # Cache de recuperación positiva (plan §11 P1):
+                        # [ts, n_blocks, avg_conf, ublocks, uimage_panels]
+                        # (listas de dicts serializables), podado por el TTL
+                        # largo (7 días) + cap LRU. Misma política de
+                        # persistencia que "neg"/"ceros".
+                        pos = data.get("pos", {}) or {}
+                        for firma, entry in pos.items():
+                            try:
+                                ts, n_blocks, conf, ublocks, panels = entry
+                                if ahora - float(ts) < UOCR_POS_CACHE_TTL_S:
+                                    cls._uocr_pos_cache[firma] = (
+                                        float(ts), int(n_blocks),
+                                        float(conf),
+                                        list(ublocks or []),
+                                        list(panels or []))
+                            except (TypeError, ValueError):
+                                continue
+                        if len(cls._uocr_pos_cache) > UOCR_CACHE_MAX_ENTRIES:
+                            for firma in sorted(
+                                cls._uocr_pos_cache,
+                                key=lambda k: cls._uocr_pos_cache[k][0],
+                            )[:len(cls._uocr_pos_cache) - UOCR_CACHE_MAX_ENTRIES]:
+                                del cls._uocr_pos_cache[firma]
             except Exception as e:
                 print(f"[ocr_engine] cache de decisiones corrupto, "
                       f"recreando desde cero: {e}")
@@ -1436,6 +1760,14 @@ class OCRManager:
         if UOCR_NEG_CACHE_PERSIST:
             with cls._uocr_cache_lock:
                 data["neg"] = dict(cls._uocr_neg_cache)
+                # Plan §10.2 item 1: el ledger de ceros confirmados viaja con
+                # la persistencia — 2 corridas en procesos separados acumulan
+                # los fallos de la misma página (firma dHash estable).
+                data["ceros"] = dict(cls._uocr_neg_ceros)
+                # Plan §11 P1: la recuperación positiva viaja también — un
+                # proceso nuevo (servidor reiniciado) reinyecta las páginas
+                # resueltas sin re-pagar la inferencia VLM.
+                data["pos"] = dict(cls._uocr_pos_cache)
         path = _DECISION_CACHE_PATH
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1454,6 +1786,12 @@ class OCRManager:
         arranca sin decisiones heredadas de capítulos anteriores."""
         with cls._uocr_cache_lock:
             cls._uocr_neg_cache.clear()
+            # Plan §10.2 item 1: el ledger de ceros confirmados también se
+            # limpia — una sesión nueva arranca sin supresiones heredadas.
+            cls._uocr_neg_ceros.clear()
+            # Plan §11 P1: la recuperación positiva también — una sesión
+            # nueva re-procesa el VLM desde cero (sin reinyecciones viejas).
+            cls._uocr_pos_cache.clear()
         with cls._trigger_dec_lock:
             cls._trigger_dec_cache.clear()
         cls._cache_cargado = False
@@ -1496,7 +1834,8 @@ class OCRManager:
                 ]
             if regions:
                 bubble_blocks = self.ou._recover_regions_with_easyocr(
-                    img_bgr, regions, ocr_lang, upscale=3.5)
+                    img_bgr, regions, ocr_lang, upscale=3.5,
+                    hybrid_blocks=blocks)
                 print(f"[process-page] Ruta C: {len(uimage_panels)} paneles + "
                       f"full-page → {len(regions)} globos → "
                       f"{len(bubble_blocks)} bloques recuperados")

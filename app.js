@@ -1316,7 +1316,7 @@ async function updateOcrEngineStatus() {
 function buildProcessPageQuery() {
   const srcPage = sourceLang.value || "auto";
   return new URLSearchParams({
-    target: targetLang.value,
+    target: targetLang.value || "es",
     source: srcPage,
     ocr_mode: getSelectedOcrMode(),
     doc_id: getDocId(),
@@ -1346,7 +1346,9 @@ function finalizeServerResult(result, pageNo) {
   return result;
 }
 
-async function serverProcessPage(pageNo = state.page) {  console.log(`[serverProcessPage] INICIO page=${pageNo}, cleanBg=${cleanBgCanvas.width}x${cleanBgCanvas.height}`);
+async function serverProcessPage(pageNo = state.page) {
+  if (!targetLang.value) targetLang.value = "es";
+  console.log(`[serverProcessPage] INICIO page=${pageNo}, cleanBg=${cleanBgCanvas.width}x${cleanBgCanvas.height}`);
   
   // SIEMPRE re-renderizar la página para garantizar un canvas limpio
   // y evitar enviar al servidor una imagen con artefactos de páginas anteriores
@@ -1436,7 +1438,9 @@ async function autoTranslateCurrentPage(pageNo = state.page, startedAt = Date.no
 
     if (state.abortTranslation) return 0;
     
-    if (!serverResult || !serverResult.blocks || serverResult.blocks.length === 0) {
+    const hasTranslatedBlocks = Boolean(serverResult?.blocks?.length);
+    const hasInpaintedNoise = Number(serverResult?.noise_removed || 0) > 0;
+    if (!hasTranslatedBlocks && !hasInpaintedNoise) {
       if (!isRetry) {
         console.log("[autoTranslate] 0 bloques detectados. Reintentando tras forzar renderizado...");
         await renderPage(pageNo);
@@ -1447,7 +1451,8 @@ async function autoTranslateCurrentPage(pageNo = state.page, startedAt = Date.no
       return 0;
     }
 
-    // El servidor devuelve imagen inpainted + bloques ya traducidos
+    // El servidor devuelve imagen inpainted + bloques ya traducidos. Una página
+    // puede no tener bloques traducibles y aun así necesitar el fondo limpio.
     showProgress(`Traduciendo Pág. ${pageNo}`, progressIndex - 0.3, totalProgress, startedAt);
 
     // Guardar imagen inpainted en caché
@@ -1464,7 +1469,9 @@ async function autoTranslateCurrentPage(pageNo = state.page, startedAt = Date.no
     await loadBase64IntoCanvas(serverResult.inpainted_image, erasedBgCanvas);
     serverResult.inpainted_image = null; // liberar memoria base64
 
-    // Filtrar bloques del servidor (márgenes, marcas de agua)
+    // El servidor ya filtró e inpaintó los bloques de ruido antes de devolver
+    // esta imagen. La UI solo filtra las cajas que no deben redibujarse; repetir
+    // el inpainting aquí degradaría el fondo y dejaría resultados no deterministas.
     const filteredServerBlocks = filterPageBlocks(serverResult.blocks, pdfCanvas.height);
 
     // Construir cajas de burbuja CON DATOS DEL SERVIDOR (posición, tamaño, colores, fuente)
@@ -1486,8 +1493,10 @@ async function autoTranslateCurrentPage(pageNo = state.page, startedAt = Date.no
     }
 
     showProgress(`Traduciendo Pág. ${pageNo}`, progressIndex, totalProgress, startedAt);
-    setStatus(`Página ${pageNo} traducida: ${boxes.length} bloques.`);
-    return boxes.length;
+    setStatus(hasTranslatedBlocks
+      ? `Página ${pageNo} traducida: ${boxes.length} bloques.`
+      : `Página ${pageNo}: fondo limpiado (${serverResult.noise_removed} ruido).`);
+    return boxes.length || (hasInpaintedNoise ? 1 : 0);
 
   } catch (error) {
     console.error("[autoTranslate] Error:", error);

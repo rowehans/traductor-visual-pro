@@ -44,7 +44,7 @@ def copy_index():
     print(f"[build] index.html copiado con referencias minificadas")
 
 def copy_assets():
-    """Copia assets estaticos que no se minifican (imagenes, fuentes, etc.)"""
+    """Copia recursos estaticos, incluidos los modulos ES importados por app."""
     assets_dir = os.path.join(ROOT, "assets")
     if os.path.isdir(assets_dir):
         dst = os.path.join(DIST, "assets")
@@ -52,6 +52,21 @@ def copy_assets():
             shutil.rmtree(dst)
         shutil.copytree(assets_dir, dst)
         print(f"[build] Assets copiados")
+
+    # app.min.js conserva los imports ES6 de ./js/*.js. Si esta carpeta falta,
+    # el navegador carga el entrypoint pero falla antes de inicializar la UI.
+    js_dir = os.path.join(ROOT, "js")
+    if os.path.isdir(js_dir):
+        dst = os.path.join(DIST, "js")
+        if os.path.exists(dst):
+            shutil.rmtree(dst)
+        shutil.copytree(js_dir, dst)
+        print(f"[build] Modulos JS copiados")
+
+    icon_path = os.path.join(ROOT, "icon.ico")
+    if os.path.isfile(icon_path):
+        shutil.copy2(icon_path, os.path.join(DIST, "icon.ico"))
+        print(f"[build] Icono copiado")
 
 if __name__ == "__main__":
     print("[build] === INICIANDO BUILD ===")

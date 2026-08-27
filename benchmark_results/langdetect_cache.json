@@ -1,0 +1,52 @@
+{
+ "n_calls_body": 82,
+ "n_unique_texts": 82,
+ "langdetect_total_s": 1.053,
+ "chapter_wall_s": 76.89,
+ "pct_of_chapter": 1.4,
+ "n_firmas": 82,
+ "ahorro_potencial_pct": 0.0,
+ "firmas_inconsistentes": 0,
+ "top_misses_s": [
+  [
+   "SUI DISTANCAAMENOS QUE",
+   0.38300310000340687
+  ],
+  [
+   "ASIELNOES",
+   0.04258480000135023
+  ],
+  [
+   "VOLVERANALA",
+   0.042339899999205954
+  ],
+  [
+   "VOLVERMEAREFACONAF",
+   0.04185600000346312
+  ],
+  [
+   "VAACTUAIMENSGLO",
+   0.0336572999949567
+  ],
+  [
+   "TPUARE AD",
+   0.027602499998465646
+  ],
+  [
+   "FN ADFI ANT",
+   0.02450929999758955
+  ],
+  [
+   "NE PORIA JBFLMR",
+   0.017064299994672183
+  ],
+  [
+   "RGNAIFSVNECESI3JNA",
+   0.016252200002782047
+  ],
+  [
+   "OH. ASI ES",
+   0.014104599998972844
+  ]
+ ]
+}

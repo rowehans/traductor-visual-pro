@@ -1111,6 +1111,13 @@ _OCR_FOREIGN_SPELLCHECKERS: dict[str, Any] = {}
 # entrada entre bloques largos de la misma página.
 _SPELL_LANG_MAX_CHARS: Final[int] = 600
 
+# Cache de idioma por muestra del spellcheck (2026-08-16): los bloques de
+# una misma página comparten idioma y a menudo muestras idénticas (mismo
+# prefijo de 600 chars). La detección robusta ya cachea por texto exacto;
+# este cache colapsa además las muestras repetidas entre bloques/páginas.
+# Plain dict acotado (más simple y testeable que lru_cache importado).
+_SPELL_LANG_CACHE: dict[str, str] = {}
+
 # Umbral de longitud para usar la corrección barata propia en vez de
 # sp.correction(). pyspellchecker es rápido en palabras cortas (known + edición
 # 1 generan pocos strings) pero explota en largas: la expansión de distancia 2
@@ -1157,7 +1164,12 @@ def _get_spellchecker(lang: str = "es") -> Any:
             return _OCR_SPELLCHECKER
         try:
             from spellchecker import SpellChecker
-            sp = SpellChecker(language=lang)
+            # Algunas instalaciones antiguas solo exponen alias largos.
+            try:
+                sp = SpellChecker(language=lang)
+            except (AssertionError, ValueError):
+                fallback_lang = {"es": "spanish", "pt": "portuguese"}.get(lang, lang)
+                sp = SpellChecker(language=fallback_lang)
             wf = sp.word_frequency
             # Palabras del dominio manga que pyspellchecker podria no conocer
             # o tener baja frecuencia. Lista FIJA - no requiere mantenimiento.
@@ -1209,20 +1221,29 @@ def _get_foreign_spellchecker(lang: str) -> Any:
             return None
 
 
-def _contains_foreign_latin_tokens(text: str, spanish_checker: Any) -> bool:
-    """Detecta tokens de otros idiomas actuales dentro de un bloque latino."""
+def _contains_foreign_latin_tokens(text: str, spanish_checker: Any,
+                                   tokens: list[str] | None = None) -> bool:
+    """Detecta tokens de otros idiomas actuales dentro de un bloque latino.
+
+    ``tokens`` (opcional) deja que el caller pase los tokens YA separados,
+    sin puntuación y en minúsculas (los que _ocr_spellcheck prepara una sola
+    vez para el loop de corrección), evitando repetir el split/strip/-
+    lowercase. Cuando es None se tokeniza desde ``text`` (comportamiento
+    histórico, el de los tests que llaman solo con texto).
+    """
     if spanish_checker is None:
         return False
-    tokens = [
-        token.strip("'\".,;:!?¡¿()[]{}")
-        for token in text.split()
-    ]
-    tokens = [
-        token.lower() for token in tokens
-        # Incluye tokens de 2 letras en la deteccion ("go", "my", "je",
-        # etc.), aunque el corrector siga sin modificar palabras tan cortas.
-        if len(token) > 1 and not any(char.isdigit() for char in token)
-    ]
+    if tokens is None:
+        tokens = [
+            token.strip("'\".,;:!?¡¿()[]{}")
+            for token in text.split()
+        ]
+        tokens = [
+            token.lower() for token in tokens
+            # Incluye tokens de 2 letras en la deteccion ("go", "my", "je",
+            # etc.), aunque el corrector siga sin modificar palabras tan cortas.
+            if len(token) > 1 and not any(char.isdigit() for char in token)
+        ]
     if not tokens:
         return False
 
@@ -1541,7 +1562,22 @@ def _ocr_spellcheck(text: str) -> str:
         from translator import _detect_language_robust
         sample = text if len(text) <= _SPELL_LANG_MAX_CHARS \
             else text[:_SPELL_LANG_MAX_CHARS]
-        if _detect_language_robust(sample) != "es":
+        # Cache de idioma por muestra (2026-08-16): el merge final llama a
+        # _ocr_spellcheck por bloque y la detección de idioma es el costo
+        # dominante del spellcheck (langdetect ~4.5 ms/llamada; el prefijo de
+        # 600 chars ya acota los textos largos). Los bloques de una misma
+        # página comparten idioma y muchas veces muestras idénticas; el cache
+        # por muestra colapsa esas llamadas. La clave es la MUESTRA (no el
+        # texto completo): dos bloques con el mismo inicio comparten entrada,
+        # y el resultado solo depende del contenido de la muestra, así que es
+        # determinista. Bounded (1024) para que el merge de capítulos largos
+        # no crezca sin límite.
+        lang = _SPELL_LANG_CACHE.get(sample)
+        if lang is None:
+            lang = _detect_language_robust(sample)
+            if len(_SPELL_LANG_CACHE) < 1024:
+                _SPELL_LANG_CACHE[sample] = lang
+        if lang != "es":
             return text
     except Exception as exc:
         # Ante un fallo del detector, conservar el OCR es mas seguro que
@@ -1554,16 +1590,31 @@ def _ocr_spellcheck(text: str) -> str:
     # Obtener spellchecker UNA VEZ fuera del loop
     sp = _get_spellchecker()
 
+    # Tokenización compartida: el strip de puntuación y el lowercase se
+    # calculan UNA sola vez y se reutilizan tanto en la detección extranjera
+    # (le pasamos los tokens ya limpios a _contains_foreign_latin_tokens,
+    # que antes volvía a hacer split/strip/filter sobre el texto) como en el
+    # loop de corrección. El detector extranjero incluye los acrónimos (los
+    # recibe en minúsculas, igual que cuando tokenizaba desde el texto); el
+    # loop los excluye con su chequeo isupper.
+    limpios: list[tuple[str, str, str]] = []
+    for p in palabras:
+        stripped = p.strip("'\".,;:!?¡¿()[]{}")
+        limpios.append((p, stripped, stripped.lower()))
+
     # Un detector de idioma de bloque puede clasificar como espanol una
     # frase corta mixta (por ejemplo: "Quiero go home"). Antes de corregir,
     # comparar los tokens contra los diccionarios de los idiomas latinos que
     # ya soporta el proyecto. Si hay evidencia extranjera, preservar todo el
     # bloque evita cambiar solo una parte de la frase.
-    if len(palabras) >= 2 and _contains_foreign_latin_tokens(text, sp):
+    if len(palabras) >= 2 and _contains_foreign_latin_tokens(
+            text, sp,
+            tokens=[low for _, stripped, low in limpios
+                    if len(stripped) > 1
+                    and not any(c.isdigit() for c in stripped)]):
         return text
 
-    for p in palabras:
-        stripped = p.strip("'\".,;:!?¡¿()[]{}")
+    for p, stripped, p_lower in limpios:
         if not stripped or len(stripped) <= 2:
             corregidas.append(p)
             continue
@@ -1578,8 +1629,8 @@ def _ocr_spellcheck(text: str) -> str:
             corregidas.append(p)
             continue
 
-        # Intentar correccion con pyspellchecker
-        p_lower = stripped.lower()
+        # Intentar correccion con pyspellchecker (p_lower ya viene en
+        # minúsculas de la tokenización compartida)
 
         if sp is not None:
             # Optimización 2026-08-15 (costo oculto del A/B de la Ruta C):
@@ -2445,6 +2496,96 @@ _RUTA_C_STRIP_MAX_CHUNK_H: int = 1900
 # como válvula de rollback si el strip diera problemas en algún corpus: con
 # False, _recover_regions_with_easyocr vuelve a _run_rapidocr por crop.
 _RUTA_C_STRIP_BATCH: bool = True
+# Fix 2026-08-16 (pérdida de diálogos del strip): el det DBNet sobre el strip
+# apilado detecta mal ciertas líneas — el strip leyó ruido ('Y' 0.25, 'P!' 0.46,
+# 'OE O' 0.5, 'S E' 0.71, 'IIFARRA' 0.49) o NADA en los crops de las págs
+# 1/4/40/52, mientras el crop INDIVIDUAL las lee a 0.94-0.99 (verificado con
+# el A/B benchmark_strip_fix_ab y el VLM). Cuando el strip no devuelve nada
+# CONFiable para un crop (ver _rapid_blocks_usable), se reintenta ESE crop con
+# _run_rapidocr individual (el motor exacto del camino pre-strip); el fallback
+# EasyOCR NO lee esos crops (basura 'じ‥'/'鼻' — medido), así que el retry es
+# rapid, no EasyOCR. A/B 2026-08-16: recupera los 4 diálogos perdidos.
+_RUTA_C_STRIP_RETRY_INDIVIDUAL: bool = True
+_RUTA_C_STRIP_RETRY_CONF_HI: Final[float] = 0.85
+_RUTA_C_STRIP_RETRY_CONF_LO: Final[float] = 0.7
+_RUTA_C_STRIP_RETRY_MIN_LEN: Final[int] = 6
+# Fallback híbrido (2026-08-16): cuando el strip (ya con el retry individual)
+# sigue DÉBIL (conf < 0.7) en un crop que ya tenía TEXTO del híbrido (el
+# texto previo detectado en esa zona), NO descartar el crop: correr igualmente
+# EasyOCR y FUSIONAR ambos resultados (el merge final deduplica por overlap).
+# Protege el texto real del híbrido de ser descartado por un bloque débil de
+# la Ruta C. Complementa al retry rapid-individual (que recupera los 4
+# diálogos perdidos); esta capa cubre el caso donde el retry tampoco lee bien
+# y el híbrido ya había capturado el texto en la zona.
+_RUTA_C_STRIP_HYBRID_FALLBACK: bool = True
+_RUTA_C_STRIP_HYBRID_MIN_CONF: Final[float] = 0.7
+_RUTA_C_HYBRID_OVERLAP_MIN: Final[float] = 0.1
+
+
+def _rapid_blocks_max_conf(blocks: list[Any]) -> float:
+    """Máxima confianza de los bloques rapid (0.0 si vacío/malformado)."""
+    mx = 0.0
+    for rb in blocks:
+        if not isinstance(rb, dict):
+            continue
+        try:
+            rb_conf = float(rb.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(rb_conf):
+            mx = max(mx, rb_conf)
+    return mx
+
+
+def _crop_has_prior_text(region: dict[str, Any],
+                         prior_blocks: list[dict[str, Any]]) -> bool:
+    """¿El híbrido (o bloques previos) ya leyó texto en esta zona del crop?
+
+    Solape > _RUTA_C_HYBRID_OVERLAP_MIN con algún bloque previo con texto.
+    Los callers ya excluyen los crops con overlap > 0.5 ANTES de la Ruta C;
+    aquí se captura el solape PARCIAL (el híbrido tocó la zona sin cubrirla
+    del todo), que es el caso donde un bloque débil de la Ruta C puede hacer
+    que la fusión descarte el texto real del híbrido.
+    """
+    for hb in prior_blocks:
+        if not isinstance(hb, dict):
+            continue
+        if not str(hb.get("text", "")).strip():
+            continue
+        try:
+            if _overlap_ratio(region, hb) > _RUTA_C_HYBRID_OVERLAP_MIN:
+                return True
+        except (TypeError, KeyError):
+            continue
+    return False
+
+
+def _rapid_blocks_usable(blocks: list[Any]) -> bool:
+    """¿El strip leyó algo CONFiable para este crop?
+
+    Confiable = conf >= 0.85 (lectura segura), o conf >= 0.7 con texto de
+    >= 6 chars (frase plausible a conf moderada). Distribución medida del
+    corpus (2026-08-16, 7 págs): el ruido del strip mide 0.25-0.71 ('Y',
+    'O', 'P!', 'S E', 'OE O', 'IIFARRA') y las lecturas reales largas
+    0.81-0.99 ('ERASETUCCOMOLOS ILAM' 0.81, 'AAHH...' 0.99) — un umbral
+    puro de confianza no las separa ('S E' 0.71 vs la frase larga 0.81);
+    la combinación conf + longitud sí.
+    """
+    for rb in blocks:
+        if not isinstance(rb, dict):
+            continue
+        try:
+            rb_text = str(rb.get("text", "")).strip()
+            rb_conf = float(rb.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if not rb_text or not np.isfinite(rb_conf):
+            continue
+        if (rb_conf >= _RUTA_C_STRIP_RETRY_CONF_HI
+                or (rb_conf >= _RUTA_C_STRIP_RETRY_CONF_LO
+                    and len(rb_text) >= _RUTA_C_STRIP_RETRY_MIN_LEN)):
+            return True
+    return False
 
 
 def _ruta_c_prepare_crops(
@@ -2682,6 +2823,7 @@ def _recover_regions_with_easyocr(
     regions: list[dict[str, Any]],
     lang_hint: str = "es",
     upscale: float = 3.5,
+    hybrid_blocks: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Re-OCR de regiones de texto/globos a nivel individual (Ruta C).
 
@@ -2707,6 +2849,13 @@ def _recover_regions_with_easyocr(
     chunk + UNA llamada text_rec para todos (−76.6 % del núcleo en el A/B,
     benchmark_rutac_batch.py); el fallback EasyOCR por crop se conserva para
     los crops que el strip no recupera.
+
+    Fallback híbrido (2026-08-16): ``hybrid_blocks`` es el texto YA leído
+    (híbrido/YOLO previos) en la página. Si el strip (con su retry individual)
+    queda DÉBIL (< _RUTA_C_STRIP_HYBRID_MIN_CONF) en un crop que solapa ese
+    texto previo, se corre igualmente EasyOCR y se FUSIONAN ambos resultados —
+    protege el texto real previo de ser descartado por un bloque débil de la
+    Ruta C en la fusión final.
 
     Returns:
         Bloques en formato interno ({x, y, w, h, text, confidence, fontSize}).
@@ -2762,6 +2911,25 @@ def _recover_regions_with_easyocr(
             # _RUTA_C_STRIP_BATCH=False se re-OCRea el crop individual.
             if _RUTA_C_STRIP_BATCH:
                 rapid_blocks = strip_by_crop.get(i, [])
+                # Fix 2026-08-16: si el strip no devolvió nada >= 0.7 para
+                # ESTE crop (ruido 'OE O' 0.5 / 'S E' 0.6 / 'P!' 0.46 o nada),
+                # reintentar el crop individual con _run_rapidocr — el det
+                # DBNet sobre el crop solo lee bien las líneas que el strip
+                # apilado detecta mal (A/B: recupera los 4 diálogos perdidos
+                # sin coste en los crops que el strip sí resuelve).
+                if (_RUTA_C_STRIP_RETRY_INDIVIDUAL
+                        and not _rapid_blocks_usable(rapid_blocks)):
+                    retry_blocks = _run_rapidocr(
+                        up_img_ocr, filter_page_margins=False,
+                        box_thresh=_RUTA_C_RAPID_BOX_THRESH,
+                        unclip_ratio=_RUTA_C_RAPID_UNCLIP_RATIO)
+                    # Solo reemplazar si el retry produjo algo: si devuelve
+                    # vacío, se conservan los bloques originales del strip
+                    # (aunque débiles) porque su TEXTO alimenta el script
+                    # hint del fallback (_script_language_hints) para elegir
+                    # el lector CJK en lugar del latino de "auto".
+                    if retry_blocks:
+                        rapid_blocks = retry_blocks
             else:
                 rapid_blocks = _run_rapidocr(
                     up_img_ocr, filter_page_margins=False,
@@ -2803,11 +2971,26 @@ def _recover_regions_with_easyocr(
                         "engine": "rapidocr-region",
                         "type": region_type,
                     })
-                # Si el daemon infiere o RapidOCR recuperó el crop, no
-                # ejecutamos EasyOCR adicional sobre el mismo globo.
-                continue
-            # RapidOCR no recuperó el crop: solo aquí se permite fallback a
-            # EasyOCR GPU, que se carga de forma lazy una única vez.
+                # Fallback híbrido (2026-08-16): el strip ya con el retry
+                # individual sigue DÉBIL (< _RUTA_C_STRIP_HYBRID_MIN_CONF) y
+                # el crop ya tenía texto del híbrido en la zona → NO descartar:
+                # correr igualmente EasyOCR y FUSIONAR con lo recuperado
+                # arriba (el merge final deduplica por overlap). Protege el
+                # texto real del híbrido de ser descartado por un bloque débil
+                # de la Ruta C (caso pág 4 del A/B). Con daemon infiriendo
+                # (use_rapid) EasyOCR está prohibido → continue.
+                if not (_RUTA_C_STRIP_HYBRID_FALLBACK
+                        and not use_rapid
+                        and hybrid_blocks is not None
+                        and _rapid_blocks_max_conf(rapid_blocks)
+                        < _RUTA_C_STRIP_HYBRID_MIN_CONF
+                        and _crop_has_prior_text(r, hybrid_blocks)):
+                    # El daemon infiere o RapidOCR leyó bien el crop (o no
+                    # aplica el fallback híbrido): no ejecutar EasyOCR extra.
+                    continue
+                # Cae al EasyOCR de abajo para fusionar con lo ya recuperado.
+            # RapidOCR no recuperó el crop (o el fallback híbrido pide
+            # fusionar): aquí se permite EasyOCR GPU, lazy una única vez.
             if reader is None:
                 fallback_lang = lang_hint
                 prefer_gpu = True
@@ -2966,13 +3149,26 @@ def _page_signature(img_bgr: _Img, grid: int = 8, cell_dark_ratio: float = 0.05)
             if cell.size and float(cell.mean()) > cell_dark_ratio:
                 bits |= 1 << (gy * grid + gx)
     # El layout por sí solo colisiona entre páginas con la misma composición.
-    # Añadir un digest corto del thumbnail conserva la velocidad (~32x32 bytes)
+    # Añadir un digest corto del thumbnail conserva la velocidad (~9x8 bytes)
     # y evita reutilizar decisiones OCR para imágenes con contenido distinto.
-    thumb = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA)
-    content_digest = hashlib.blake2b(
-        f"{sh}x{sw}".encode("ascii") + thumb.tobytes(),
-        digest_size=8,
-    ).hexdigest()
+    #
+    # Firma estable (2026-08-16, plan §10.2 item 1): el digest EXACTO del
+    # thumbnail de 32x32 (blake2b de los bytes crudos) era demasiado sensible
+    # — cualquier variación mínima de píxeles entre corridas (JPEG,
+    # antialiasing, prefilter) cambiaba el digest y la firma, rompiendo el
+    # cache de decisiones entre corridas (la pág 13 del cap. 43 registró dos
+    # firmas distintas). Se sustituye por un dHash (difference hash) de 9x8:
+    # compara la luminancia de píxeles adyacentes → 64 bits robustos a ruido
+    # leve. La MISMA página renderizada dos veces → mismo dHash; dos páginas
+    # distintas del mismo documento → dHash distinto (el arte difiere).
+    thumb = cv2.resize(gray, (9, 8), interpolation=cv2.INTER_AREA)
+    dhash = 0
+    for y in range(8):
+        row = thumb[y]
+        for x in range(8):
+            if row[x] > row[x + 1]:
+                dhash |= 1 << (y * 8 + x)
+    content_digest = f"{dhash:016x}"
     return f"{dark_ratio:.1f}:{bits:0{grid * grid}x}:{content_digest}"
 
 
@@ -3003,20 +3199,67 @@ def _page_has_large_image_panel(img_bgr: _Img, min_ratio: float = 0.15) -> bool:
 
 
 # ─── Filtro de marcas de agua ──────────────────────────────────
-def _filter_watermarks_from_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _filter_watermarks_from_blocks(
+    blocks: list[dict[str, Any]],
+    removed_out: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Filtra watermarks/URLs y opcionalmente conserva sus cajas para inpainting."""
     if not blocks:
         return []
     result: list[dict[str, Any]] = []
     for b in blocks:
         text = str(b.get("text", "")).strip()
-        if any(p.search(text) for p in WATERMARK_PATTERNS):
+        is_url = bool(re.search(
+            r"https?://|www\.|\.(?:com|net|org|xyz|io)\b",
+            text,
+            re.IGNORECASE,
+        ))
+        if is_url or any(p.search(text) for p in WATERMARK_PATTERNS):
             print(f"[filter-watermark] Bloque filtrado: '{text}'")
+            if removed_out is not None:
+                removed_out.append({**b, "_noise": True})
             continue
         result.append(b)
     return result
 
 
 # ─── Agrupación y fusión de bloques ────────────────────────────
+# ─── Stash thread-local de bloques de ruido descartados ────────────
+# Los filtros pre-merge (watermark/margen/URL) descartan bloques como TEXTO,
+# pero sus píxeles siguen en la imagen: si no se añaden a la máscara de
+# inpainting, el watermark sigue visible en la página "limpia" (detectado
+# E2E 2026-08-26: UEHUIJINNMANGAS.COM permanecía tras traducir la página).
+# Cada request llena el stash y lo consume antes de finalizar.
+_dropped_noise_local = threading.local()
+
+
+def _reset_dropped_noise() -> None:
+    """Inicia la captura de ruido para la página del hilo actual."""
+    _dropped_noise_local.dropped = []
+    _dropped_noise_local.capture = True
+
+
+def _stash_dropped_noise(block: dict[str, Any]) -> None:
+    # Las llamadas directas a _group_and_merge_blocks (crops, diagnósticos y
+    # tests) no deben dejar estado global: solo se captura dentro de una
+    # página administrada por OCRManager.
+    if not getattr(_dropped_noise_local, "capture", False):
+        return
+    stash = getattr(_dropped_noise_local, "dropped", None)
+    if stash is None:
+        stash = []
+        _dropped_noise_local.dropped = stash
+    stash.append({**block, "_noise": True})
+
+
+def _consume_dropped_noise() -> list[dict[str, Any]]:
+    """Devuelve y vacía el ruido capturado en el hilo actual."""
+    stash = getattr(_dropped_noise_local, "dropped", None) or []
+    _dropped_noise_local.dropped = []
+    _dropped_noise_local.capture = False
+    return list(stash)
+
+
 def _canonical_block_type(value: Any) -> str:
     """Normaliza etiquetas semanticas de OCR a un conjunto estable."""
     raw = str(value or "text").strip().lower().replace("-", "_")
@@ -3062,20 +3305,28 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
         # contra text_raw preserva estos caracteres.
         if any(p.search(text_raw) for p in WATERMARK_PATTERNS):
             print(f"[OCR] Filtrando marca de agua pre-merge: '{text_raw[:50]}'")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         in_margin = margin_top is not None and (cy < margin_top or cy > margin_bottom)
         if in_margin:
             if any(p.search(text_raw) for p in MARGIN_NOISE_PATTERNS):
                 print(f"[OCR] Filtrando metadato de margen pre-merge: '{text_raw[:50]}' en y={b['y']}")
+                if img_h is not None:
+                    _stash_dropped_noise(b)
                 continue
             digit_count = sum(1 for c in text_raw if c.isdigit())
             if len(text_raw) > 0 and (digit_count / len(text_raw) >= 0.35) and len(text_raw.split()) <= 4:
                 print(f"[OCR] Filtrando metadato numérico de margen pre-merge: '{text_raw[:50]}' en y={b['y']}")
+                if img_h is not None:
+                    _stash_dropped_noise(b)
                 continue
 
         if re.search(r'https?://|www\.|\.(com|net|org|xyz|io)\b', text_raw, re.IGNORECASE):
             print(f"[OCR] Filtrando URL pre-merge: '{text_raw}'")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         # Preservar marcadores de pensamiento/onomatopeya antes de limpiar
@@ -3237,6 +3488,8 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
         conf = float(b.get("confidence", 0))
 
         if text_len == 0:
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         has_cjk = any(
@@ -3251,39 +3504,57 @@ def _group_and_merge_blocks(blocks: list[dict[str, Any]], img_h: int | None = No
                 f"[OCR] Filtrando basura OCR de baja confianza: "
                 f"'{text[:50]}' conf={conf:.2f}"
             )
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         if re.match(r'^\d+$', text):
             print(f"[OCR] Filtrando número puro post-merge: '{text}' en [{b['x']},{b['y']}]")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         if re.match(r'^[\d\s.,;:!?%\'\"\-–—/\\]+$', text):
             print(f"[OCR] Filtrando patrón numérico post-merge: '{text}'")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         if re.match(r'^["\']+\d', text) and text_len <= 6:
             print(f"[OCR] Filtrando comilla+número post-merge: '{text}'")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         if re.match(r'^[~\'\"\-–—:;,.!¡¿?=]+$', text) and text_len <= 2:
             print(f"[OCR] Filtrando puntuación suelta post-merge: '{text}'")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         aspect = w / max(h, 1)
         if aspect < 0.4 and text_len <= 3:
             print(f"[OCR] Filtrando ruido estrecho post-merge: '{text}' aspect={aspect:.2f}")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         if text_len == 1 and conf < 0.25:
             print(f"[OCR] Filtrando carácter suelto post-merge: '{text}'")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         if conf < 0.15 and text_len <= 3:
             print(f"[OCR] Filtrando texto corto baja confianza post-merge: '{text}' conf={conf:.2f}")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         if text_len <= 3 and re.match(r'^\d+[a-zA-Z]?$', text):
             print(f"[OCR] Filtrando combo digito+letra post-merge: '{text}'")
+            if img_h is not None:
+                _stash_dropped_noise(b)
             continue
 
         final_blocks.append(b)
@@ -3398,6 +3669,16 @@ def _build_inpaint_mask(img_bgr: _Img, blocks: list[dict[str, Any]]) -> _Img:
     mask: _Img = np.zeros((h, w), dtype=np.uint8)
 
     for block in blocks:
+        # Un watermark/metadato no se va a redibujar después: cubrir la caja
+        # completa evita dejar restos de antialiasing o halos del texto OCR.
+        if block.get("_noise"):
+            x0 = max(0, int(block.get("x", 0)))
+            y0 = max(0, int(block.get("y", 0)))
+            x1 = min(w, x0 + max(0, int(block.get("w", 0))))
+            y1 = min(h, y0 + max(0, int(block.get("h", 0))))
+            if x1 > x0 and y1 > y0:
+                mask[y0:y1, x0:x1] = 255
+            continue
         if _is_inside_speech_bubble(img_bgr, block):
             # En globos uniformes preservamos el borde y el relleno; solo
             # marcamos los trazos para no destruir la forma de la burbuja.

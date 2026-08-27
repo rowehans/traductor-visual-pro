@@ -1,0 +1,80 @@
+{
+ "benchmark": "benchmark_vlm_maxlen.py",
+ "max_length": 1280,
+ "ngram": null,
+ "image_size": 640,
+ "prompt": null,
+ "pages": [
+  16,
+  21
+ ],
+ "total_s": 324.589,
+ "vlm_total_s": 291.207,
+ "vlm_recovered_total": 13,
+ "per_page": {
+  "16": {
+   "total_s": 109.137,
+   "vlm_s": 77.109,
+   "vlm_recovered": 5,
+   "n_blocks": 13,
+   "avg_conf": 0.931,
+   "trigger": true,
+   "trigger_reason": "large_image_panel",
+   "texts": [
+    "Aa",
+    "CONTESTANOOA TUS PREGUNTAS.",
+    "DESPUES DE",
+    "DESPUES DE TODO, HAS VENI- DO CON MUCHAS CONSULTAS.",
+    "EN ESE CRSO,",
+    "ENESECASO",
+    "EXCELENTE,",
+    "EXCELLENTE,",
+    "LA ÚLTIMA VEZ.",
+    "LCHUUJINMANGASCOM",
+    "LOHAREPOCO APOCO.",
+    "UKHULJINMANGAS.COM",
+    "VOYA EMPEZAR"
+   ],
+   "stages": {
+    "prefilter": 0.462,
+    "rapid": 2.66,
+    "ruta_c": 2.425,
+    "yolo": 6.588,
+    "ctd": 0.0,
+    "rapid_aggr": 0.0,
+    "vlm": 77.109
+   }
+  },
+  "21": {
+   "total_s": 215.452,
+   "vlm_s": 214.098,
+   "vlm_recovered": 8,
+   "n_blocks": 11,
+   "avg_conf": 0.854,
+   "trigger": true,
+   "trigger_reason": "large_image_panel",
+   "texts": [
+    "CUFNE DENENE RELPVNTEPARA CEAREARLA.",
+    "EL",
+    "ENTONCES ENTONCES",
+    "ENTONNEES",
+    "EPORQUEYO PUEDO...? EPORQUEYO PUEDO...?",
+    "NE PORIA JBFLMR BiAD7",
+    "NO...",
+    "[Unreadable]",
+    "[Unreadable]",
+    "[Unreadable]",
+    "oTa"
+   ],
+   "stages": {
+    "prefilter": 0.447,
+    "rapid": 0.339,
+    "yolo": 0.0,
+    "ctd": 0.0,
+    "rapid_aggr": 0.0,
+    "ruta_c": 0.502,
+    "vlm": 214.098
+   }
+  }
+ }
+}
