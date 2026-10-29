@@ -202,7 +202,7 @@ jobs:
         with:
           name: coverage-report-server
           path: coverage_html/index.html
-          if-no-files-found: warn
+          if-no-files-found: ignore
           retention-days: 14
 
       - name: Upload server log (if failed)
