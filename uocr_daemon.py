@@ -93,7 +93,7 @@ def _load_model() -> None:
         import torch
         from transformers import AutoModel, AutoTokenizer, BitsAndBytesConfig
 
-        quant = BitsAndBytesConfig(
+        quant = BitsAndBytesConfig(  # type: ignore[no-untyped-call]
             load_in_4bit=True,
             bnb_4bit_compute_dtype=torch.float16,
             bnb_4bit_quant_type="nf4",

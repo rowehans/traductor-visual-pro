@@ -309,6 +309,7 @@ class TestDaemonRequestGuards:
         assert not ud._is_allowed_input_path(str(outside_file))
         assert not ud._is_allowed_input_path(str(project / "missing.png"))
 
+    @pytest.mark.skipif(os.name != 'nt', reason="Test requires Windows path parsing")
     def test_input_path_temporal_en_otra_unidad_no_se_rechaza(
         self, monkeypatch: pytest.MonkeyPatch) -> None:
         """El proyecto D: y TEMP C: son válidos simultáneamente en Windows."""

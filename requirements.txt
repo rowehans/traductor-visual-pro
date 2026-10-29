@@ -12,7 +12,7 @@ pytest-mock==3.15.1
 
 # OCR
 easyocr==1.7.2
-torch==2.6.0+cu124
+torch==2.6.0
 
 # RapidOCR (ONNX) — pipeline híbrido EasyOCR+RapidOCR
 # Usa los mismos modelos PP-OCRv4 que PaddleOCR pero via ONNX Runtime,
@@ -28,7 +28,7 @@ torch==2.6.0+cu124
 #
 # pip resuelve onnxruntime (CPU) automaticamente como dependencia de rapidocr-onnxruntime
 # CPU es suficiente — ver nota IMPORTANTE arriba
-rapidocr-onnxruntime==1.3.8
+rapidocr-onnxruntime==1.3.25
 
 # Translation
 argostranslate==1.11.0
