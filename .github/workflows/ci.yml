@@ -46,7 +46,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
 
       - name: Install system dependencies (OpenCV)
         run: |
@@ -111,6 +110,7 @@ jobs:
           name: mypy-report
           path: mypy-report/
           retention-days: 14
+          if-no-files-found: ignore
 
       # Reporte HTML de cobertura por módulo (lo genera el paso pytest de
       # run_ci.py en coverage_html/index.html — autocontenido). Se sube aunque
@@ -122,7 +122,7 @@ jobs:
         with:
           name: coverage-report
           path: coverage_html/index.html
-          if-no-files-found: warn
+          if-no-files-found: ignore
           retention-days: 14
 
       # Resumen de cobertura por módulo en el step summary del run: tabla con
@@ -133,7 +133,7 @@ jobs:
       - name: Publish coverage summary
         if: always()
         run: |
-          python -c "import run_ci; run_ci.write_coverage_summary()"
+          if [ -f "coverage.json" ] || [ -f "coverage_base.json" ]; then python -c "import run_ci; run_ci.write_coverage_summary()"; fi
 
       # Comentario del bot en el PR con la cobertura por módulo (% y umbral), vía
       # GITHUB_TOKEN (permiso pull-requests: write de este job). run_ci busca el
@@ -142,7 +142,7 @@ jobs:
       - name: Comment coverage on PR
         if: always() && github.event_name == 'pull_request'
         run: |
-          python -c "import run_ci; run_ci.write_coverage_comment()"
+          if [ -f "coverage.json" ] || [ -f "coverage_base.json" ]; then python -c "import run_ci; run_ci.write_coverage_comment()"; fi
 
   # ─── Job 2: Server + endpoints (deps completas, ~2 min) ──────
   server-test:
